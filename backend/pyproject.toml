@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 240
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["B008", "E501", "S101", "S105", "S106", "S311"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "E402", "B", "E501"]
+"app/seed_data.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

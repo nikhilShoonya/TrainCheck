@@ -1,0 +1,588 @@
+/* Layout refinements for the five user-supplied 1672 × 941 references. */
+.reference-office-photo{position:absolute;right:0;top:0;height:100%;width:60%;max-width:700px;overflow:hidden;z-index:0;mask-image:linear-gradient(90deg,transparent,#000 20%);pointer-events:none}
+.reference-office-photo image{width:1672px;height:941px}
+.asset-logo{display:flex;justify-content:center;background:#fefefe}
+.asset-logo>svg{width:100%;max-width:226px;height:auto;aspect-ratio:226/52;flex-shrink:0}
+.finvasia-wordmark .finvasia-logo-crop{width:145px;height:37px;display:block}
+.profile-portrait{height:100%;width:100%;display:block;border-radius:inherit}
+.profile-menu .reference-avatar:has(.profile-portrait){padding:0;overflow:hidden;background:#edf0f3}
+.reference-workspace .sidebar-encouragement{flex-shrink:0}
+.reference-workspace[data-role=admin] .sidebar-encouragement{display:flex}
+.reference-workspace[data-role=admin] .sidebar-tools{margin-top:0}
+.is-collapsed .asset-logo>svg{display:none}
+.is-collapsed .asset-logo:before{content:'✓';display:grid;place-items:center;width:32px;height:34px;border-radius:8px;background:linear-gradient(130deg,#44bdf7,#107e4c);color:#fff;font-size:27px;font-weight:800}
+.is-collapsed .asset-logo{padding:0;margin-left:-12px;margin-right:-12px}
+.reference-dashboard .image-scorecard-cta{margin-top:16px}
+.image-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin:14px 0 16px}
+.image-metric{display:flex;align-items:center;gap:13px;min-width:0;border:1px solid #e1e6ea;border-radius:12px;padding:14px;background:linear-gradient(110deg,#fafbfc,#fbfcfd);min-height:90px}
+.image-metric.blue{background:linear-gradient(110deg,#f9fbff,#f5f8ff);border-color:#dae1f1}
+.image-metric.green{background:linear-gradient(110deg,#fbfffc,#f3fbf7);border-color:#d8e7e0}
+.image-metric.red{background:linear-gradient(110deg,#fcfdfd,#f9fafa);border-color:#daebe3}
+.image-metric.amber{background:linear-gradient(110deg,#fffdf8,#fff8f4);border-color:#eee1da}
+.image-metric-icon{width:51px;height:55px;border-radius:11px;background:#eef1f4;color:#10824e;display:grid;place-items:center;flex-shrink:0}
+.image-metric-icon svg{width:34px;height:34px;stroke-width:1.9}
+.image-metric.blue .image-metric-icon{background:#e8f0ff;color:#2868b2}
+.image-metric.green .image-metric-icon{background:#e1f8ed;color:#06b978}
+.image-metric.red .image-metric-icon{background:#ffe9f1;color:#eb3858}
+.image-metric.amber .image-metric-icon{background:#fff0d5;color:#f0a015}
+.image-metric h2{font-size:14px;line-height:1.35;letter-spacing:-.2px;font-weight:550;margin:0 0 6px;white-space:normal}
+.image-metric strong{font-size:27px;line-height:1.05;font-weight:750;letter-spacing:-.6px;display:block}
+.image-metric small{font-size:12px;margin-top:6px;line-height:1.4;color:#596880}
+.image-primary-grid{display:grid;gap:14px;margin-bottom:16px;grid-template-columns:1.5fr 1.02fr 1fr}
+.manager-primary{grid-template-columns:1.65fr .9fr 1.05fr}
+.hr-primary{grid-template-columns:1.55fr .97fr 1.02fr}
+.image-primary-grid>.panel{margin:0}
+.manager-secondary-grid{display:grid;grid-template-columns:1.17fr 1.83fr;gap:16px;margin-bottom:16px}
+.admin-secondary-grid{display:grid;grid-template-columns:1.18fr 1.25fr 1fr;gap:16px;margin-bottom:16px}
+.hr-secondary-grid{display:grid;grid-template-columns:1.18fr 1.16fr 1.02fr;gap:16px;margin-bottom:16px}
+.manager-bottom-grid{display:grid;grid-template-columns:1.17fr 1.83fr;gap:16px;align-items:stretch}
+.manager-bottom-grid>.image-scorecard-cta{margin-top:0}
+.dashboard-action-item{display:flex;align-items:center;gap:12px;padding:14px 0;border-top:1px solid #eaeef1;min-height:65px}
+.dashboard-action-item>.course-glyph{width:38px;height:42px}
+.dashboard-action-item>.course-glyph svg{width:26px;height:26px}
+.dashboard-action-item>div{flex:1;min-width:0}
+.dashboard-action-item h3{font-size:13px;font-weight:650;line-height:1.4;letter-spacing:-.15px}
+.dashboard-action-item p{font-size:12px;line-height:1.5;color:#546278;margin:4px 0 0}
+.dashboard-action-item>.btn{font-size:13px;min-height:29px;padding:5px 12px;flex-shrink:0}
+.dashboard-quick-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.dashboard-quick-actions>button{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;text-align:center;background:linear-gradient(140deg,#f6f7f8,#f9fafb);border:1px solid transparent;border-radius:8px;padding:12px 6px;min-height:86px;font-size:13px;color:#1d2940;line-height:1.45}
+.dashboard-quick-actions>button:hover{border-color:#c8e1d6;background:#f0f2f4}
+.dashboard-quick-actions>button>svg{color:#107f4d;width:27px;height:27px}
+.image-department-bar{display:flex;align-items:center;justify-content:space-between;gap:15px;margin:18px 0}
+.image-department-bar>strong{font-size:13px;font-weight:600;min-width:90px}
+.image-department-bar>div{display:flex;align-items:center;gap:10px;flex:1}
+.image-department-bar progress{height:13px;border-radius:4px;background:#edf0f3;flex:1}
+.image-department-bar progress::-webkit-progress-bar{background:#edf0f3;border-radius:4px}
+.image-department-bar progress::-webkit-progress-value{background:linear-gradient(90deg,#b0d5c4,#108450);border-radius:4px}
+.image-department-bar progress::-moz-progress-bar{background:#118752}
+.image-department-bar span{font-size:13px;font-weight:650;min-width:32px;text-align:right}
+.monthly-trend{margin:0}
+.monthly-trend>svg{width:100%;height:auto;display:block;aspect-ratio:350/162}
+.monthly-trend figcaption{font-size:12px;line-height:1.4;color:#5d6c85;margin-top:6px}
+.trend-legend{display:flex;justify-content:flex-end;gap:18px;margin:0 0 10px;font-size:12px;color:#2b3d61}
+.trend-legend span{display:flex;align-items:center;gap:6px}
+.trend-legend i{width:8px;height:8px;border:2px solid #10824f;background:#fff;border-radius:50%}
+.trend-legend i.green{border-color:#04b779}
+.image-scorecard-cta{display:flex;align-items:center;gap:21px;min-height:92px;border:1px solid #e6eaed;border-radius:12px;background:linear-gradient(100deg,#fcfdfd,#f0f3f5);padding:18px 24px;box-shadow:0 2px 5px #0f794905}
+.image-scorecard-cta>span{color:#118852;flex-shrink:0}
+.image-scorecard-cta>span svg{width:42px;height:48px;stroke-width:2}
+.image-scorecard-cta>div{min-width:0;flex:1}
+.image-scorecard-cta h2{font-size:19px;line-height:1.4;letter-spacing:-.5px;font-weight:750}
+.image-scorecard-cta p{font-size:14px;margin:6px 0 0;color:#2c3e62}
+.image-scorecard-cta>.btn{border-color:#118852;background:#fff9;color:#0f7c4b;min-height:39px;white-space:nowrap;padding:10px 19px;font-size:14px}
+.review-count-strip{background:linear-gradient(130deg,#fff,#fafbfc);border:1px solid #e3e8ec;border-radius:12px;padding:18px;display:flex;align-items:center;gap:20px}
+.review-count-strip>.course-glyph{width:52px;height:58px}
+.review-count-strip>.course-glyph svg{width:34px;height:34px}
+.review-count-strip>div{flex:1}
+.review-count-strip h2{font-size:15px;font-weight:700;margin-bottom:12px}
+.review-counts{display:flex;gap:28px}
+.review-counts>span{padding-right:30px;border-right:1px solid #e5e9ed;flex:1}
+.review-counts>span:last-child{border-right:0;padding:0}
+.review-counts strong{font-size:25px;line-height:1.1;display:block;font-weight:750}
+.review-counts small{font-size:13px;margin-top:5px}
+.team-status-panel .table-wrap{margin:0 -2px}
+.team-status-panel table{min-width:650px}
+.team-status-panel th{padding:8px 6px;font-size:13px}
+.team-status-panel td{padding:12px 6px;font-size:13px}
+.team-status-panel .person{min-width:125px;gap:7px}
+.team-status-panel .person strong{font-size:13px;line-height:1.4}
+.team-status-panel .person .avatar{width:24px;height:24px;font-size:8px}
+.team-status-panel .table-sort{font-size:12px}
+.team-status-panel .score-tag{font-size:13px;padding:3px 7px}
+.hr-secondary-grid table{min-width:380px}
+.hr-secondary-grid th,.hr-secondary-grid td{padding:10px 6px;font-size:13px}
+.hr-secondary-grid .score-tag{font-size:13px;padding:4px 8px}
+.business-impact-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.business-impact-tile{background:linear-gradient(145deg,#f6f7f8,#fafbfc);border-radius:9px;padding:15px 10px;text-align:center;min-width:0;border:1px solid transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:150px}
+.business-impact-tile:is(button):hover{border-color:#c8e1d6;background:#f0f2f4}
+.business-impact-tile>span{color:#10824f;margin-bottom:9px}
+.business-impact-tile>span svg{width:26px;height:26px}
+.business-impact-tile h3{font-size:13px;line-height:1.5;font-weight:600}
+.business-impact-tile>strong{font-size:25px;margin:8px 0 12px;line-height:1.1;font-weight:750;letter-spacing:-.4px}
+.positive-text{color:#07841a}
+.neutral-text,.no-evidence{color:#57667e}
+.business-impact-tile p{font-size:13px;color:#2b3d61;margin:0;line-height:1.6}
+.business-impact-tile p span{padding:0 4px}
+.business-impact-tile small{font-size:12px;line-height:1.4;margin-top:8px;color:#55647b}
+.roi-overview{padding:20px 10px;display:flex;align-items:center;gap:13px;background:linear-gradient(110deg,#f3f5f6,#f2f4f6);border-radius:9px;min-height:160px}
+.roi-icon{display:grid;place-items:center;background:#ebeef1;color:#107e4c;width:47px;height:57px;border-radius:50%;flex-shrink:0}
+.roi-icon svg{width:36px;height:36px}
+.roi-amounts{display:grid;gap:21px;flex:1;min-width:0}
+.roi-amounts small,.roi-ratios small{font-size:13px;color:#22304d;line-height:1.4}
+.roi-amounts strong{font-size:17px;font-weight:700;display:block;line-height:1.4;margin-top:5px;overflow-wrap:anywhere}
+.roi-ratios{border-left:1px solid #c3dfd2;padding-left:18px;display:grid;gap:16px;text-align:center;min-width:70px}
+.roi-ratios>span:first-child{border-bottom:1px solid #cfe5db;padding-bottom:12px}
+.roi-ratios strong{display:block;font-size:24px;font-weight:750;color:#10750d;line-height:1.3;margin-top:5px}
+
+/* The login illustration and header crops render the supplied artwork without altering the source files. */
+.asset-logo>svg,.finvasia-logo-crop,.profile-portrait,.login-traincheck-logo>svg,.login-finvasia-logo>svg{overflow:hidden}
+.impact-login{position:relative;display:grid;grid-template-columns:1.25fr 1fr;gap:4vw;min-height:100dvh;padding:52px 10vw 52px 4.7vw;isolation:isolate;overflow:hidden;background:radial-gradient(ellipse at 74% 100%,#d0e6dc5c,transparent 55%),radial-gradient(ellipse at 78% 2%,#e4e8ec99,transparent 40%),linear-gradient(120deg,#fdfefe,#f9fafb 65%,#f0f3f5)}
+
+
+
+.impact-login-story{position:relative;min-width:0;min-height:calc(100dvh - 104px)}
+.login-brand-head{display:flex;align-items:center;gap:4vw;height:72px}
+.login-traincheck-logo{width:286px;max-width:46%;display:block;flex-shrink:0}
+.login-traincheck-logo>svg{display:block;width:100%;height:auto;aspect-ratio:286/72}
+.login-finvasia-logo{width:180px;max-width:30%;display:block;flex-shrink:0}
+.login-finvasia-logo>svg{display:block;width:100%;height:auto;aspect-ratio:180/55}
+.login-brand-head>i{height:53px;width:1px;display:block;background:#55637a;flex-shrink:0}
+.login-positioning{margin-top:65px;position:relative;z-index:2}
+.login-positioning .eyebrow{font-size:14px;letter-spacing:4px;color:#495568;margin-bottom:17px;font-weight:650;white-space:nowrap}
+.login-positioning h1{font-size:46px;letter-spacing:-1.8px;line-height:1.17;font-weight:750;color:#0d121d}
+.login-positioning h1>span{color:#0f7c4b;position:relative;white-space:nowrap}
+.login-positioning h1>span>svg{position:absolute;bottom:-10px;left:0;width:100%;height:14px;color:#107d4c}
+.login-positioning>p{font-size:18px;line-height:1.7;color:#445063;margin:27px 0 0;max-width:700px;letter-spacing:-.2px}
+.login-levels{display:grid;gap:21px;position:relative;z-index:2;margin-top:42px;max-width:360px}
+.login-levels>div{display:flex;align-items:center;gap:22px;min-height:59px}
+.login-levels>div>span{width:56px;height:56px;border-radius:14px;background:#ebeef1;display:grid;place-items:center;flex-shrink:0;box-shadow:0 3px 7px #10804e11}
+.login-levels>div>span>svg{width:31px;height:31px;color:#0f7b4b;stroke-width:1.8}
+.login-levels h2{font-size:17px;font-weight:700;letter-spacing:-.4px;color:#121a29}
+.login-levels p{font-size:14px;color:#293a5b;margin:3px 0 0;line-height:1.55}
+
+
+.impact-login-card{position:relative;align-self:start;margin-top:28px;min-width:0;background:linear-gradient(140deg,#ffffffed,#fffafcf0);border:1px solid #ffffff;border-radius:25px;padding:32px 35px 28px;box-shadow:0 7px 14px #0e6e4213,0 2px 2px #0e6e420c}
+.impact-login-card>h2{font-size:32px;line-height:1.3;letter-spacing:-1.1px;font-weight:750;white-space:nowrap}
+.impact-login-card>h2>span{font-size:28px}
+.impact-login-card .login-subtitle{font-size:17px;color:#485468;line-height:1.5;margin:3px 0 32px;letter-spacing:-.25px}
+.impact-login-card .demo-roles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 0 23px}
+.impact-login-card .role-choice{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:92px;border:1px solid #e1e6ea;border-radius:13px;padding:12px 6px;box-shadow:0 2px 4px #23314d08;background:#fff7;text-align:center}
+.impact-login-card .role-choice>svg{height:25px;width:25px;color:#4d5a6f;display:block}
+.impact-login-card .role-choice>strong{font-size:14px;font-weight:600;line-height:1.35;max-width:100px}
+.impact-login-card .role-choice.selected{background:linear-gradient(120deg,#10824f,#0f7748);border-color:#107e4d;color:white;box-shadow:0 6px 11px #0f7b4a26}
+.impact-login-card .role-choice.selected>svg{color:white}
+.impact-login-card .role-choice.selected:after{content:'✓';position:absolute;right:-5px;top:-8px;border:2px solid #fff;background:#0f7c4b;color:white;display:grid;place-items:center;border-radius:50%;height:22px;width:22px;font-size:14px;font-weight:650}
+.login-input-field{display:flex;flex-direction:column;gap:7px;font-size:14px;font-weight:650;color:#101725;margin-bottom:17px}
+.login-input-field>span{display:flex;align-items:center;gap:10px;border:1px solid #c7e1d5;border-radius:12px;padding:0 13px;background:#fbfcfd;height:46px}
+.login-input-field>span>svg{width:20px;height:20px;color:#5a6982;flex-shrink:0}
+.login-input-field input{border:0;background:transparent;outline:0;min-width:0;width:100%;height:100%;font-size:14px;color:#161f30}
+.login-input-field>span:focus-within{outline:2px solid #10834f;outline-offset:2px}
+.password-toggle{display:grid;place-items:center;height:36px;width:30px;color:#57667d;flex-shrink:0}
+.password-toggle>svg{width:20px;height:20px}
+.login-options{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-top:-3px;margin-bottom:23px}
+.login-options>label{display:flex;align-items:center;gap:8px;font-size:14px;color:#3d4758}
+.login-options input{width:20px;height:20px;accent-color:#0f7a4a;margin:0;flex-shrink:0}
+.login-options>button{font-size:14px;font-weight:600;color:#0f7849;padding:4px 0}
+.impact-login-card .form-error:empty{display:none}
+.impact-login-card .form-error{margin:0 0 16px}
+.login-sign-in{min-height:49px;font-size:17px;font-weight:650;border-radius:12px;background:linear-gradient(100deg,#10824f,#0f7949,#10824f);box-shadow:0 5px 11px #107f4d26}
+.login-sign-in:hover{background:#0f7949}
+.login-sign-in svg{height:22px;width:22px}
+.login-divider{display:flex;align-items:center;gap:18px;color:#3f495a;font-size:14px;margin:28px 0 17px}
+.login-divider:before,.login-divider:after{content:'';height:1px;background:#d3e8df;flex:1}
+.login-sso{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.login-sso>button{display:flex;align-items:center;justify-content:center;gap:12px;background:#fcfdfd;border:1px solid #cde4da;border-radius:13px;min-height:48px;padding:9px 8px;color:#141d2e;font-size:14px;font-weight:600;white-space:nowrap}
+.login-sso>button:hover{border-color:#118852;background:#f4f6f7}
+.google-g{font-size:24px;font-family:Arial,sans-serif;font-weight:750;background:conic-gradient(#4285f4 0 100deg,#34a853 100deg 180deg,#fbbc05 180deg 245deg,#ea4335 245deg 300deg,#4285f4 300deg 360deg);color:transparent;background-clip:text;-webkit-background-clip:text;line-height:1}
+.microsoft-mark{width:21px;height:21px;display:grid;grid-template-columns:1fr 1fr;gap:2px;flex-shrink:0}
+.microsoft-mark i:nth-child(1){background:#f1511b}
+.microsoft-mark i:nth-child(2){background:#80cc28}
+.microsoft-mark i:nth-child(3){background:#00adef}
+.microsoft-mark i:nth-child(4){background:#fbbc09}
+.login-demo-disclosure{display:flex;gap:14px;align-items:center;background:linear-gradient(100deg,#ebeef1,#f0f2f4);border-radius:12px;padding:13px 20px;margin-top:30px;min-height:67px}
+.login-demo-disclosure>svg{width:31px;height:34px;color:#0f7d4c;flex-shrink:0}
+.login-demo-disclosure strong{font-size:14px;display:block;color:#151e30;line-height:1.3}
+.login-demo-disclosure p{font-size:13px;color:#22304d;margin:3px 0 0;line-height:1.5}
+.login-demo-help{font-size:13px;margin-top:15px;color:#505e74}
+.login-demo-help summary{cursor:pointer}
+.login-demo-help p{font-size:13px;line-height:1.6;margin:12px 0}
+.login-demo-help .btn{font-size:13px}
+.impact-login-card .row{gap:8px}
+
+@media(min-width:1450px){.reference-workspace{--sidebar-width:274px}
+.reference-workspace.is-collapsed{--sidebar-width:76px}
+.reference-workspace .sidebar{padding-left:14px;padding-right:14px}
+.reference-brand{min-height:90px;margin:0 -14px 20px;padding:16px 24px}
+.asset-logo>svg{max-width:226px}
+.reference-workspace .nav-link{font-size:14px;min-height:46px;padding:10px 16px;gap:16px}
+.reference-workspace .nav-link svg{width:22px;height:22px}
+.reference-workspace .sidebar nav{gap:3px}
+.reference-workspace .topbar{height:76px;padding:0 24px;gap:24px}
+.finvasia-wordmark .finvasia-logo-crop{width:150px;height:38px}
+.global-search{max-width:495px;width:38%;height:43px;border-radius:10px;padding:0 13px}
+.global-search input{font-size:14px}
+.global-search>svg{width:19px;height:19px}
+.global-search kbd{font-size:13px}
+.reference-workspace .top-actions{gap:28px}
+.language-control{height:43px;padding:8px 13px;font-size:14px}
+.language-control select{font-size:14px}
+.language-control svg{height:19px;width:19px}
+.profile-menu>summary{min-width:234px;min-height:52px;padding:6px 10px;gap:12px}
+.profile-copy strong{font-size:14px}
+.profile-copy small{font-size:14px}
+.reference-avatar{width:40px;height:40px}
+.notification-button{min-height:42px;width:30px}
+.reference-workspace .notification-button svg{height:26px;width:26px}
+.reference-welcome{min-height:110px;margin-bottom:12px;padding:22px 26px}
+.reference-welcome h1{font-size:30px}
+.reference-welcome p{font-size:15px;margin-top:5px}
+.reference-office-photo{height:110px;width:672px}
+.assessment-banner{min-height:112px;margin:12px 0 24px;padding:20px 24px;gap:24px}
+.assessment-banner-icon{width:50px}
+.assessment-banner-icon svg{height:53px;width:48px}
+.banner-copy h2{font-size:21px}
+.banner-copy p{font-size:14px;line-height:1.4;max-width:400px}
+.banner-copy{max-width:420px}
+.banner-training{max-width:225px;padding-left:24px}
+.banner-training small{font-size:14px}
+.banner-training strong{font-size:14px}
+.banner-fact{min-width:103px;padding-left:23px}
+.banner-fact svg{height:27px;width:27px}
+.banner-fact strong{font-size:16px}
+.banner-fact small{font-size:14px}
+.assessment-banner>.btn{min-height:45px;padding:11px 20px;font-size:14px}
+.banner-status{font-size:14px}
+.dashboard-panel{padding:17px 18px}
+.dashboard-panel .section-heading{margin-bottom:18px}
+.dashboard-panel .section-heading h2{font-size:18px;line-height:1.3}
+.dashboard-panel .heading-note{font-size:16px}
+.dashboard-panel .section-heading h2>small{font-size:14px}
+.dashboard-panel .compact-link{font-size:14px}
+.dashboard-panel .section-heading .icon-btn svg{height:17px;width:17px}
+.level-tile{min-height:137px;padding:15px 5px 11px}
+.level-tile>svg{height:28px;width:28px;margin-bottom:10px}
+.level-tile h3{font-size:14px}
+.level-tile>strong{font-size:28px;margin-top:9px}
+.level-tile>strong>small{font-size:15px}
+.level-tile>span{font-size:13px;line-height:1.4}
+.level-tiles{gap:15px}
+.progress-donut{height:144px;width:144px}
+.progress-donut strong{font-size:31px}
+.progress-donut span{font-size:14px}
+.training-progress{padding:7px 0 0;gap:25px}
+.training-progress dl{gap:13px;max-width:155px}
+.training-progress dt{font-size:14px}
+.training-progress dd{font-size:14px}
+.training-progress .dot{width:11px;height:11px}
+.overall-score{font-size:40px;margin-top:24px}
+.overall-panel .performance-figure{margin-top:12px}
+.recent-training{min-height:63px;gap:13px}
+.recent-training-copy strong{font-size:14px}
+.recent-training-copy small{font-size:13px;margin-top:4px}
+.course-glyph{width:44px;height:44px}
+.recent-training .score-tag{font-size:16px;padding:5px 12px}
+.recent-training .course-glyph>svg{width:28px;height:28px}
+.dashboard-row-middle .performance-figure>svg{min-height:160px}
+.calendar-event{min-height:64px;gap:15px}
+.calendar-event>time{width:48px;min-width:48px;padding:6px}
+.calendar-event>time strong{font-size:16px}
+.calendar-event>time span{font-size:14px}
+.calendar-event>span>strong{font-size:14px}
+.calendar-event small{font-size:13px}
+.dashboard-statistics{min-height:100px}
+.dashboard-statistics strong{font-size:28px}
+.dashboard-statistics small{font-size:14px}
+.dashboard-statistics>div>svg{height:36px;width:36px}
+.scorecard-cta{min-height:100px}
+.scorecard-cta h2{font-size:20px}
+.scorecard-cta p{font-size:14px}
+.scorecard-cta>.btn{font-size:14px;min-height:42px}
+.scorecard-medal svg{height:43px;width:37px}
+.sidebar-encouragement{margin-left:-14px;margin-right:-14px;min-height:230px;padding-bottom:28px}
+.sidebar-encouragement>strong{font-size:18px;letter-spacing:-.5px}
+.sidebar-encouragement>p{font-size:14px;line-height:1.5}
+.trophy-orbit{height:82px}
+.trophy-orbit>svg{height:76px;width:76px}
+.reference-workspace[data-role=admin] .sidebar-encouragement{min-height:225px;padding-top:24px}
+.reference-workspace[data-role=admin] .sidebar-tools{margin-top:4px}
+.image-metrics{margin:14px 0 16px;gap:14px}
+.image-metric{min-height:94px;padding:14px;gap:14px}
+.image-metric-icon{width:61px;height:61px}
+.image-metric-icon>svg{width:39px;height:39px}
+.image-metric h2{font-size:14px;margin-bottom:9px}
+.image-metric strong{font-size:30px}
+.image-metric small{font-size:12px}
+.image-primary-grid{gap:16px;margin-bottom:16px}
+.image-primary-grid .level-tiles{gap:13px}
+.image-primary-grid .heading-note{font-size:14px}
+.monthly-trend figcaption{font-size:12px}
+.trend-legend{font-size:13px;margin-top:-4px}
+.monthly-trend>svg{min-height:152px}
+.image-department-bar{margin:20px 0}
+.image-department-bar>strong{font-size:14px;min-width:100px}
+.image-department-bar progress{height:16px}
+.image-department-bar span{font-size:14px}
+.dashboard-action-item{min-height:71px;gap:14px;padding:12px 0}
+.dashboard-action-item h3{font-size:14px}
+.dashboard-action-item p{font-size:13px}
+.dashboard-action-item>.btn{font-size:14px;min-height:34px}
+.dashboard-action-item>.course-glyph{width:45px;height:47px}
+.dashboard-action-item>.course-glyph>svg{width:29px;height:29px}
+.dashboard-quick-actions{gap:10px}
+.dashboard-quick-actions>button{min-height:92px;font-size:14px}
+.dashboard-quick-actions>button>svg{width:30px;height:30px}
+.image-scorecard-cta{min-height:94px}
+.image-scorecard-cta h2{font-size:23px}
+.image-scorecard-cta p{font-size:15px}
+.image-scorecard-cta>.btn{min-height:46px;font-size:14px}
+.team-status-panel td{font-size:13px;padding:12px 7px}
+.team-status-panel .person strong{font-size:14px}
+.team-status-panel .person .avatar{width:28px;height:28px;font-size:9px}
+.team-status-panel .score-tag{font-size:13px}
+.team-status-panel .table-sort{font-size:13px}
+.team-status-panel .person{min-width:160px}
+.hr-secondary-grid th,.hr-secondary-grid td{font-size:14px;padding:10px 7px}
+.hr-secondary-grid .score-tag{font-size:13px}
+.business-impact-tile{min-height:182px;padding:17px 9px}
+.business-impact-tile h3{font-size:14px}
+.business-impact-tile>strong{font-size:28px}
+.business-impact-tile p{font-size:13px}
+.business-impact-tile small{font-size:12px}
+.roi-overview{min-height:180px;padding:20px 11px}
+.roi-amounts small,.roi-ratios small{font-size:14px}
+.roi-amounts strong{font-size:19px}
+.roi-ratios strong{font-size:29px}
+.review-count-strip{min-height:110px}
+.review-count-strip h2{font-size:18px}
+.review-counts strong{font-size:28px}
+.review-counts small{font-size:14px}
+}
+
+@media(max-width:1449px){.impact-login{padding:35px 6vw 35px 4vw;gap:4vw}
+.impact-login-story{min-height:calc(100dvh - 70px)}
+.login-brand-head{gap:25px}
+.login-positioning{margin-top:52px}
+.login-positioning h1{font-size:36px;letter-spacing:-1.3px}
+.login-positioning .eyebrow{font-size:13px;letter-spacing:2.5px}
+.login-positioning>p{font-size:15px;line-height:1.65}
+.login-levels{gap:17px;margin-top:30px;max-width:285px}
+.login-levels>div{gap:17px}
+.login-levels h2{font-size:15px}
+.login-levels p{font-size:13px}
+.login-levels>div>span{width:48px;height:48px;border-radius:11px}
+
+.impact-login-card{padding:28px 28px 24px;margin-top:20px;border-radius:21px}
+.impact-login-card>h2{font-size:26px;letter-spacing:-.7px}
+.impact-login-card>h2>span{font-size:24px}
+.impact-login-card .login-subtitle{font-size:14px;margin-bottom:25px}
+.impact-login-card .role-choice{min-height:80px;gap:8px}
+.impact-login-card .demo-roles{gap:9px;margin-bottom:22px}
+.impact-login-card .role-choice>strong{font-size:13px}
+.login-input-field{font-size:14px}
+.login-input-field>span{height:43px}
+.login-input-field input{font-size:14px}
+.login-options>label{font-size:13px}
+.login-options>button{font-size:13px}
+.login-sign-in{min-height:45px;font-size:15px}
+.login-sso>button{font-size:13px;gap:9px;min-height:43px}
+.login-demo-disclosure{padding:12px 14px;margin-top:24px}
+.login-demo-disclosure strong{font-size:14px}
+.login-demo-disclosure p{font-size:13px}
+
+.login-demo-help{font-size:13px}
+.image-primary-grid .heading-note{font-size:13px}
+.image-primary-grid .level-tile h3{font-size:12px}
+.image-primary-grid .level-tiles{gap:7px}
+.manager-primary{grid-template-columns:1.5fr 1fr 1fr}
+.image-primary-grid .training-progress{gap:12px}
+.image-primary-grid .progress-donut{width:94px;height:94px}
+.image-primary-grid .training-progress dt{font-size:12px}
+.image-primary-grid .training-progress dl{gap:8px}
+.image-scorecard-cta h2{font-size:18px}
+.image-scorecard-cta p{font-size:13px}
+.image-scorecard-cta>.btn{font-size:13px}
+.team-status-panel .person{min-width:115px}
+.roi-overview{gap:8px}
+.roi-icon{width:35px;height:45px}
+.roi-icon svg{width:28px;height:30px}
+.roi-ratios{padding-left:10px;min-width:50px}
+.roi-amounts strong{font-size:14px}
+.roi-amounts small,.roi-ratios small{font-size:13px}
+}
+
+@media(max-width:1200px){.image-metrics{grid-template-columns:repeat(3,1fr)}
+.image-metric:nth-child(4),.image-metric:nth-child(5){grid-column:auto}
+.image-primary-grid{grid-template-columns:1.5fr 1fr}
+.image-primary-grid>.panel:last-child{grid-column:1/-1}
+.image-primary-grid>.panel:last-child .monthly-trend{max-width:520px;margin:auto}
+.manager-secondary-grid{grid-template-columns:1fr}
+.admin-secondary-grid{grid-template-columns:1fr 1fr}
+.admin-secondary-grid>.panel:last-child{grid-column:1/-1}
+.dashboard-quick-actions{grid-template-columns:repeat(6,1fr)}
+.dashboard-quick-actions>button{min-height:85px}
+.hr-secondary-grid{grid-template-columns:1fr 1fr}
+.hr-secondary-grid>.panel:last-child{grid-column:1/-1}
+.roi-overview{max-width:500px;gap:20px}
+.roi-amounts strong{font-size:20px}
+.roi-ratios{padding-left:30px;min-width:90px}
+.roi-ratios strong{font-size:28px}
+.manager-bottom-grid{grid-template-columns:1fr}
+.image-scorecard-cta h2{font-size:18px}
+.image-primary-grid .heading-note{font-size:14px}
+.image-primary-grid .level-tile h3{font-size:13px}
+.image-primary-grid .progress-donut{width:115px;height:115px}
+.image-primary-grid .training-progress dt{font-size:13px}
+.impact-login{grid-template-columns:1fr 1fr;gap:30px;padding:32px}
+.login-positioning h1{font-size:32px}
+.login-positioning .eyebrow{font-size:12px;letter-spacing:2px}
+.login-levels{max-width:250px}
+
+.login-positioning>p{font-size:14px}
+
+.impact-login-card{padding:27px 23px}
+.impact-login-card>h2{font-size:24px}
+.impact-login-card .login-subtitle{font-size:14px}
+.login-options{gap:8px}
+.login-options>label,.login-options>button{font-size:13px}
+.login-sso{gap:8px}
+.login-sso>button{font-size:12px;gap:6px}
+.login-brand-head{gap:20px;height:60px}
+.login-positioning{margin-top:45px}
+.login-brand-head>i{height:40px}
+.login-levels p{max-width:180px}
+}
+
+@media(max-width:900px){.reference-workspace .reference-office-photo{max-width:70%;width:500px}
+.reference-workspace .asset-logo>svg{display:block;max-width:210px}
+.reference-workspace .finvasia-logo-crop{width:125px;height:34px}
+.reference-workspace[data-role=admin] .sidebar-encouragement{display:none!important}
+.reference-workspace .sidebar{top:64px;height:calc(100dvh - 64px)}
+.reference-workspace .sidebar-encouragement{min-height:220px}
+.impact-login{padding:28px;gap:24px}
+.impact-login-card{padding:25px 20px}
+.impact-login-card>h2{font-size:21px}
+.impact-login-card>h2>span{font-size:20px}
+.impact-login-card .login-subtitle{font-size:14px}
+.impact-login-card .demo-roles{gap:6px}
+.impact-login-card .role-choice{min-height:75px;border-radius:10px;padding:9px 4px}
+.impact-login-card .role-choice>svg{width:22px;height:22px}
+.impact-login-card .role-choice>strong{font-size:12px}
+.login-positioning h1{font-size:29px}
+.login-positioning>p{font-size:14px}
+.login-levels>div{gap:12px}
+.login-levels h2{font-size:14px}
+.login-levels p{font-size:13px;max-width:150px}
+
+.login-sso{grid-template-columns:1fr}
+.login-sso>button{font-size:13px;min-height:40px}
+.login-demo-disclosure p{font-size:12px}
+.login-demo-disclosure>svg{width:25px;height:28px}
+}
+
+@media(max-width:700px){.reference-office-photo{right:-110px;width:460px!important;max-width:none!important;opacity:.65;mask-image:linear-gradient(90deg,transparent,#000 55%)}
+.reference-workspace .finvasia-logo-crop{width:102px;height:32px}
+.reference-workspace .sidebar-encouragement{min-height:210px}
+.image-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:15px 0}
+.image-metric{min-height:92px;padding:12px;gap:10px}
+.image-metric h2{font-size:13px}
+.image-metric strong{font-size:25px}
+.image-metric small{font-size:12px;line-height:1.4}
+.image-metric-icon{width:36px;height:41px;border-radius:8px}
+.image-metric-icon svg{width:25px;height:25px}
+.image-metric:last-child{grid-column:1/-1}
+.image-primary-grid,.manager-secondary-grid,.admin-secondary-grid,.hr-secondary-grid,.manager-bottom-grid{grid-template-columns:1fr;gap:14px;margin-bottom:14px}
+.image-primary-grid>.panel:last-child,.admin-secondary-grid>.panel:last-child,.hr-secondary-grid>.panel:last-child{grid-column:auto}
+.image-primary-grid .level-tiles{gap:8px}
+.image-primary-grid .level-tile h3{font-size:13px}
+.image-primary-grid .heading-note{font-size:13px}
+.image-primary-grid .training-progress{gap:30px;justify-content:center}
+.image-primary-grid .progress-donut{width:125px;height:125px}
+.image-primary-grid .training-progress dl{max-width:155px;gap:12px}
+.image-primary-grid .training-progress dt{font-size:13px}
+.monthly-trend figcaption{font-size:13px}
+.monthly-trend>svg{max-height:220px}
+.trend-legend{font-size:13px}
+.dashboard-action-item{min-height:76px;gap:10px}
+.dashboard-action-item h3{font-size:14px}
+.dashboard-action-item p{font-size:13px}
+.dashboard-action-item>.btn{font-size:13px;min-height:34px;padding:6px 9px}
+.dashboard-action-item>.course-glyph{width:35px;height:40px}
+.dashboard-action-item>.course-glyph>svg{width:25px;height:25px}
+.dashboard-quick-actions{grid-template-columns:repeat(3,1fr);gap:10px}
+.dashboard-quick-actions>button{font-size:14px;min-height:98px;padding:13px 8px}
+.image-department-bar>strong{font-size:14px}
+.image-department-bar progress{height:14px}
+.image-department-bar span{font-size:14px}
+.business-impact-tiles{gap:8px}
+.business-impact-tile{padding:15px 6px;min-height:185px}
+.business-impact-tile h3{font-size:13px}
+.business-impact-tile>strong{font-size:24px}
+.business-impact-tile p{font-size:13px}
+.business-impact-tile small{font-size:12px}
+.roi-overview{gap:18px;padding:22px 14px}
+.roi-amounts strong{font-size:17px}
+.roi-amounts small,.roi-ratios small{font-size:14px}
+.roi-ratios{min-width:65px;padding-left:20px}
+.image-scorecard-cta{padding:18px;gap:13px;flex-wrap:wrap}
+.image-scorecard-cta h2{font-size:18px}
+.image-scorecard-cta p{font-size:13px;line-height:1.6}
+.image-scorecard-cta>span>svg{width:34px;height:40px}
+.image-scorecard-cta>div{flex:1;min-width:210px}
+.image-scorecard-cta>.btn{width:100%;min-height:41px;font-size:14px;margin-top:3px}
+.review-count-strip{gap:14px;padding:18px}
+.review-count-strip h2{font-size:15px}
+.review-counts{gap:18px}
+.review-counts strong{font-size:27px}
+.review-counts small{font-size:14px}
+.review-counts>span{padding-right:18px}
+.impact-login{display:flex;flex-direction:column;padding:23px 20px 35px;gap:26px;overflow:hidden;min-height:100dvh}
+.impact-login-story{min-height:0}
+.login-brand-head{height:48px;gap:15px}
+.login-traincheck-logo{width:180px;max-width:55%}
+.login-finvasia-logo{width:112px;max-width:32%}
+.login-brand-head>i{height:30px}
+.login-positioning{margin-top:33px}
+.login-positioning .eyebrow{font-size:12px;letter-spacing:1.6px;margin-bottom:14px}
+.login-positioning h1{font-size:30px;line-height:1.2;letter-spacing:-1px}
+.login-positioning h1>span{white-space:normal}
+.login-positioning h1>span>svg{display:none}
+.login-positioning>p{font-size:14px;line-height:1.7;margin-top:18px;max-width:500px}
+.login-levels{grid-template-columns:1fr 1fr;gap:16px 12px;max-width:none;margin-top:25px}
+.login-levels>div{gap:10px;min-height:54px;align-items:center}
+.login-levels>div>span{width:38px;height:40px;border-radius:9px}
+.login-levels>div>span>svg{height:24px;width:24px}
+.login-levels h2{font-size:14px}
+.login-levels p{font-size:13px;max-width:160px;line-height:1.5}
+
+
+.impact-login-card{align-self:stretch;margin:0;padding:25px 20px 21px;border-radius:20px;box-shadow:0 5px 15px #0e724511}
+.impact-login-card>h2{font-size:24px;white-space:normal;letter-spacing:-.7px}
+.impact-login-card>h2>span{font-size:23px}
+.impact-login-card .login-subtitle{font-size:14px;margin-top:6px;margin-bottom:24px}
+.impact-login-card .demo-roles{gap:7px;margin-bottom:24px}
+.impact-login-card .role-choice{min-height:79px;gap:8px}
+.impact-login-card .role-choice>strong{font-size:13px}
+.impact-login-card .role-choice>svg{height:24px;width:24px}
+.impact-login-card .role-choice.selected:after{height:20px;width:20px;font-size:14px}
+.login-input-field{font-size:14px;gap:8px;margin-bottom:18px}
+.login-input-field>span{height:45px;padding:0 10px;gap:9px;border-radius:9px}
+.login-input-field input{font-size:14px}
+.login-options{gap:9px;margin-bottom:22px}
+.login-options>label,.login-options>button{font-size:13px}
+.login-options input{width:18px;height:18px}
+.login-sign-in{font-size:15px;min-height:47px;border-radius:9px}
+.login-divider{margin:24px 0 18px;font-size:13px}
+.login-sso{grid-template-columns:1fr 1fr;gap:8px}
+.login-sso>button{font-size:12px;gap:7px;min-height:44px;white-space:normal;border-radius:9px;padding:8px 7px}
+.google-g{font-size:22px}
+.microsoft-mark{height:18px;width:18px}
+.login-demo-disclosure{margin-top:23px;padding:13px;min-height:67px;gap:10px}
+.login-demo-disclosure p{font-size:13px}
+.login-demo-disclosure strong{font-size:14px}
+.login-demo-help{font-size:13px;margin-top:16px}
+
+
+.image-role-dashboard .dashboard-panel .section-heading h2{font-size:15px}
+}
+
+@media(max-width:370px){.impact-login{padding-left:15px;padding-right:15px}
+.login-positioning h1{font-size:27px}
+.impact-login-card{padding:23px 17px}
+.impact-login-card>h2{font-size:22px}
+.impact-login-card .role-choice>strong{font-size:12px}
+.login-options>label{font-size:12px}
+.login-sso>button{font-size:12px;gap:6px}
+.image-metric{padding:11px 9px;gap:8px}
+.image-metric h2{font-size:13px}
+.image-metric strong{font-size:23px}
+.image-metric-icon{width:31px;height:37px}
+.image-primary-grid .training-progress{gap:18px}
+.image-primary-grid .progress-donut{width:110px;height:110px}
+}
+
+@media(prefers-reduced-motion:reduce){.impact-login *{transition:none!important;animation:none!important}
+}
+
+@media print{.impact-login,.reference-office-photo{display:none!important}
+}
+

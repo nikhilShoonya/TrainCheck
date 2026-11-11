@@ -1,0 +1,24 @@
+/* Button colour follows purpose. Colours only: shape, size, spacing and labels come from the existing theme.
+   Primary (main next step) stays the theme's green. T.buttonTone in js/app.js assigns the tone classes.
+   Filled = .primary, outlined = .secondary, text only = .text. */
+.tone-danger{--tone-ink:#b42318;--tone-line:#e8a9a3;--tone-tint:#fdedec;--tone-solid:#b42318;--tone-solid-end:#8f1c13;--tone-solid-hover:#8f1c13}
+.tone-data{--tone-ink:#1d4ed8;--tone-line:#a9c1f2;--tone-tint:#eff6ff;--tone-solid:#1d4ed8;--tone-solid-end:#1a3fa8;--tone-solid-hover:#1a3fa8}
+.tone-attention{--tone-ink:#92400e;--tone-line:#e6b872;--tone-tint:#fff6e5;--tone-solid:#b45309;--tone-solid-end:#8f4207;--tone-solid-hover:#8f4207}
+.tone-success{--tone-ink:#075f43;--tone-line:#9fc9b6;--tone-tint:#eaf3ee;--tone-solid:#006b45;--tone-solid-end:#003d37;--tone-solid-hover:#004e39}
+
+/* Neutral (view, open, edit, cancel, go back): navy instead of green, so green keeps meaning "main action". */
+.btn.secondary{color:#1f3a5f;border-color:#c3ced9;background:#fff}
+.btn.secondary:hover{color:#16304f;border-color:#94a6b8;background:#f1f5f8}
+.btn.text{color:#1f3a5f}
+.btn.text:hover{background:#f1f5f8}
+
+.btn.secondary[class*="tone-"]{color:var(--tone-ink);border-color:var(--tone-line);background:#fff}
+.btn.secondary[class*="tone-"]:hover{color:var(--tone-ink);border-color:var(--tone-ink);background:var(--tone-tint)}
+.btn.text[class*="tone-"]{color:var(--tone-ink)}
+.btn.text[class*="tone-"]:hover{background:var(--tone-tint)}
+.btn.primary[class*="tone-"]{background:linear-gradient(110deg,var(--tone-solid),var(--tone-solid-end));border-color:var(--tone-solid);box-shadow:none;color:#fff}
+.btn.primary[class*="tone-"]:hover{background:var(--tone-solid-hover);border-color:var(--tone-solid-hover)}
+.btn.danger-btn:hover{background:#8f1c13}
+
+/* A question that is currently marked for review stays filled amber. */
+.btn.secondary.tone-attention.is-marked,.btn.secondary.tone-attention.is-marked:hover{background:#fef3c7;border-color:#f2b84b;color:#7a3d06}

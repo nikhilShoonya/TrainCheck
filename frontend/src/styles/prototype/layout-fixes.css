@@ -1,0 +1,105 @@
+/* Targeted refinements to the existing green theme: layout corrections plus the requested
+   table readability. No colour, border, shadow, icon or component changes. */
+
+/* ---------- Tables: readable size and weight everywhere ---------- */
+/* Segoe UI has no medium weight, so 500 renders as regular. Segoe UI Variable (Windows 11) has one; other systems fall back. */
+table,.reference-workspace table{font-size:15px}
+td{font-family:Inter,'Segoe UI Variable Text','Segoe UI',Arial,'Nirmala UI',sans-serif;font-weight:500;color:#0b152c}
+td:first-child,td strong,.person strong{font-weight:600}
+th,.table-sort,.reference-workspace .table-sort{font-size:14px;font-weight:700;color:#1f2b3d}
+td strong{font-size:15px}
+td small{display:block;font-size:13px;font-weight:400;color:#46546c}
+td .btn{font-size:14px}
+td .badge,td .score-tag{font-size:13px}
+.person .avatar{font-size:11px}
+.table-pagination,.table-pagination>span,.table-pagination .btn{font-size:14px}
+/* Dashboard cards hold compact tables; keep them a step smaller so columns still fit. */
+.reference-workspace .team-status-panel td,.reference-workspace .team-status-panel .person strong,.reference-workspace .hr-secondary-grid td{font-size:14px}
+.reference-workspace .team-status-panel th,.reference-workspace .team-status-panel .table-sort,.reference-workspace .hr-secondary-grid th,.reference-workspace .hr-secondary-grid .table-sort{font-size:13px}
+.reference-workspace .team-status-panel .person .avatar{font-size:10px}
+
+/* Dashboard tables sit in half-width cards. The global 620px table minimum pushed the last
+   column (Action / Pass Rate) outside the card on laptops, so let these tables fit their card.
+   On phones and small tablets the existing horizontal scroll inside the card remains. */
+@media(min-width:901px){
+  .reference-workspace .dashboard-panel .table-wrap>table{min-width:0}
+  /* Larger table text needs slightly tighter cell sides so wide tables still fit on laptops. */
+  .reference-workspace th,.reference-workspace td{padding-left:10px;padding-right:10px}
+  .reference-workspace .team-status-panel th,.reference-workspace .team-status-panel td{padding-left:6px;padding-right:6px}
+  .reference-workspace .hr-secondary-grid th,.reference-workspace .hr-secondary-grid td{padding-left:4px;padding-right:4px}
+  .reference-workspace .hr-secondary-grid .table-sort{gap:4px}
+}
+
+/* ---------- Import centre: use the page width; keep controls a sensible size ---------- */
+.reference-workspace .import-panel{max-width:none}
+.reference-workspace .import-steps{justify-content:flex-start;gap:40px}
+.reference-workspace #import-form>.field{max-width:420px}
+.reference-workspace #import-preview .table-wrap+.row{margin-top:16px}
+
+/* ---------- Profile menu: readable items (was 11px) ---------- */
+.profile-dropdown{min-width:250px}
+.profile-dropdown .btn{font-size:15px;min-height:44px}
+
+/* ---------- Sidebar ---------- */
+/* Never scroll sideways (the promo artwork is wider than the sidebar by design). */
+.reference-workspace .sidebar{overflow-x:hidden}
+/* Shorter windows: tighten the promo's spacing so the full menu fits without a scrollbar. */
+@media(min-width:901px) and (max-height:1000px){
+  .reference-workspace .sidebar-encouragement,.reference-workspace[data-role] .sidebar-encouragement{min-height:0;padding-top:12px;padding-bottom:16px}
+}
+
+/* ---------- Phones ---------- */
+/* The Finvasia wordmark box matched the wrong aspect ratio, cropping the "F". */
+@media(max-width:700px){
+  .reference-workspace .finvasia-logo-crop{height:27px}
+}
+/* Header gaps added up to more than the screen width, causing a sideways scroll. */
+@media(max-width:480px){
+  .reference-workspace .topbar{gap:6px;padding-left:8px;padding-right:8px}
+  .reference-workspace .top-actions{gap:4px}
+}
+
+/* ---------- Fit for the larger text (spacing and wrapping only) ---------- */
+.reference-workspace .level-tile h3{white-space:normal}
+.reference-workspace .level-panel .table-wrap>table{min-width:0}
+/* Laptops: wide tables keep their columns inside the card. */
+@media(min-width:901px) and (max-width:1449px){
+  table,.reference-workspace table{font-size:14px}
+  td strong{font-size:14px}
+  th,.table-sort,.reference-workspace .table-sort{font-size:13px}
+  .reference-workspace .table-sort{gap:4px}
+  .reference-workspace th,.reference-workspace td{padding-left:8px;padding-right:8px}
+  .reference-workspace .team-status-panel th,.reference-workspace .team-status-panel td{padding-left:6px;padding-right:6px}
+  .reference-workspace .hr-secondary-grid th,.reference-workspace .hr-secondary-grid td{padding-left:3px;padding-right:3px}
+}
+/* Short windows: keep the full admin menu visible without a sidebar scrollbar. */
+@media(min-width:901px) and (max-height:960px){
+  .reference-workspace .trophy-orbit{height:52px}
+  .reference-workspace .trophy-orbit>svg{width:48px;height:48px}
+  .reference-workspace .sidebar-encouragement>strong{margin-top:6px}
+  .reference-workspace .sidebar-encouragement>p{margin-bottom:8px}
+}
+/* Phones: larger header text still fits the screen. */
+@media(max-width:480px){
+  .reference-workspace .topbar{gap:4px}
+  .reference-workspace .top-actions{gap:2px}
+  .reference-workspace .language-control{padding-left:6px;padding-right:6px}
+  .reference-workspace .finvasia-logo-crop{width:88px;height:23px}
+}
+
+/* The green score (36px) and its % sign (18px) need more contrast on the pale green circle. */
+.score-circle.positive strong{color:#0a6b40}
+
+/* Sidebar utilities stay on one line each at the larger text size. */
+@media(min-width:901px){
+  .reference-workspace:not(.is-collapsed) .sidebar-tools{gap:0}
+  .reference-workspace:not(.is-collapsed) .sidebar-tools>.btn{white-space:nowrap;gap:3px;padding-left:2px;padding-right:2px}
+}
+@media(min-width:901px) and (max-width:1200px){
+  .reference-workspace:not(.is-collapsed) .sidebar-tools{flex-direction:column;align-items:flex-start}
+}
+
+/* Back arrow above page content. */
+.btn.page-back{display:flex;width:44px;height:44px;min-height:44px;padding:0;margin:14px 0 10px}
+.btn.page-back svg{width:20px;height:20px}
+.btn.page-back+.page-heading{padding-top:6px}

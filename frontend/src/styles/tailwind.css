@@ -1,0 +1,5 @@
+/* Tailwind's theme and utilities, without its reset. The prototype's stylesheets own the base look. */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@source "../";

@@ -1,0 +1,169 @@
+/* Latest user-selected reference: emerald, deep teal, navy and white.
+   Presentation only; domain states and role permissions are unchanged. */
+:root{--primary:#006b45;--accent:#087443;--bg:#f5f8fa;--muted:#f1f5f6;--border:#dce3e8;--text:#0b152c;--secondary:#46546c}
+body{background:var(--bg);color:var(--text)}
+h1,h2,h3{color:var(--text)}
+:focus-visible{outline-color:#087443}
+.primary{background:linear-gradient(110deg,#006b45,#003d37);border-color:#006b45;box-shadow:0 4px 12px #003d3714;color:#fff}
+.primary:hover{background:#004e39}
+.secondary{border-color:#b8d1c8;color:#075f43}
+.secondary:hover{background:#eaf3ee}
+.text{color:#08623f}
+.reference-workspace .nav-link.active{background:linear-gradient(110deg,#087443,#004b3d);color:#fff}
+.reference-workspace .nav-link.active svg{stroke:#fff}
+.reference-workspace .sidebar{background:linear-gradient(160deg,#fbfcfd,#f3f7f5)}
+.asset-logo{background:#f7fafb}
+.asset-logo>svg{aspect-ratio:285/70;max-width:228px}
+.finvasia-wordmark .finvasia-logo-crop{width:145px;height:39px}
+.dot.purple{background:#7297b6}
+.trend-legend i.green{border-color:#284e76}
+.is-collapsed .asset-logo:before{background:linear-gradient(130deg,#1494a0,#006446)}
+.login-office-scene,.login-canopy,.green-login-wave{position:absolute;pointer-events:none;z-index:-1;overflow:hidden}
+.green-impact-login{grid-template-columns:.96fr 1fr;gap:4.6vw;padding:52px 5.4vw 55px 5.9vw;background:radial-gradient(ellipse at 15% 12%,#eff5f9 0,transparent 62%),linear-gradient(115deg,#f4f7fa,#fff 78%);min-height:100dvh}
+.green-impact-login .impact-login-story{min-height:calc(100dvh - 107px)}
+.login-office-scene{left:0;bottom:0;width:58vw;height:auto;aspect-ratio:845/291;mask-image:linear-gradient(180deg,transparent,#000 7%);mix-blend-mode:multiply}
+.login-canopy{top:0;right:0;width:312px;height:auto;aspect-ratio:312/135;mix-blend-mode:multiply}
+.green-login-wave{right:0;bottom:0;width:36vw;height:260px}
+.green-impact-login .login-brand-head{gap:42px;height:72px}
+.green-impact-login .login-brand-head>i{background:#a2adbf}
+.green-impact-login .login-traincheck-logo{width:285px;max-width:47%}
+.green-impact-login .login-traincheck-logo>svg{aspect-ratio:285/70;mix-blend-mode:multiply}
+.green-impact-login .login-finvasia-logo{width:196px;max-width:32%}
+.green-impact-login .login-finvasia-logo>svg{aspect-ratio:196/52;mix-blend-mode:multiply}
+.green-impact-login .login-positioning{margin-top:50px}
+.green-impact-login .login-positioning .eyebrow{font-size:14px;letter-spacing:4px;color:#35425e;margin-bottom:31px;position:relative;line-height:1.6}
+.green-impact-login .login-positioning .eyebrow:after{content:'';position:absolute;left:0;bottom:-15px;width:48px;height:3px;background:#087443}
+.green-impact-login .login-positioning h1{font-size:55px;line-height:1.17;letter-spacing:-1.9px;font-weight:750;color:#08132b}
+.green-impact-login .login-positioning h1>span{color:#087443;font-style:italic;white-space:nowrap}
+.green-impact-login .login-positioning>p{font-size:19px;line-height:1.5;letter-spacing:-.25px;max-width:645px;margin-top:23px;color:#3d4b65}
+.green-impact-login .login-levels{grid-template-columns:repeat(4,minmax(0,1fr));max-width:680px;gap:0;margin-top:34px;align-items:start}
+.green-impact-login .login-levels>div{position:relative;flex-direction:column;align-items:center;text-align:center;gap:7px;min-height:126px;padding:0 10px}
+.green-impact-login .login-levels>div+div:before{content:'';position:absolute;top:29px;left:0;width:1px;height:76px;background:#a5afc0}
+.green-impact-login .login-levels>div>span{width:58px;height:58px;border-radius:16px;background:#e7f2eb;color:#005b3b;box-shadow:none}
+.green-impact-login .login-levels>div>span>svg{width:35px;height:35px;color:#005b3b}
+.green-impact-login .login-levels h2{font-size:18px;line-height:1.35;color:#101a32}
+.green-impact-login .login-levels p{font-size:14px;line-height:1.45;color:#3a4862;margin-top:4px;max-width:140px}
+.green-impact-login .impact-login-card{padding:29px 44px 24px;margin-top:24px;background:linear-gradient(135deg,#fffffffa,#fdfefef5);border-color:#fff;border-radius:28px;box-shadow:0 18px 35px #1e53351c,0 2px 5px #183d2b05}
+.green-impact-login .impact-login-card>h2{font-size:34px;letter-spacing:-1.2px;line-height:1.3;color:#08132b;white-space:normal}
+.green-impact-login .login-subtitle{font-size:19px;line-height:1.5;margin:2px 0 28px;color:#3e4b65}
+.green-impact-login .demo-roles{gap:16px;margin-bottom:23px}
+.green-impact-login .role-choice{min-height:100px;border-color:#d2dae4;background:#fbfcfe;border-radius:16px;gap:10px}
+.green-impact-login .role-choice>svg{width:28px;height:28px;color:#3f4a64}
+.green-impact-login .role-choice>strong{font-size:14px;color:#101827}
+.green-impact-login .role-choice.selected{background:linear-gradient(130deg,#e3f0e3,#edf6ed);border-color:#087443;color:#00462c;box-shadow:0 3px 8px #0b6b3910}
+.green-impact-login .role-choice.selected>svg{color:#005331}
+.green-impact-login .role-choice.selected:after{background:#087443;color:#fff;width:24px;height:24px;border-color:#fff}
+.green-impact-login .login-input-field{font-size:14px;color:#141b27;margin-bottom:16px}
+.green-impact-login .login-input-field>span{height:46px;border-color:#c9d2df;background:#fcfdfe;border-radius:14px}
+.green-impact-login .login-input-field input{font-size:14px;color:#111927}
+.green-impact-login .login-input-field>span>svg,.green-impact-login .password-toggle{color:#43506a}
+.green-impact-login .login-input-field>span:focus-within{outline-color:#087443}
+.green-impact-login .login-options{margin:0 0 23px}
+.green-impact-login .login-options>label{font-size:14px;color:#43506a}
+.green-impact-login .login-options input{accent-color:#087443}
+.green-impact-login .login-options>button{font-size:14px;color:#066533;min-height:26px}
+.green-impact-login .login-sign-in{min-height:55px;border-radius:16px;font-size:19px;background:linear-gradient(105deg,#006b45,#003d37);box-shadow:0 7px 13px #003d3717}
+.green-impact-login .login-sign-in:hover{background:#004e39}
+.green-impact-login .login-divider{font-size:14px;color:#45516b;margin:27px 0 18px}
+.green-impact-login .login-divider:before,.green-impact-login .login-divider:after{background:#d4dce6}
+.green-impact-login .login-sso{gap:16px}
+.green-impact-login .login-sso>button{min-height:49px;font-size:14px;color:#172031;border-color:#cbd5e1;background:#fcfdfe;border-radius:16px}
+.green-impact-login .login-sso>button:hover{background:#f0f6f3;border-color:#72a18c}
+.green-impact-login .login-demo-disclosure{background:linear-gradient(100deg,#e7f2e9,#edf5ee);margin-top:27px;border-radius:16px;min-height:70px;padding:13px 20px}
+.green-impact-login .login-demo-disclosure>svg{color:#087443;width:32px;height:35px}
+.green-impact-login .login-demo-disclosure strong{font-size:14px;color:#101a28}
+.green-impact-login .login-demo-disclosure p{font-size:13px;color:#2f4053}
+.green-impact-login .login-demo-help{color:#486355;font-size:13px;margin-top:12px}
+@media(min-width:1450px){.finvasia-wordmark .finvasia-logo-crop{width:150px;height:40px}}
+@media(max-width:1449px){
+  .green-impact-login{padding:38px 4vw 40px;gap:3.5vw}
+  .green-impact-login .login-brand-head{gap:27px;height:65px}
+  .green-impact-login .login-positioning{margin-top:45px}
+  .green-impact-login .login-positioning .eyebrow{font-size:13px;letter-spacing:3px}
+  .green-impact-login .login-positioning h1{font-size:43px;letter-spacing:-1.6px}
+  .green-impact-login .login-positioning>p{font-size:16px;max-width:540px}
+  .green-impact-login .login-levels{margin-top:32px}
+  .green-impact-login .login-levels>div{padding:0 6px}
+  .green-impact-login .login-levels h2{font-size:15px}
+  .green-impact-login .login-levels p{font-size:13px}
+  .green-impact-login .login-levels>div>span{width:49px;height:49px}
+  .green-impact-login .impact-login-card{padding:27px 30px 21px;margin-top:15px}
+  .green-impact-login .impact-login-card>h2{font-size:28px}
+  .green-impact-login .login-subtitle{font-size:16px;margin-bottom:25px}
+  .green-impact-login .demo-roles{gap:10px}
+  .green-impact-login .role-choice{min-height:88px}
+  .green-impact-login .role-choice>strong{font-size:13px}
+  .green-impact-login .login-sso>button{font-size:13px;gap:9px}
+  .green-impact-login .login-demo-disclosure{padding:12px 15px}
+  .green-impact-login .login-demo-disclosure p{font-size:13px}
+  .login-office-scene{width:57vw}
+}
+@media(max-width:1100px){
+  .green-impact-login{gap:28px;padding:30px}
+  .green-impact-login .login-positioning h1{font-size:35px}
+  .green-impact-login .login-positioning h1>span{white-space:normal}
+  .green-impact-login .login-positioning>p{font-size:14px}
+  .green-impact-login .login-positioning .eyebrow{font-size:12px;letter-spacing:2px}
+  .green-impact-login .login-levels{grid-template-columns:repeat(2,1fr);gap:18px 0}
+  .green-impact-login .login-levels>div{min-height:105px}
+  .green-impact-login .login-levels>div:nth-child(3):before{display:none}
+  .green-impact-login .impact-login-card{padding:25px 23px}
+  .green-impact-login .impact-login-card>h2{font-size:24px}
+  .green-impact-login .login-subtitle{font-size:14px}
+  .green-impact-login .role-choice>strong{font-size:13px}
+  .green-impact-login .login-options>label,.green-impact-login .login-options>button{font-size:13px}
+  .green-impact-login .login-sso>button{font-size:12px}
+  .green-impact-login .login-demo-disclosure strong{font-size:14px}
+  .green-impact-login .login-demo-disclosure p{font-size:12px}
+  .green-impact-login .login-levels p{max-width:150px}
+  .login-office-scene{width:55vw}
+}
+@media(max-width:700px){
+  .green-impact-login{display:flex;padding:24px 20px 35px;gap:28px}
+  .green-impact-login .impact-login-story{min-height:0}
+  .green-impact-login .login-brand-head{height:48px;gap:18px}
+  .green-impact-login .login-traincheck-logo{max-width:54%;width:200px}
+  .green-impact-login .login-finvasia-logo{max-width:32%;width:130px}
+  .green-impact-login .login-brand-head>i{height:33px}
+  .green-impact-login .login-positioning{margin-top:33px}
+  .green-impact-login .login-positioning .eyebrow{font-size:12px;letter-spacing:1.6px;margin-bottom:29px}
+  .green-impact-login .login-positioning h1{font-size:34px;letter-spacing:-1.1px}
+  .green-impact-login .login-positioning>p{font-size:14px;margin-top:20px;max-width:500px}
+  .green-impact-login .login-levels{grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin-top:27px}
+  .green-impact-login .login-levels>div{gap:6px;padding:0 4px;min-height:117px}
+  .green-impact-login .login-levels>div>span{width:39px;height:41px;border-radius:11px}
+  .green-impact-login .login-levels>div>span>svg{height:26px;width:26px}
+  .green-impact-login .login-levels h2{font-size:14px}
+  .green-impact-login .login-levels p{font-size:12px;line-height:1.5}
+  .green-impact-login .login-levels>div+div:before{height:70px;top:20px}
+  .green-impact-login .login-levels>div:nth-child(3):before{display:block}
+  .green-impact-login .impact-login-card{margin:0;padding:25px 20px 20px;border-radius:22px}
+  .green-impact-login .impact-login-card>h2{font-size:25px;letter-spacing:-.8px}
+  .green-impact-login .login-subtitle{font-size:14px;margin-top:4px}
+  .green-impact-login .demo-roles{gap:7px}
+  .green-impact-login .role-choice{min-height:80px;border-radius:12px}
+  .green-impact-login .role-choice>strong{font-size:13px}
+  .green-impact-login .role-choice>svg{height:24px;width:24px}
+  .green-impact-login .login-input-field{font-size:14px}
+  .green-impact-login .login-input-field input{font-size:14px}
+  .green-impact-login .login-sign-in{min-height:49px;font-size:17px;border-radius:12px}
+  .green-impact-login .login-divider{font-size:14px;margin:24px 0 18px}
+  .green-impact-login .login-sso{gap:8px}
+  .green-impact-login .login-sso>button{font-size:13px;min-height:46px;border-radius:12px;gap:7px}
+  .green-impact-login .login-demo-disclosure{border-radius:12px;padding:13px;gap:10px}
+  .green-impact-login .login-demo-disclosure p{font-size:13px}
+  .green-impact-login .login-demo-help{font-size:13px}
+  .login-office-scene{display:none}
+  .login-canopy{width:170px;opacity:.24}
+  .green-login-wave{width:80vw;height:130px}
+  .reference-workspace .finvasia-logo-crop{width:102px;height:32px}
+}
+@media(max-width:370px){
+  .green-impact-login{padding-left:15px;padding-right:15px}
+  .green-impact-login .login-positioning h1{font-size:30px}
+  .green-impact-login .impact-login-card{padding:23px 17px}
+  .green-impact-login .impact-login-card>h2{font-size:22px}
+  .green-impact-login .role-choice>strong{font-size:12px}
+  .green-impact-login .login-sso>button{font-size:12px}
+}
+@media print{.login-office-scene,.login-canopy,.green-login-wave{display:none!important}}

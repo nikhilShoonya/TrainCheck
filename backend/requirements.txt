@@ -1,0 +1,30 @@
+# TrainCheck backend. Python 3.13. Versions verified together on 5 November 2026.
+
+# API
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+email-validator
+python-multipart
+
+# Database (PostgreSQL on Neon)
+SQLAlchemy
+alembic
+psycopg
+psycopg-binary
+
+# Security
+argon2-cffi
+
+# Scheduled jobs
+APScheduler
+
+# Imports and exports
+openpyxl
+reportlab
+
+# Development and tests
+pytest
+httpx
+ruff

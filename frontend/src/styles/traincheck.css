@@ -1,0 +1,41 @@
+/* Additions needed by the two-level scope and by React. Everything else is the unchanged prototype CSS. */
+
+/* Two evidence tiles and login levels instead of four (SC-2L). */
+.level-tiles.two-level{grid-template-columns:repeat(2,minmax(0,1fr))}
+.green-impact-login .login-levels.two-level{grid-template-columns:repeat(2,minmax(0,1fr));max-width:460px}
+.green-impact-login .login-levels.two-level p{max-width:210px}
+.scorecard-grid.two-level{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:900px){.scorecard-grid.two-level{grid-template-columns:1fr}}
+.scorecard-grid.two-level .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:560px){.scorecard-grid.two-level .metrics{grid-template-columns:1fr}}
+
+/* The prototype styled a native <dialog>. These rules give the Radix dialog the same appearance. */
+.tc-dialog-overlay{position:fixed;inset:0;z-index:60;background:#0b152c66}
+.tc-dialog{position:fixed;z-index:61;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border:1px solid var(--border);border-radius:12px;padding:0;width:min(640px,calc(100% - 32px));max-height:90vh;overflow:auto;color:var(--text);box-shadow:0 20px 80px #17263c33}
+.tc-dialog-wide{width:min(860px,calc(100% - 32px))}
+.tc-dialog:has(.tc-certificate){width:min(1000px,calc(100% - 32px))}
+@media print{
+  body>*:not([data-radix-portal]):not(.tc-dialog){display:none}
+  .tc-dialog-overlay{display:none}
+  .tc-dialog{position:static;transform:none;width:100%;max-height:none;border:0;box-shadow:none}
+  .tc-dialog .dialog-header,.tc-dialog .dialog-actions{display:none}
+}
+
+/* Next.js renders links where the prototype used buttons. */
+a.btn{text-decoration:none}
+a.recent-training,a.calendar-event,.dashboard-quick-actions a{text-decoration:none;color:inherit}
+.dashboard-quick-actions a{display:flex}
+.profile-dropdown a.btn{justify-content:flex-start}
+
+/* Import steps: same look as the prototype's labels, but each reachable step is a working button. */
+ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
+.import-steps button{background:none;border:0;padding:4px 0;font:inherit;color:inherit;cursor:pointer;min-height:32px}
+.import-steps button:not(:disabled):hover{text-decoration:underline}
+.import-steps button:disabled{cursor:not-allowed;opacity:1}
+.import-steps .done{color:var(--primary)}
+.import-hint{margin:0 0 20px}
+
+/* Recharts tooltip */
+.tc-chart-tooltip{display:grid;gap:3px;background:#fff;border:1px solid #dce3e8;border-radius:7px;padding:8px 10px;font-size:13px;color:#0b152c;box-shadow:0 6px 20px #17263c1f}
+.tc-chart-tooltip i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.tc-audit-json{background:#f1f5f6;border-radius:7px;padding:10px;overflow:auto;font-size:13px;white-space:pre-wrap}

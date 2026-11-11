@@ -1,0 +1,57 @@
+# ---------- Secrets: never commit. Only the .env.example files are tracked. ----------
+.env
+.env.*
+!.env.example
+
+# ---------- Documentation kept out of this repository ----------
+All_Doc/
+
+# ---------- Python (backend) ----------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+# Private uploads, exports and test files written by the API
+backend/var/
+
+# ---------- Node / Next.js (frontend) ----------
+node_modules/
+.next/
+.next-*/
+out/
+next-env.d.ts
+*.tsbuildinfo
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---------- Playwright ----------
+frontend/playwright-report/
+frontend/test-results/
+frontend/blob-report/
+frontend/playwright/.cache/
+frontend/tests/e2e/.tmp/
+
+# ---------- Logs ----------
+*.log
+
+# ---------- Operating system and editors ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---------- Claude Code ----------
+.claude/

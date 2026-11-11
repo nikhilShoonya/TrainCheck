@@ -1,0 +1,16 @@
+/* Certificate of Assessment. assets/certificate-template.png supplies the artwork; only the employee
+   name, course and date are live text, placed at the positions measured from the supplied design.
+   Sizes use cqw (1cqw = 1% of the certificate width), so the layout holds at any size. */
+dialog:has(.tc-certificate){width:min(1000px,calc(100% - 32px))}
+.tc-cert-caption{margin:0 0 12px;text-align:center;font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--red)}
+.tc-certificate{position:relative;container-type:inline-size;aspect-ratio:1536/1024;width:min(100%,calc((90vh - 250px)*1.5));margin:0 auto;overflow:hidden;background:#fbfbf8;border-radius:4px;box-shadow:0 0 0 1px #e3e8ec;break-inside:avoid}
+.tc-certificate>img{position:absolute;inset:0;width:100%;height:100%;display:block}
+.tc-certificate .tc-cert-name,.tc-certificate .tc-cert-course,.tc-certificate .tc-cert-date{position:absolute;margin:0;color:#0b3226}
+.tc-certificate .tc-cert-name{left:50%;top:42.7%;width:58cqw;transform:translate(-50%,-50%);text-align:center;font-family:Cambria,Georgia,'Times New Roman',serif;font-size:var(--tc-size);font-weight:700;line-height:1.1;letter-spacing:0;overflow-wrap:anywhere}
+.tc-certificate .tc-cert-course{left:50%;top:58.35%;transform:translate(-50%,-50%);box-sizing:border-box;width:max-content;max-width:62cqw;min-height:3.9cqw;display:flex;align-items:center;justify-content:center;padding:.3cqw 4cqw;border-radius:2.5cqw;background:#e9f5e3;text-align:center;font-family:Cambria,Georgia,'Times New Roman',serif;font-size:var(--tc-size);font-weight:700;line-height:1.2;overflow-wrap:anywhere;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.tc-certificate .tc-cert-date{left:55.95%;top:73.4%;transform:translateY(-50%);font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:1.67cqw;line-height:1;color:#4a4f55;white-space:nowrap}
+@media print{
+  dialog:has(.tc-certificate){width:100%}
+  .tc-cert-caption{display:none}
+  .tc-certificate{width:100%;box-shadow:none;border-radius:0}
+}

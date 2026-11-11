@@ -1,0 +1,5 @@
+import { MyTrainings } from "@/features/employee/pages";
+
+export default function Page() {
+  return <MyTrainings />;
+}
