@@ -1,3 +1,5 @@
+import type { PoolReport } from "./pool";
+
 /* Shapes returned by the backend. Status values mirror backend/app/core/enums.py and must not diverge. */
 
 export type RoleCode = "EMPLOYEE" | "MANAGER" | "LD_ADMIN" | "HR_READ_ONLY";
@@ -325,5 +327,8 @@ export interface TrainingAdmin {
   config: ConfigView | null;
   materials?: { id: string; kind: string; title: string; url: string }[];
   pre_test_config?: ConfigView | null;
-  pool_problem?: Record<string, unknown> | null;
+  pool_problem?: PoolReport | null;
+  question_pool?: PoolReport;
+  eligible_questions: number;
+  config_ready: boolean;
 }

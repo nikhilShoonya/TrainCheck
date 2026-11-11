@@ -20,12 +20,13 @@ def new_request_id() -> str:
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str, details: Any = None) -> None:
+    def __init__(self, status: int, code: str, message: str, details: Any = None, headers: dict[str, str] | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
         self.details = details
+        self.headers = headers
 
 
 def not_found(message: str = "This record does not exist or is not available to you.") -> ApiError:
@@ -54,7 +55,7 @@ def error_body(code: str, message: str, details: Any = None) -> dict:
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status, content=error_body(exc.code, exc.message, jsonable_encoder(exc.details)))
+        return JSONResponse(status_code=exc.status, content=error_body(exc.code, exc.message, jsonable_encoder(exc.details)), headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:

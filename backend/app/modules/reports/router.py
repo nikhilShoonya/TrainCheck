@@ -16,6 +16,7 @@ from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear, require_reader, require_report_user, team_employee_ids
 from app.core.enums import Cadence, DeliveryStatus, ExportFormat, ExportStatus, ReportCode, ReviewerType, RoleCode
 from app.core.errors import forbidden, not_found
+from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.models import Employee, ManagerAssignment, ReportDelivery, ReportExport, ReportSchedule, Training, UserAccount
 from app.modules.notifications.service import notify_account
@@ -142,7 +143,7 @@ def list_scorecards(user: CurrentUser = Depends(require_report_user), db: Sessio
     return ok([{"id": str(k), "title": v.title, "code": v.training_code} for k, v in sorted(seen.items(), key=lambda kv: kv[1].title)])
 
 
-@router.get("/scorecards/{training_id}")
+@router.get("/scorecards/{training_id}", dependencies=[expensive("report")])
 def scorecard(training_id: uuid.UUID, filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
     training = _training_in_scope(db, training_id)
     filters.training_id = training_id
@@ -151,7 +152,7 @@ def scorecard(training_id: uuid.UUID, filters: ReportFilters = Depends(filters_d
 
 # ---------- Analytics pages ----------
 
-@router.get("/reports/analytics")
+@router.get("/reports/analytics", dependencies=[expensive("report")])
 def analytics(filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
     """Department and function comparison, topic gaps and behaviour trend (Phase 3)."""
     rows = load_rows(db, employee_scope(db, user), filters)
@@ -177,7 +178,7 @@ def analytics(filters: ReportFilters = Depends(filters_dep), user: CurrentUser =
     )
 
 
-@router.get("/reports/manager-evaluation")
+@router.get("/reports/manager-evaluation", dependencies=[expensive("report")])
 def manager_evaluation(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
     """How far each manager has completed assigned observations. Describes task completion only."""
     now = utcnow()
@@ -233,7 +234,7 @@ def export_view(record: ReportExport) -> dict:
     }
 
 
-@router.post("/reports/exports")
+@router.post("/reports/exports", dependencies=[expensive("export")])
 def create_export(body: ExportIn, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     try:
         filters = ReportFilters.from_stored(body.filters)
@@ -352,7 +353,7 @@ def run_due_schedules(db: Session, now: datetime | None = None) -> int:
 
 
 # Declared last so the fixed paths above take priority.
-@router.get("/reports/{report_code}")
+@router.get("/reports/{report_code}", dependencies=[expensive("report")])
 def get_report(report_code: str, filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     """Withdrawn reports such as reaction and kpi-impact simply do not exist (SC-2L)."""
     try:

@@ -26,6 +26,7 @@ from app.core.enums import (
     TrainingStatus,
 )
 from app.core.errors import ApiError, conflict, not_found, validation
+from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.models import (
     AssessmentConfig,
@@ -41,7 +42,7 @@ from app.models import (
     TrainingSession,
 )
 from app.modules.assessment.scheduling import load_calendar
-from app.modules.assessment.service import active_config, next_config_version, pool_problem
+from app.modules.assessment.service import active_config, next_config_version, pool_message, pool_problem, pool_report
 from app.modules.notifications.service import notify_employee
 from app.modules.training import service
 
@@ -176,9 +177,19 @@ def config_view(config: AssessmentConfig | None) -> dict | None:
     }
 
 
+def config_pool(db: Session, training_id: uuid.UUID, config: AssessmentConfig | None) -> dict:
+    """The question pool measured against the active configuration. Without one, readiness is NOT_CONFIGURED."""
+    if config is None:
+        report = pool_report(db, training_id)
+        report.update({"reason": "NOT_CONFIGURED", "reasons": ["NOT_CONFIGURED"], "ready": False})
+        return report
+    return pool_report(db, training_id, config.question_count, config.difficulty_mix)
+
+
 def training_view(db: Session, t: Training, detail: bool = False) -> dict:
     enrolments = db.scalars(select(Enrolment).options(selectinload(Enrolment.completion)).where(Enrolment.training_id == t.id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)).all()
     post = active_config(db, t.id, AssessmentType.POST_TEST)
+    pool = config_pool(db, t.id, post)
     data = {
         "id": str(t.id),
         "training_code": t.training_code,
@@ -203,11 +214,14 @@ def training_view(db: Session, t: Training, detail: bool = False) -> dict:
         "assigned_count": len(enrolments),
         "completed_count": sum(1 for e in enrolments if e.completion),
         "config": config_view(post),
+        "eligible_questions": pool["eligible"],
+        "config_ready": bool(pool["ready"]),
     }
     if detail:
         data["materials"] = [{"id": str(m.id), "kind": m.kind, "title": m.title, "url": m.url} for m in t.materials]
         data["pre_test_config"] = config_view(active_config(db, t.id, AssessmentType.PRE_TEST))
-        data["pool_problem"] = pool_problem(db, post) if post else {"reason": "NOT_CONFIGURED"}
+        data["question_pool"] = pool
+        data["pool_problem"] = None if pool["ready"] else pool
     return data
 
 
@@ -284,10 +298,9 @@ def update_training(training_id: uuid.UUID, body: TrainingIn, user: CurrentUser 
 def set_training_status(training_id: uuid.UUID, body: StatusIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     training = _training(db, training_id)
     if body.status == TrainingStatus.ACTIVE:
-        config = active_config(db, training.id, AssessmentType.POST_TEST)
-        problem = pool_problem(db, config) if config else {"reason": "NOT_CONFIGURED"}
-        if problem:
-            raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", "Configure the assessment and add enough active questions before activating.", problem)
+        problem = config_pool(db, training.id, active_config(db, training.id, AssessmentType.POST_TEST))
+        if not problem["ready"]:
+            raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", "This training cannot be activated yet. " + pool_message(problem, training.title), problem)
     before = training.status
     training.status = body.status
     record_audit(db, user.id, "TRAINING_STATUS_CHANGED", "training", training.id, before={"status": before}, after={"status": body.status})
@@ -318,6 +331,23 @@ def remove_material(training_id: uuid.UUID, material_id: uuid.UUID, user: Curren
 
 
 # ---------- Assessment configuration ----------
+
+@router.get("/trainings/{training_id}/question-pool")
+def question_pool(
+    training_id: uuid.UUID,
+    _: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+    question_count: int | None = Query(default=None, ge=1, le=200),
+    easy: int | None = Query(default=None, ge=0, le=200),
+    medium: int | None = Query(default=None, ge=0, le=200),
+    hard: int | None = Query(default=None, ge=0, le=200),
+) -> dict:
+    """Eligible-question counts for the configuration form. Saving still re-validates on the server."""
+    training = _training(db, training_id)
+    mix = None
+    if easy is not None or medium is not None or hard is not None:
+        mix = {"EASY": easy or 0, "MEDIUM": medium or 0, "HARD": hard or 0}
+    return ok(pool_report(db, training.id, question_count, mix))
 
 @router.post("/trainings/{training_id}/assessment-configs")
 def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
@@ -351,7 +381,7 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
     )
     problem = pool_problem(db, candidate)
     if problem:
-        raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", "The active question pool cannot satisfy this configuration.", problem)
+        raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", pool_message(problem, training.title), problem)
     if current is not None:
         current.is_active = False
         db.flush()
@@ -500,7 +530,7 @@ def list_enrolments(
     return ok([enrolment_view(e, now) for e in rows])
 
 
-@router.post("/enrolments")
+@router.post("/enrolments", dependencies=[expensive("bulk")])
 def assign(body: AssignIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     training = _training(db, body.training_id)
     batch = None

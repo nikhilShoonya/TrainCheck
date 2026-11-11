@@ -722,6 +722,15 @@ class ReportSchedule(Base, Timestamped):
     deliveries: Mapped[list["ReportDelivery"]] = relationship(order_by="ReportDelivery.run_at.desc()")
 
 
+class RateLimitCounter(Base):
+    """Shared request counters, used only when RATE_LIMIT_STORE=database. Keys are SHA-256 hashes."""
+
+    __tablename__ = "rate_limit_counters"
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ReportDelivery(Base):
     __tablename__ = "report_deliveries"
     id: Mapped[uuid.UUID] = uuid_pk()

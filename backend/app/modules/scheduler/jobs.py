@@ -91,6 +91,13 @@ def behaviour_reminders(db: Session, now: datetime | None = None) -> int:
     return sent
 
 
+def prune_rate_limits(_db: Session | None = None) -> int:
+    """Removes counters older than the sliding window needs. A no-op for the in-memory store's other windows."""
+    from app.core.ratelimit import get_limiter
+
+    return get_limiter().prune()
+
+
 def _run(job, name: str) -> None:
     db = session_factory()()
     try:
@@ -108,4 +115,5 @@ def build_scheduler() -> BackgroundScheduler:
     scheduler.add_job(_run, "cron", minute=30, args=[pending_assessment_reminders, "pending_assessment_reminders"], id="pending_assessment_reminders", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "cron", minute=45, args=[behaviour_reminders, "behaviour_reminders"], id="behaviour_reminders", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "cron", minute=0, args=[run_due_schedules, "run_due_schedules"], id="run_due_schedules", max_instances=1, coalesce=True)
+    scheduler.add_job(_run, "interval", minutes=5, args=[prune_rate_limits, "prune_rate_limits"], id="prune_rate_limits", max_instances=1, coalesce=True)
     return scheduler

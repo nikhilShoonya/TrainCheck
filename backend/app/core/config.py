@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     default_timezone: str = "Asia/Kolkata"
     scheduler_enabled: bool = True
 
+    # Rate limiting (see app/core/ratelimit.py). Limits are requests per minute per identity.
+    rate_limit_enabled: bool = True
+    rate_limit_store: str = "memory"  # "memory" for one backend instance, "database" for several
+    rate_limit_user_per_minute: int = 600  # Each signed-in user; the previous single-bucket limit
+    rate_limit_anonymous_per_minute: int = 600  # Each verified client IP without a valid session
+    rate_limit_import_per_minute: int = 20
+    rate_limit_export_per_minute: int = 30
+    rate_limit_bulk_per_minute: int = 30
+    rate_limit_report_per_minute: int = 120
+    # Proxies whose X-Forwarded-For is believed: exact addresses or CIDR ranges, comma separated.
+    # Empty means none: every caller is identified by its own connection address.
+    trusted_proxies: str = ""
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"

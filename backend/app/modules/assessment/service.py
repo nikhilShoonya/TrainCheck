@@ -69,22 +69,100 @@ def answer_keys(db: Session, question_ids: list[uuid.UUID]) -> dict[uuid.UUID, l
     return keys
 
 
+# Suggested questions per attempt for a new configuration: min(this, eligible questions).
+SUGGESTED_QUESTIONS_PER_ATTEMPT = 10
+EXAMPLE_CODES = 5
+
+
+def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None = None, difficulty_mix: dict[str, int] | None = None) -> dict:
+    """Describes a training's question pool and, given a configuration, whether it can run (BR §7, §20.4).
+
+    Eligible means: linked to this training, Active, has an answer key and has at least two options.
+    The same rule decides what start_attempt may draw, so this report and the engine always agree.
+    """
+    linked = list(
+        db.scalars(
+            select(Question)
+            .join(QuestionTrainingTag, QuestionTrainingTag.question_id == Question.id)
+            .options(selectinload(Question.options))
+            .where(QuestionTrainingTag.training_id == training_id)
+            .order_by(Question.question_code)
+        )
+    )
+    active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
+    keys = answer_keys(db, [q.id for q in active]) if active else {}
+    missing_key = [q for q in active if not keys.get(q.id)]
+    few_options = [q for q in active if len(q.options) < 2]
+    eligible = [q for q in active if keys.get(q.id) and len(q.options) >= 2]
+    by_difficulty = {level.value: sum(1 for q in eligible if q.difficulty == level) for level in Difficulty}
+
+    report: dict = {
+        "training_id": str(training_id),
+        "linked_total": len(linked),
+        "active": len(active),
+        "inactive": len(linked) - len(active),
+        "missing_answer_key": len(missing_key),
+        "missing_answer_key_codes": [q.question_code for q in missing_key[:EXAMPLE_CODES]],
+        "insufficient_options": len(few_options),
+        "insufficient_options_codes": [q.question_code for q in few_options[:EXAMPLE_CODES]],
+        "eligible": len(eligible),
+        "eligible_by_difficulty": by_difficulty,
+        "suggested_question_count": min(SUGGESTED_QUESTIONS_PER_ATTEMPT, len(eligible)),
+        "required": None,
+        "shortfall": None,
+        "difficulty_mix": difficulty_mix or None,
+        "mix_total": None,
+        "difficulty_shortfalls": [],
+        "reason": None,
+        "ready": None,
+    }
+    if question_count is None:
+        return report
+
+    report["required"] = question_count
+    report["shortfall"] = max(0, question_count - len(eligible))
+    reasons = []
+    if report["shortfall"]:
+        reasons.append("INSUFFICIENT_POOL")
+    if difficulty_mix:
+        report["mix_total"] = sum(difficulty_mix.values())
+        if report["mix_total"] != question_count:
+            reasons.append("MIX_TOTAL")
+        for level in Difficulty:
+            wanted = difficulty_mix.get(level.value, 0)
+            if wanted > by_difficulty[level.value]:
+                report["difficulty_shortfalls"].append({"difficulty": level.value, "available": by_difficulty[level.value], "required": wanted, "shortfall": wanted - by_difficulty[level.value]})
+        if report["difficulty_shortfalls"]:
+            reasons.append("INSUFFICIENT_DIFFICULTY")
+    report["reason"] = reasons[0] if reasons else None
+    report["reasons"] = reasons
+    report["ready"] = not reasons
+    return report
+
+
+def pool_message(report: dict, training_title: str) -> str:
+    """A plain-language explanation for L&D of why a configuration cannot be saved or activated."""
+    if report.get("reason") == "NOT_CONFIGURED":
+        return f"{training_title} has no assessment configuration yet. Open Assessment Configuration and save one first."
+    parts = []
+    eligible, required = report["eligible"], report["required"]
+    noun = "question" if eligible == 1 else "questions"
+    if "INSUFFICIENT_POOL" in report.get("reasons", []):
+        if eligible == 0:
+            parts.append(f"{training_title} has no eligible active questions. Add or import questions for this training.")
+        else:
+            parts.append(f"{training_title} has {eligible} eligible active {noun}, but the assessment requires {required}. Add {report['shortfall']} more or reduce questions per attempt to {eligible}.")
+    if "MIX_TOTAL" in report.get("reasons", []):
+        parts.append(f"The difficulty counts total {report['mix_total']}, but questions per attempt is {required}.")
+    for gap in report.get("difficulty_shortfalls", []):
+        parts.append(f"{gap['difficulty'].title()}: {gap['available']} available, {gap['required']} required.")
+    return " ".join(parts) or "The active question pool cannot satisfy this configuration."
+
+
 def pool_problem(db: Session, config: AssessmentConfig) -> dict | None:
     """Explains why a configuration cannot run, or returns None when it can (BR §20.4)."""
-    pool = eligible_questions(db, config.training_id)
-    keys = answer_keys(db, [q.id for q in pool]) if pool else {}
-    valid = [q for q in pool if keys.get(q.id) and len(q.options) >= 2]
-    if len(valid) < config.question_count:
-        return {"reason": "INSUFFICIENT_POOL", "eligible": len(valid), "required": config.question_count, "shortfall": config.question_count - len(valid)}
-    mix = config.difficulty_mix
-    if mix:
-        if sum(mix.values()) != config.question_count:
-            return {"reason": "MIX_TOTAL", "required": config.question_count, "mix_total": sum(mix.values())}
-        for level, count in mix.items():
-            available = sum(1 for q in valid if q.difficulty == level)
-            if available < count:
-                return {"reason": "INSUFFICIENT_DIFFICULTY", "difficulty": level, "eligible": available, "required": count, "shortfall": count - available}
-    return None
+    report = pool_report(db, config.training_id, config.question_count, config.difficulty_mix)
+    return None if report["ready"] else report
 
 
 def _select_questions(db: Session, config: AssessmentConfig, keys: dict[uuid.UUID, list[str]], rng: random.Random) -> list[Question]:

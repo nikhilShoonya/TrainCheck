@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 os.environ["APP_ENV"] = "test"
 os.environ["SCHEDULER_ENABLED"] = "false"
+os.environ["RATE_LIMIT_ENABLED"] = "false"  # test_rate_limit.py switches it on for its own tests.
 
 from app.core import clock  # noqa: E402
 from app.core import db as database
@@ -203,8 +204,8 @@ def world(db: Session) -> World:
 class ApiClient:
     """Signs in through the real endpoint and sends the CSRF header, as the browser does."""
 
-    def __init__(self) -> None:
-        self.http = TestClient(app, raise_server_exceptions=True)
+    def __init__(self, address: str = "testclient", headers: dict[str, str] | None = None) -> None:
+        self.http = TestClient(app, raise_server_exceptions=True, client=(address, 50000), headers=headers)
         self.csrf = ""
 
     def login(self, email: str, password: str = PASSWORD):

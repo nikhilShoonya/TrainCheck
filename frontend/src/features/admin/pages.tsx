@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
-import { Badge, Btn, BtnLink, DataTable, Empty, Field, fieldErrors, FormError, Loaded, PageTitle, SelectField, TextField, useToast } from "@/components/ui";
+import { Badge, Btn, BtnLink, DataTable, Empty, ErrorPanel, Field, fieldErrors, FormError, Loaded, Loading, Metrics, PageTitle, SelectField, TextField, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { MonthlyTrend } from "@/features/dashboard/charts";
 import { ActionItem, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, ViewAll, Welcome } from "@/features/dashboard/widgets";
@@ -10,6 +11,7 @@ import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
+import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
 import type { ConfigView, Named, OrgUnit, Summary, TrainingAdmin, TrendPoint } from "@/lib/types";
 import { dateTime, day, firstName, percent } from "@/lib/utils";
 import Link from "next/link";
@@ -22,7 +24,7 @@ const SCHEDULE_LABEL: Record<string, string> = { SAME_DAY: "Same day", NEXT_WORK
 const names = (items?: Named[]) => (items ?? []).map((x) => ({ value: x.id, label: x.name }));
 
 /** A dialog form that keeps what was typed when the server rejects it. */
-function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide }: { title: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; submitLabel: string; children: ReactNode; wide?: boolean }) {
+function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide, submitBlockedReason }: { title: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; submitLabel: string; children: ReactNode; wide?: boolean; submitBlockedReason?: string | null }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -42,9 +44,14 @@ function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide }: {
       <form onSubmit={(e) => void submit(e)}>
         {children}
         <FormError message={error} />
+        {submitBlockedReason ? (
+          <p className="small" id="submit-blocked-reason">
+            {submitBlockedReason}
+          </p>
+        ) : null}
         <div className="dialog-actions">
           <Btn onClick={onClose}>Cancel</Btn>
-          <button className="btn primary" type="submit" disabled={busy}>
+          <button className="btn primary" type="submit" disabled={busy || Boolean(submitBlockedReason)} aria-describedby={submitBlockedReason ? "submit-blocked-reason" : undefined}>
             {busy ? "Saving…" : submitLabel}
           </button>
         </div>
@@ -314,7 +321,7 @@ function TrainingDetail({ id, onClose, onEdit }: { id: string; onClose: () => vo
               </div>
             </div>
             <p>Competencies: {t.competencies.map((c) => c.name).join(", ") || "None linked"}.</p>
-            {t.pool_problem ? <div className="notice danger">The assessment cannot run yet: {describeProblem(t.pool_problem)}</div> : <div className="notice">The question pool satisfies this assessment.</div>}
+            {t.pool_problem ? <div className="notice danger">The assessment cannot run yet. {describePool(t.pool_problem, t.title)}</div> : <div className="notice">The question pool satisfies this assessment ({t.eligible_questions} eligible questions).</div>}
             <h3>Materials and recordings</h3>
             {t.materials?.length ? (
               <ul>
@@ -354,13 +361,6 @@ function TrainingDetail({ id, onClose, onEdit }: { id: string; onClose: () => vo
       </Loaded>
     </Modal>
   );
-}
-
-function describeProblem(problem: Record<string, unknown>): string {
-  if (problem.reason === "NOT_CONFIGURED") return "no assessment is configured.";
-  if (problem.reason === "INSUFFICIENT_POOL") return `${problem.eligible} active questions are available and ${problem.required} are required.`;
-  if (problem.reason === "INSUFFICIENT_DIFFICULTY") return `${problem.eligible} active ${String(problem.difficulty).toLowerCase()} questions are available and ${problem.required} are required.`;
-  return "the difficulty counts do not total the questions per attempt.";
 }
 
 export function TrainingManagement() {
@@ -1085,7 +1085,7 @@ interface QuestionRow {
   options?: { id: string; text: string; is_correct: boolean }[];
 }
 
-function QuestionForm({ question, onClose, onSaved }: { question: QuestionRow | null; onClose: () => void; onSaved: () => void }) {
+function QuestionForm({ question, onClose, onSaved, defaultTrainingId }: { question: QuestionRow | null; onClose: () => void; onSaved: () => void; defaultTrainingId?: string }) {
   const c = useCatalogue();
   const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
   const toast = useToast();
@@ -1146,10 +1146,11 @@ function QuestionForm({ question, onClose, onSaved }: { question: QuestionRow | 
       </div>
       <fieldset>
         <legend>Used by these trainings</legend>
+        <p className="small">A question counts towards a training&apos;s assessment only when it is linked here, Active, has a correct answer and has at least two options.</p>
         <div className="checkbox-list">
           {(trainings.data ?? []).map((t) => (
             <label key={t.id}>
-              <input type="checkbox" name="training_ids" value={t.id} defaultChecked={question?.trainings.some((x) => x.id === t.id)} /> {t.title}
+              <input type="checkbox" name="training_ids" value={t.id} defaultChecked={question ? question.trainings.some((x) => x.id === t.id) : t.id === defaultTrainingId} /> {t.title}
             </label>
           ))}
         </div>
@@ -1163,7 +1164,16 @@ function QuestionForm({ question, onClose, onSaved }: { question: QuestionRow | 
 }
 
 export function QuestionBank() {
-  const [filters, setFilters] = useState<Record<string, string>>({});
+  return (
+    <Suspense fallback={<Loading />}>
+      <QuestionBankInner />
+    </Suspense>
+  );
+}
+
+function QuestionBankInner() {
+  const trainingFromLink = useSearchParams().get("training_id") ?? "";
+  const [filters, setFilters] = useState<Record<string, string>>(trainingFromLink ? { training_id: trainingFromLink } : {});
   const state = useApi<QuestionRow[]>(`/admin/questions${toQuery(filters)}`);
   const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
   const c = useCatalogue();
@@ -1193,7 +1203,7 @@ export function QuestionBank() {
           }}
         >
           <TextField label="Search questions" name="search" type="search" placeholder="Question, topic or ID" />
-          <SelectField label="Training" name="training_id" placeholder="All training" options={(trainings.data ?? []).map((t) => ({ value: t.id, label: t.title }))} />
+          <SelectField key={trainings.data ? "loaded" : "loading"} label="Training" name="training_id" placeholder="All training" options={(trainings.data ?? []).map((t) => ({ value: t.id, label: t.title }))} defaultValue={filters.training_id ?? ""} />
           <SelectField label="Competency" name="competency_id" placeholder="All competencies" options={names(c.competencies.data ?? [])} />
           <SelectField label="Department" name="department_id" placeholder="All departments" options={names(c.departments.data ?? [])} />
           <SelectField label="Function" name="function_id" placeholder="All functions" options={names(c.functions.data ?? [])} />
@@ -1252,7 +1262,7 @@ export function QuestionBank() {
           )}
         </Loaded>
       </section>
-      {form ? <QuestionForm question={form.question} onClose={() => setForm(null)} onSaved={() => void state.reload()} /> : null}
+      {form ? <QuestionForm question={form.question} defaultTrainingId={filters.training_id} onClose={() => setForm(null)} onSaved={() => void state.reload()} /> : null}
       {preview ? (
         <Modal title="Question Preview" onClose={() => setPreview(null)}>
           <span className="badge info">Admin Preview · Answer Key Visible</span>
@@ -1517,46 +1527,160 @@ export function ImportCentre() {
 
 /* ---------- Assessment configuration ---------- */
 
+/** Live question pool readiness inside the settings form. Counts come from the backend. */
+function PoolPanel({ training, report, count, mix, check, reload, onUseEligible }: { training: TrainingAdmin; report: PoolReport; count: number | null; mix: Record<Difficulty, number> | null; check: PlanCheck; reload: () => void; onUseEligible: () => void }) {
+  const exclusions = exclusionNotes(report);
+  const bankHref = `/lnd/questions?training_id=${training.id}`;
+  const actions = (
+    <div className="row wrap">
+      <a className="btn secondary" href={bankHref} target="_blank" rel="noopener noreferrer">
+        <Icon name="file" /> Open Question Bank
+      </a>
+      <a className="btn secondary tone-data" href="/lnd/imports" target="_blank" rel="noopener noreferrer">
+        <Icon name="upload" /> Import questions
+      </a>
+      {check.shortfall && report.eligible > 0 ? (
+        <Btn tone="attention" onClick={onUseEligible}>
+          Set questions per attempt to {report.eligible}
+        </Btn>
+      ) : null}
+      <Btn kind="text" onClick={reload}>
+        <Icon name="refresh" /> Refresh counts
+      </Btn>
+    </div>
+  );
+  return (
+    <section className="tc-pool" aria-labelledby="pool-title" aria-live="polite">
+      <h3 id="pool-title">Question pool</h3>
+      {report.eligible === 0 ? (
+        <div className="notice danger">
+          <div>
+            <strong>Configuration incomplete.</strong> {training.title} has no eligible active questions yet. Add questions in the Question Bank and link them to this training, or import them, then select Refresh counts.
+          </div>
+        </div>
+      ) : check.shortfall && count ? (
+        <div className="notice danger">
+          <div>{shortfallSentence(training.title, report.eligible, count)}</div>
+        </div>
+      ) : check.ready ? (
+        <div className="notice">
+          <div>
+            Ready. {training.title} has {report.eligible} eligible active questions; this assessment uses {count} per attempt.
+          </div>
+        </div>
+      ) : null}
+      <Metrics
+        items={[
+          ["Eligible questions", report.eligible, "Active, linked, with a correct answer and 2+ options"],
+          ["Required questions", count ?? "—", "Questions per attempt"],
+          ["Missing questions", check.shortfall, check.shortfall ? "Add these or reduce the count" : "None"],
+        ]}
+      />
+      {exclusions.length ? <p className="small">Linked to this training but not counted: {exclusions.join("; ")}.</p> : null}
+      {mix ? (
+        <>
+          <DataTable
+            all
+            headers={["Difficulty", "Available", "Required", "Status"]}
+            rows={DIFFICULTIES.map((d) => {
+              const gap = check.gaps.find((g) => g.difficulty === d);
+              return [
+                DIFFICULTY_LABEL[d],
+                report.eligible_by_difficulty[d],
+                mix[d] || 0,
+                <span key="s" className={`badge ${gap ? "danger" : "success"}`}>
+                  {gap ? `Short by ${gap.shortfall}` : "Enough"}
+                </span>,
+              ];
+            })}
+          />
+          {check.mixMismatch ? (
+            <p className="form-error" role="alert">
+              The difficulty counts total {check.mixTotal}, but questions per attempt is {count ?? "not set"}. Make them equal.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+      {actions}
+    </section>
+  );
+}
+
+const mixFor = (count: number): Record<Difficulty, string> => {
+  const easy = Math.round(count * 0.4);
+  const medium = Math.round(count * 0.4);
+  return { EASY: String(easy), MEDIUM: String(medium), HARD: String(Math.max(0, count - easy - medium)) };
+};
+
 function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAdmin; kind: "POST_TEST" | "PRE_TEST"; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
   const current: ConfigView | null | undefined = kind === "POST_TEST" ? training.config : training.pre_test_config;
+  const pool = useApi<PoolReport>(`/admin/trainings/${training.id}/question-pool`);
+  const reloadPool = pool.reload;
+  // Questions are often added in another tab (the Question Bank opens in one), so recount on return.
+  useEffect(() => {
+    const onFocus = () => void reloadPool();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [reloadPool]);
+
+  // An admin-configured count is kept as it is; a new form suggests min(10, eligible) from the backend.
+  const [countInput, setCountInput] = useState<string | null>(current ? String(current.question_count) : null);
+  const suggested = pool.data ? defaultQuestionsPerAttempt(null, pool.data.eligible) : null;
+  const countText = countInput ?? (suggested === null ? "" : String(suggested));
+  const count = countText === "" ? null : Number(countText);
   const [useMix, setUseMix] = useState(Boolean(current?.difficulty_mix));
+  const [mixInput, setMixInput] = useState<Record<Difficulty, string>>(() => (current?.difficulty_mix ? { EASY: String(current.difficulty_mix.EASY ?? 0), MEDIUM: String(current.difficulty_mix.MEDIUM ?? 0), HARD: String(current.difficulty_mix.HARD ?? 0) } : mixFor(current?.question_count ?? 10)));
+  const mix = useMix ? { EASY: Number(mixInput.EASY) || 0, MEDIUM: Number(mixInput.MEDIUM) || 0, HARD: Number(mixInput.HARD) || 0 } : null;
+  const check = pool.data ? checkPlan(pool.data, count, mix) : null;
   const [mode, setMode] = useState(current?.schedule_mode ?? "NEXT_WORKING_DAY");
   const post = kind === "POST_TEST";
+
+  const blocked = !pool.data ? null : pool.data.eligible === 0 ? "Add eligible questions to this training before saving." : !count ? "Enter the questions per attempt." : check && !check.ready ? "Fix the question pool problem shown above before saving." : null;
+
   return (
     <DialogForm
       title={`${post ? "Assessment" : "Pre-test"} settings · ${training.title}`}
       submitLabel="Save settings"
       wide
+      submitBlockedReason={blocked}
       onClose={onClose}
       onSubmit={async (form) => {
-        await api.post(`/admin/trainings/${training.id}/assessment-configs`, {
-          assessment_type: kind,
-          question_count: Number(form.get("question_count")),
-          duration_minutes: Number(form.get("duration_minutes")),
-          pass_mark_percent: Number(form.get("pass_mark_percent")),
-          max_attempts: post ? Number(form.get("max_attempts")) : 1,
-          schedule_mode: post ? form.get("schedule_mode") : "SAME_DAY",
-          schedule_delay_days: post ? Number(form.get("schedule_delay_days") ?? 0) : 0,
-          schedule_uses_working_days: form.has("schedule_uses_working_days"),
-          difficulty_mix: useMix ? { EASY: Number(form.get("easy")), MEDIUM: Number(form.get("medium")), HARD: Number(form.get("hard")) } : null,
-          show_explanations: form.has("show_explanations"),
-          shuffle_questions: form.has("shuffle_questions"),
-          shuffle_options: form.has("shuffle_options"),
-          violation_limit: post ? Number(form.get("violation_limit")) : 3,
-          require_fullscreen: post ? form.has("require_fullscreen") : false,
-        });
+        try {
+          await api.post(`/admin/trainings/${training.id}/assessment-configs`, {
+            assessment_type: kind,
+            question_count: count,
+            duration_minutes: Number(form.get("duration_minutes")),
+            pass_mark_percent: Number(form.get("pass_mark_percent")),
+            max_attempts: post ? Number(form.get("max_attempts")) : 1,
+            schedule_mode: post ? form.get("schedule_mode") : "SAME_DAY",
+            schedule_delay_days: post ? Number(form.get("schedule_delay_days") ?? 0) : 0,
+            schedule_uses_working_days: form.has("schedule_uses_working_days"),
+            difficulty_mix: mix,
+            show_explanations: form.has("show_explanations"),
+            shuffle_questions: form.has("shuffle_questions"),
+            shuffle_options: form.has("shuffle_options"),
+            violation_limit: post ? Number(form.get("violation_limit")) : 3,
+            require_fullscreen: post ? form.has("require_fullscreen") : false,
+          });
+        } catch (e) {
+          // The server is the authority. Its counts may be newer than ours, so refresh them; the form keeps every value.
+          if (e instanceof ApiError && e.code === "QUESTION_POOL_INSUFFICIENT") void reloadPool();
+          throw e;
+        }
         toast("Settings saved for new attempts. Existing attempts keep their original settings.");
         onSaved();
       }}
     >
       <p>Changes create a new version and apply to new attempts. Submitted results never change.</p>
+      {pool.error ? <ErrorPanel error={pool.error} retry={reloadPool} /> : pool.data && check ? <PoolPanel training={training} report={pool.data} count={count} mix={mix} check={check} reload={reloadPool} onUseEligible={() => setCountInput(String(pool.data!.eligible))} /> : <Loading label="Counting eligible questions…" />}
       <div className="form-grid">
-        <TextField label="Questions per attempt *" name="question_count" type="number" required min={1} max={200} defaultValue={current?.question_count ?? 10} />
+        <TextField label="Questions per attempt *" name="question_count" type="number" required min={1} max={200} value={countText} onChange={(e) => setCountInput(e.target.value)} />
         <TextField label="Time limit (minutes) *" name="duration_minutes" type="number" required min={1} max={240} defaultValue={current?.duration_minutes ?? 15} />
         <TextField label="Pass mark (%) *" name="pass_mark_percent" type="number" required min={0} max={100} step="0.01" defaultValue={current?.pass_mark_percent ?? 70} />
         {post ? <TextField label="Maximum attempts *" name="max_attempts" type="number" required min={1} max={10} defaultValue={current?.max_attempts ?? 3} /> : null}
       </div>
+      {current && pool.data && current.question_count > pool.data.eligible ? <p className="small">Your saved value of {current.question_count} is kept as entered. It is not reduced automatically.</p> : null}
       {post ? (
         <>
           <h3>Scheduling after completion</h3>
@@ -1573,15 +1697,25 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
       ) : null}
       <h3>Difficulty mix</h3>
       <label className="checkline">
-        <input type="checkbox" checked={useMix} onChange={(e) => setUseMix(e.target.checked)} /> Use exact counts by difficulty
+        <input
+          type="checkbox"
+          checked={useMix}
+          onChange={(e) => {
+            setUseMix(e.target.checked);
+            if (e.target.checked && !current?.difficulty_mix && count) setMixInput(mixFor(count));
+          }}
+        />{" "}
+        Use exact counts by difficulty
       </label>
       {useMix ? (
         <div className="form-grid">
-          <TextField label="Easy" name="easy" type="number" min={0} defaultValue={current?.difficulty_mix?.EASY ?? 4} />
-          <TextField label="Medium" name="medium" type="number" min={0} defaultValue={current?.difficulty_mix?.MEDIUM ?? 4} />
-          <TextField label="Hard" name="hard" type="number" min={0} defaultValue={current?.difficulty_mix?.HARD ?? 2} />
+          {DIFFICULTIES.map((d) => (
+            <TextField key={d} label={`${DIFFICULTY_LABEL[d]} (${pool.data?.eligible_by_difficulty[d] ?? "…"} available)`} name={d.toLowerCase()} type="number" min={0} value={mixInput[d]} onChange={(e) => setMixInput((m) => ({ ...m, [d]: e.target.value }))} />
+          ))}
         </div>
-      ) : null}
+      ) : (
+        <p className="small">Off: questions are drawn from the whole eligible pool regardless of difficulty.</p>
+      )}
       <h3>Delivery</h3>
       <label className="checkline">
         <input type="checkbox" name="shuffle_questions" defaultChecked={current?.shuffle_questions ?? true} /> Randomise question order
@@ -1610,6 +1744,12 @@ export function AssessmentConfig() {
   const list = useApi<TrainingAdmin[]>("/admin/trainings");
   const [editing, setEditing] = useState<{ id: string; kind: "POST_TEST" | "PRE_TEST" } | null>(null);
   const detail = useApi<TrainingAdmin>(editing ? `/admin/trainings/${editing.id}` : null);
+  const reloadList = list.reload;
+  useEffect(() => {
+    const onFocus = () => void reloadList();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [reloadList]);
   return (
     <>
       <PageTitle eyebrow={EYEBROW} title="Assessment Configuration" description="Control the learning check without changing historical attempts." />
@@ -1617,10 +1757,14 @@ export function AssessmentConfig() {
         <Loaded state={list}>
           {(rows) => (
             <DataTable
-              headers={["Training", "Pass Mark", "Questions", "Duration", "Attempts", "Schedule", "Actions"]}
+              headers={["Training", "Eligible Questions", "Readiness", "Pass Mark", "Questions", "Duration", "Attempts", "Schedule", "Actions"]}
               emptyTitle="No trainings yet."
               rows={rows.map((t) => [
                 t.title,
+                t.eligible_questions,
+                <span key="r" className={`badge ${t.config_ready ? "success" : t.config ? "danger" : "info"}`}>
+                  {t.config_ready ? "Ready" : t.config ? "Needs questions" : "Not configured"}
+                </span>,
                 t.config ? `${t.config.pass_mark_percent}%` : "Not configured",
                 t.config?.question_count ?? "—",
                 t.config ? `${t.config.duration_minutes} min` : "—",

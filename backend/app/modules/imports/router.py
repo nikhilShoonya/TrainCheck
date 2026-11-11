@@ -15,6 +15,7 @@ from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin
 from app.core.enums import ImportStatus, ImportType
 from app.core.errors import conflict, not_found
+from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.models import ImportJob
 from app.modules.imports import parsing, service
@@ -64,7 +65,7 @@ def template(import_type: ImportType, format: str = "csv", _: CurrentUser = Depe
     return Response("﻿" + buffer.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
 
 
-@router.post("")
+@router.post("", dependencies=[expensive("import")])
 async def upload(import_type: ImportType = Form(...), file: UploadFile = File(...), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Validates and previews. Nothing is applied until the commit call."""
     limit = get_settings().max_upload_bytes
@@ -89,7 +90,7 @@ def get_job(job_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Sess
     return ok(job_view(_job(db, job_id)))
 
 
-@router.post("/{job_id}/commit")
+@router.post("/{job_id}/commit", dependencies=[expensive("import")])
 def commit(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     job = _job(db, job_id)
     service.commit_job(db, job, user.id)

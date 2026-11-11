@@ -35,6 +35,11 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .import-steps .done{color:var(--primary)}
 .import-hint{margin:0 0 20px}
 
+/* Question pool panel in Assessment Configuration */
+.tc-pool{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0 20px}
+.tc-pool h3{margin-bottom:10px}
+.tc-pool .row{margin-top:12px}
+
 /* Recharts tooltip */
 .tc-chart-tooltip{display:grid;gap:3px;background:#fff;border:1px solid #dce3e8;border-radius:7px;padding:8px 10px;font-size:13px;color:#0b152c;box-shadow:0 6px 20px #17263c1f}
 .tc-chart-tooltip i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}

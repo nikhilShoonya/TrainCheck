@@ -52,7 +52,10 @@ class CurrentUser:
 
 
 def client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
+    """The verified client address, resolved through TRUSTED_PROXIES (never a raw forwarded header)."""
+    from app.core.ratelimit import client_ip_for
+
+    return client_ip_for(request)
 
 
 def require_session(request: Request, db: Session = Depends(get_db)) -> CurrentUser:
