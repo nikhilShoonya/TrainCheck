@@ -4,9 +4,7 @@ from enum import StrEnum
 
 class RoleCode(StrEnum):
     EMPLOYEE = "EMPLOYEE"
-    MANAGER = "MANAGER"
     LD_ADMIN = "LD_ADMIN"
-    HR_READ_ONLY = "HR_READ_ONLY"
 
 
 class EmploymentStatus(StrEnum):
@@ -81,6 +79,7 @@ class ScheduleMode(StrEnum):
     SAME_DAY = "SAME_DAY"
     NEXT_WORKING_DAY = "NEXT_WORKING_DAY"
     DELAY_DAYS = "DELAY_DAYS"
+    FIXED_DATE = "FIXED_DATE"  # On a chosen calendar date; at once if completion is recorded on or after it.
 
 
 class ObligationStatus(StrEnum):

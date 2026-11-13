@@ -121,7 +121,7 @@ export function EvidenceHelp() {
       {open ? (
         <Modal title="Two distinct kinds of evidence" onClose={() => setOpen(false)}>
           <p>
-            <strong>L2 Learning</strong> records demonstrated knowledge. <strong>L3 Behaviour</strong> records how the learning is applied at work, through self-assessment and manager observation.
+            <strong>L2 Learning</strong> records demonstrated knowledge. <strong>L3 Behaviour</strong> records how the learning is applied at work, through self-assessment.
           </p>
           <p>A quiz pass does not prove behaviour change. Missing evidence is shown as Not collected, never as zero.</p>
         </Modal>

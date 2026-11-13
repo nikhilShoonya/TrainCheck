@@ -8,8 +8,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.clock import utcnow
-from app.core.deps import CurrentUser, team_employee_ids
+from app.core.deps import CurrentUser
 from app.core.enums import AssessmentType, AttemptStatus, EnrolmentStatus, ObligationStatus, ResultStatus, ReviewerType, RoleCode
 from app.core.errors import forbidden
 from app.core.responses import display_percent
@@ -21,7 +20,6 @@ from app.models import (
     BehaviourReviewResponse,
     Employee,
     Enrolment,
-    ManagerAssignment,
     Training,
 )
 
@@ -32,7 +30,6 @@ class ReportFilters:
     date_to: date | None = None
     department_id: uuid.UUID | None = None
     location_id: uuid.UUID | None = None
-    manager_id: uuid.UUID | None = None
     training_id: uuid.UUID | None = None
     trainer_id: uuid.UUID | None = None
     batch_id: uuid.UUID | None = None
@@ -57,10 +54,8 @@ class ReportFilters:
 
 def employee_scope(db: Session, user: CurrentUser) -> list[uuid.UUID] | None:
     """None means organisation-wide. Filters can narrow this but never widen it."""
-    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
+    if user.has_role(RoleCode.LD_ADMIN):
         return None
-    if user.has_role(RoleCode.MANAGER):
-        return team_employee_ids(db, user.employee_id)
     raise forbidden()
 
 
@@ -129,8 +124,6 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
         query = query.where(Training.trainer_id == filters.trainer_id)
     if filters.batch_id:
         query = query.where(Enrolment.batch_id == filters.batch_id)
-    if filters.manager_id:
-        query = query.where(Enrolment.employee_id.in_(team_employee_ids(db, filters.manager_id)))
 
     rows: list[Row] = []
     for enrolment in db.scalars(query):
@@ -149,22 +142,6 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
         )
         rows.append(Row(enrolment, post_attempts, pre, post_obligations[-1] if post_obligations else None))
     return rows
-
-
-def manager_names(db: Session, employee_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
-    if not employee_ids:
-        return {}
-    today = utcnow().date()
-    result = db.execute(
-        select(ManagerAssignment.employee_id, Employee.full_name)
-        .join(Employee, Employee.id == ManagerAssignment.manager_employee_id)
-        .where(
-            ManagerAssignment.employee_id.in_(employee_ids),
-            ManagerAssignment.effective_from <= today,
-            (ManagerAssignment.effective_to.is_(None)) | (ManagerAssignment.effective_to >= today),
-        )
-    )
-    return {employee_id: name for employee_id, name in result}
 
 
 def assessment_timing(row: Row, now: datetime) -> str:

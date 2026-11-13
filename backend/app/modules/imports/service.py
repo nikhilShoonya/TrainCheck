@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
-from app.core.enums import AttendanceStatus, ImportStatus, ImportType, QuestionStatus
-from app.core.errors import ApiError
+from app.core.enums import AttendanceStatus, ImportStatus, ImportType, QuestionStatus, TrainingStatus
+from app.core.errors import ApiError, conflict, validation
 from app.models import Competency, Department, Employee, Enrolment, Function, ImportJob, ImportJobRow, Question, QuestionRevision, Training, TrainingCompletion
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.imports.parsing import clip, has_formula
@@ -26,11 +26,13 @@ COMPLETION_OPTIONAL_HEADERS = ["attendance", "source_event_id"]
 IMPORT_ATTENDANCE = {a.value for a in AttendanceStatus} - {AttendanceStatus.PENDING.value}
 TYPE_MAP = {"single": "MCQ_SINGLE", "multiple": "MCQ_MULTIPLE", "boolean": "TRUE_FALSE", "scenario": "SCENARIO"}
 DIFFICULTY_MAP = {"Easy": "EASY", "Medium": "MEDIUM", "Hard": "HARD"}
+# Questions can be prepared before activation, so Draft trainings are accepted; Archived ones are not.
+IMPORTABLE_TRAINING_STATUSES = (TrainingStatus.DRAFT, TrainingStatus.ACTIVE)
 
 TEMPLATES = {
     ImportType.QUESTIONS: [
         QUESTION_HEADERS + QUESTION_OPTIONAL_HEADERS,
-        ["SAMPLE-Q01", "T001", "Identity checks", "Applies the documented process", "single", "A customer uploads an expired address proof. What should you do?", "Approve it because the name matches", "Request a valid document through the approved process", "Ask a colleague to approve it", "Close the application without notice", "", "B", "Expired documents cannot complete verification.", "Easy", "1", "L2", "English", "Active", "", ""],
+        ["SAMPLE-Q01", "", "Identity checks", "Applies the documented process", "single", "A customer uploads an expired address proof. What should you do?", "Approve it because the name matches", "Request a valid document through the approved process", "Ask a colleague to approve it", "Close the application without notice", "", "B", "Expired documents cannot complete verification.", "Easy", "1", "L2", "English", "Active", "", ""],
     ],
     ImportType.COMPLETIONS: [
         COMPLETION_HEADERS + COMPLETION_OPTIONAL_HEADERS,
@@ -57,8 +59,34 @@ def _error(field: str, message: str) -> dict[str, str]:
 
 # ---------- Validation ----------
 
+def selected_training(db: Session, raw_id: str | None) -> Training | None:
+    """The training chosen for a question import. None means a file-based import (each row names its training)."""
+    if raw_id is None or not raw_id.strip():
+        return None
+    try:
+        training = db.get(Training, uuid.UUID(raw_id.strip()))
+    except ValueError:
+        training = None
+    if training is None:
+        raise validation("The selected training does not exist. Choose a training from the list.")
+    problem = training_import_problem(training)
+    if problem:
+        raise problem
+    return training
+
+
+def training_import_problem(training: Training) -> ApiError | None:
+    if training.status not in IMPORTABLE_TRAINING_STATUSES:
+        return conflict("TRAINING_NOT_IMPORTABLE", f"{training.title} ({training.training_code}) is {training.status.lower()}. Questions can be imported only into a draft or active training.")
+    return None
+
+
 def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: dict | None = None) -> tuple[list[dict[str, str]], str, dict | None]:
-    errors = [_error(k, "Required.") for k in ("id", "training", "topic", "competency", "type", "question", "option_a", "option_b", "correct", "difficulty", "marks", "level", "language", "active") if not v.get(k)]
+    selected: Training | None = (context or {}).get("training")
+    required = ("id", "topic", "competency", "type", "question", "option_a", "option_b", "correct", "difficulty", "marks", "level", "language", "active")
+    if selected is None:
+        required = ("id", "training", *required[1:])  # File-based imports name the training on every row.
+    errors = [_error(k, "Required.") for k in required if not v.get(k)]
     errors += [_error(k, "Use plain values, not formulas.") for k, value in v.items() if has_formula(value)]
     status = "INVALID" if errors else "VALID"
 
@@ -66,9 +94,15 @@ def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: 
     duplicate = code in seen or bool(code and db.scalar(select(Question.id).where(func.upper(Question.question_code) == code)))
     seen.add(code)
 
-    training_id = db.scalar(select(Training.id).where(func.upper(Training.training_code) == v.get("training", "").upper()))
-    if v.get("training") and training_id is None:
-        errors.append(_error("training", "Use an existing training code."))
+    if selected is not None:
+        # A blank training cell uses the selection. A code must match it: a mismatch is never overridden.
+        training_id = selected.id
+        if v.get("training") and v["training"].upper() != selected.training_code.upper():
+            errors.append(_error("training", f"This row is for training {v['training']}, but the selected training is {selected.training_code}. Leave the cell blank, correct the code, or select the matching training."))
+    else:
+        training_id = db.scalar(select(Training.id).where(func.upper(Training.training_code) == v.get("training", "").upper()))
+        if v.get("training") and training_id is None:
+            errors.append(_error("training", "Use an existing training code."))
 
     question_type = TYPE_MAP.get(v.get("type", "").lower())
     if v.get("type") and question_type is None:
@@ -209,19 +243,52 @@ def _validate_completion(v: dict[str, str], seen: set[str], db: Session, context
     return notes, "VALID", {"employee_id": str(employee.id), "training_id": str(training.id), "completion_date": completed.isoformat(), "source_event_id": event, "attendance": attendance}
 
 
-def create_job(db: Session, import_type: ImportType, file_name: str, rows: list[list[str]], user_id: uuid.UUID) -> ImportJob:
-    if import_type == ImportType.QUESTIONS:
-        headers = _header_map(rows, QUESTION_HEADERS)
-        validate, label = _validate_question, "id"
-    else:
-        headers = _header_map(rows, COMPLETION_HEADERS)
-        validate, label = _validate_completion, "employee"
-
-    job = ImportJob(import_type=import_type, uploaded_by=user_id, file_name=file_name[:255], status=ImportStatus.READY, total_rows=len(rows) - 1, created_at=utcnow())
+def create_job(db: Session, import_type: ImportType, file_name: str, rows: list[list[str]], user_id: uuid.UUID, training: Training | None = None) -> ImportJob:
+    validate, label, headers = _row_rules(import_type, rows, training)
+    job = ImportJob(import_type=import_type, uploaded_by=user_id, file_name=file_name[:255], status=ImportStatus.READY, total_rows=len(rows) - 1, created_at=utcnow(), training_id=training.id if training else None)
     db.add(job)
     db.flush()
+    _validate_rows(db, job, rows, training, validate, label, headers)
+    return job
+
+
+# Imports that never applied anything. Only these can be edited or deleted; a completed import is the record of what was added.
+UNAPPLIED_STATUSES = (ImportStatus.READY, ImportStatus.CANCELLED, ImportStatus.FAILED)
+
+
+def replace_job(db: Session, job: ImportJob, file_name: str, rows: list[list[str]], user_id: uuid.UUID, training: Training | None = None) -> ImportJob:
+    """Edits an unapplied import: validates a corrected file, optionally for another training, into the same entry."""
+    if job.status not in UNAPPLIED_STATUSES:
+        raise ApiError(409, "IMPORT_ALREADY_PROCESSED", "This import has already been imported and can no longer be edited.")
+    validate, label, headers = _row_rules(ImportType(job.import_type), rows, training)
+    job.rows.clear()
+    db.flush()
+    job.file_name = file_name[:255]
+    job.training_id = training.id if training else None
+    job.training = training
+    job.uploaded_by = user_id
+    job.status = ImportStatus.READY
+    job.total_rows = len(rows) - 1
+    job.created_at = utcnow()
+    job.completed_at = None
+    _validate_rows(db, job, rows, training, validate, label, headers)
+    return job
+
+
+def _row_rules(import_type: ImportType, rows: list[list[str]], training: Training | None):
+    if training is not None and import_type != ImportType.QUESTIONS:
+        raise validation("A training is selected only for question bank imports. Completion files name the training on each row.")
+    if import_type == ImportType.QUESTIONS:
+        # With a selected training, the file's training column is optional.
+        headers = _header_map(rows, [h for h in QUESTION_HEADERS if not (training is not None and h == "training")])
+        return _validate_question, "id", headers
+    return _validate_completion, "employee", _header_map(rows, COMPLETION_HEADERS)
+
+
+def _validate_rows(db: Session, job: ImportJob, rows: list[list[str]], training: Training | None, validate, label: str, headers: dict[str, int]) -> None:
+    import_type = job.import_type
     seen: set[str] = set()
-    context: dict = {"events": set(), "readiness": {}}
+    context: dict = {"events": set(), "readiness": {}, "training": training}
     accepted = rejected = 0
     for number, row in enumerate(rows[1:], start=2):
         cells = _cells(row, headers)
@@ -229,12 +296,11 @@ def create_job(db: Session, import_type: ImportType, file_name: str, rows: list[
         accepted += status == "VALID"
         rejected += status != "VALID"
         record = cells.get(label, "") or f"Row {number}"
-        if import_type == ImportType.COMPLETIONS and cells.get("training"):
-            record = f"{record} · {cells['training']}"
+        if (import_type == ImportType.COMPLETIONS or training is None) and cells.get("training"):
+            record = f"{record} · {cells['training']}"  # Each row names its own training.
         db.add(ImportJobRow(import_job_id=job.id, row_number=number, row_status=status, record_label=record[:200], errors=errors, payload=payload))
     job.accepted_rows, job.rejected_rows = accepted, rejected
     db.flush()
-    return job
 
 
 # ---------- Commit ----------
@@ -248,7 +314,7 @@ def _competency(db: Session, name: str) -> Competency:
     return competency
 
 
-def _commit_question(db: Session, payload: dict, user_id: uuid.UUID) -> None:
+def _commit_question(db: Session, payload: dict, user_id: uuid.UUID, training: Training) -> None:
     question = Question(
         question_code=payload["question_code"],
         topic=payload["topic"],
@@ -264,7 +330,7 @@ def _commit_question(db: Session, payload: dict, user_id: uuid.UUID) -> None:
         status=payload["status"],
         created_by=user_id,
     )
-    question.trainings = [db.get(Training, uuid.UUID(payload["training_id"]))]
+    question.trainings = [training]
     db.add(question)
     db.flush()
     set_content(db, question, payload["options"], payload["correct"])
@@ -295,10 +361,26 @@ def _commit_completion(db: Session, payload: dict, user_id: uuid.UUID, job_id: u
     return notes
 
 
+def _row_training(db: Session, job: ImportJob, payload: dict) -> Training:
+    """The training a validated question row links to: the job's selection, or the row's own code."""
+    training_id = uuid.UUID(payload["training_id"])
+    if job.training_id is not None and training_id != job.training_id:
+        raise ApiError(422, "TRAINING_MISMATCH", "This row was validated for a different training. Validate the file again.")
+    training = db.get(Training, training_id)
+    if training is None:
+        raise ApiError(422, "TRAINING_NOT_FOUND", "The training for this row no longer exists. Validate the file again.")
+    return training
+
+
 def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
     """Re-validates every row at commit time. Invalid and duplicate rows are never applied."""
     if job.status != ImportStatus.READY:
         raise ApiError(409, "IMPORT_ALREADY_PROCESSED", "This import has already been processed.")
+    if job.training_id is not None:
+        # The saved selection decides the link. Its conditions are checked again, as they may have changed.
+        problem = training_import_problem(job.training)
+        if problem:
+            raise ApiError(409, problem.code, f"{problem.message} Cancel this preview and validate the file again.")
     imported = 0
     seen_codes: set[str] = set()
     for row in job.rows:
@@ -312,7 +394,7 @@ def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
                 if code in seen_codes or db.scalar(select(Question.id).where(Question.question_code == code)):
                     raise ApiError(409, "DUPLICATE", "This question ID now exists. The row was skipped.")
                 seen_codes.add(code)
-                _commit_question(db, row.payload, user_id)
+                _commit_question(db, row.payload, user_id, _row_training(db, job, row.payload))
             else:
                 notes = _commit_completion(db, row.payload, user_id, job.id)
             savepoint.commit()

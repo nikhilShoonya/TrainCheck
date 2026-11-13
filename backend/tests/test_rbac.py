@@ -1,5 +1,4 @@
 """Role and data boundaries. TC-RBAC-*, SEC-001, -002, -003, -009, -011, -014."""
-from datetime import timedelta
 
 from fastapi.routing import APIRoute
 from sqlalchemy import func, select
@@ -7,10 +6,10 @@ from sqlalchemy import func, select
 from app.core import clock
 from app.core.deps import require_admin
 from app.main import app
-from app.models import AuditLog, ManagerAssignment, TrainingBatch
+from app.models import AuditLog, TrainingBatch
 from tests.conftest import NOW, start, take
 
-ADMIN_READ_FOR_HR = [
+ADMIN_READ = [
     "/admin/trainings",
     "/admin/departments",
     "/admin/functions",
@@ -44,42 +43,22 @@ def test_other_person_cannot_change_a_running_attempt(world, client_for):
     assert other.post(f"/attempts/{attempt['attempt_id']}/security-events", json={"event_type": "TAB_HIDDEN"}).status_code == 404
 
 
-def test_manager_sees_only_own_team(world, client_for, db):  # TC-RBAC-003
-    training = world.training()
-    world.complete(world.employee, training)
-    world.complete(world.outsider, training)
-    rows = client_for(world.manager).get("/manager/team-assessments").json()["data"]
-    assert {r["employee_code"] for r in rows} == {"E1"}
-    people = client_for(world.manager).get("/manager/team-employees").json()["data"]
-    assert {p["employee_code"] for p in people} == {"E1", "E2"}
+def test_manager_and_hr_roles_are_gone(world, client_for):
+    """The Manager and HR / Leadership roles were removed: their routes no longer exist, and the people who
+    held them are ordinary employees with no organisation-wide or team read access."""
+    from app.core.enums import RoleCode
 
-
-def test_manager_cannot_open_another_team_member(world, client_for):  # TC-RBAC-004, SEC-002
-    client = client_for(world.manager)
-    assert client.get(f"/manager/team/{world.employee.id}").status_code == 200
-    assert client.get(f"/manager/team/{world.outsider.id}").status_code == 404
-
-
-def test_manager_filters_cannot_widen_scope(world, client_for):  # SEC-014
-    training = world.training()
-    world.complete(world.employee, training)
-    world.complete(world.outsider, training)
-    client = client_for(world.manager)
-    url = f"/reports/analytics?manager_id={world.other_manager.id}"
-    assert client.get(url).json()["data"]["summary"]["employees"] == 0
-    url = f"/reports/analytics?department_id={world.departments['CX'].id}"
-    assert client.get(url).json()["data"]["summary"]["employees"] == 0
-
-
-def test_reassignment_ends_former_manager_access(world, client_for, db):  # TC-RBAC-009
-    client = client_for(world.manager)
-    assert client.get(f"/manager/team/{world.employee.id}").status_code == 200
-    assignment = db.scalar(select(ManagerAssignment).where(ManagerAssignment.employee_id == world.employee.id))
-    assignment.effective_to = (NOW - timedelta(days=1)).date()
-    db.add(ManagerAssignment(employee_id=world.employee.id, manager_employee_id=world.other_manager.id, effective_from=NOW.date()))
-    db.commit()
-    assert client.get(f"/manager/team/{world.employee.id}").status_code == 404
-    assert client_for(world.other_manager).get(f"/manager/team/{world.employee.id}").status_code == 200
+    assert {r.value for r in RoleCode} == {"EMPLOYEE", "LD_ADMIN"}
+    world.complete(world.employee, world.training())
+    for person in (world.manager, world.hr):
+        client = client_for(person)
+        for path in ("/manager/dashboard", "/manager/team-employees", f"/manager/team/{world.employee.id}", "/manager/behaviour-reviews", "/reports/manager-evaluation"):
+            assert client.get(path).status_code == 404, path
+        for path in ADMIN_READ:
+            assert client.get(path).status_code == 403, path
+        for path in ("/reports/filter-options", "/reports/organisation-summary", "/scorecards", "/reports/analytics"):
+            assert client.get(path).status_code == 403, path
+        assert client.get("/me/trainings").status_code == 200  # Still an employee.
 
 
 def test_admin_can_manage_training(world, client_for, db):  # TC-RBAC-005
@@ -91,10 +70,10 @@ def test_admin_can_manage_training(world, client_for, db):  # TC-RBAC-005
     assert db.scalar(select(AuditLog).where(AuditLog.action == "TRAINING_CREATED")) is not None
 
 
-def test_employee_cannot_use_admin_or_manager_routes(world, client_for):  # TC-RBAC-006
+def test_employee_cannot_use_admin_routes(world, client_for):  # TC-RBAC-006
     client = client_for(world.employee)
     assert client.post("/admin/trainings", json={"title": "Nope"}).status_code == 403
-    for path in ("/admin/questions", "/admin/trainings", "/admin/audit-logs", "/manager/dashboard", "/reports/filter-options", "/scorecards"):
+    for path in ("/admin/questions", "/admin/trainings", "/admin/audit-logs", "/reports/filter-options", "/scorecards"):
         assert client.get(path).status_code == 403, path
 
 
@@ -103,30 +82,8 @@ def test_mass_assignment_is_rejected(world, client_for):  # Security §8
     assert response.status_code == 400
 
 
-def test_hr_is_read_only(world, client_for):  # TC-RBAC-007, SEC-003, SEC-011
-    training = world.training()
-    client = client_for(world.hr)
-    for path in ADMIN_READ_FOR_HR:
-        assert client.get(path).status_code == 200, path
-    attempts = [
-        client.post("/admin/trainings", json={"title": "Nope"}),
-        client.patch(f"/admin/trainings/{training.id}", json={"title": "Nope"}),
-        client.post(f"/admin/trainings/{training.id}/status", json={"status": "ARCHIVED"}),
-        client.post(f"/admin/trainings/{training.id}/assessment-configs", json={"question_count": 10, "duration_minutes": 10, "pass_mark_percent": 1}),
-        client.post("/admin/questions", json={}),
-        client.post("/admin/departments", json={"code": "X", "name": "X"}),
-        client.post("/admin/enrolments", json={"training_id": str(training.id), "employee_ids": []}),
-    ]
-    for response in attempts:
-        assert response.status_code in (400, 403)
-        assert response.status_code == 403 or response.json()["error"]["code"] == "VALIDATION_ERROR"
-    # Body validation can run before the role check, so confirm the role check independently.
-    assert client.post("/admin/trainings", json={"title": "Valid title"}).status_code == 403
-    assert client.post("/admin/departments", json={"code": "XX", "name": "Valid"}).status_code == 403
-
-
 def test_every_mutating_admin_route_is_ld_only():
-    """HR/Leadership cannot write by accident: every non-GET /admin route requires the L&D role."""
+    """Every non-GET /admin route requires the L&D role."""
     from tests.test_gate import dependency_calls
 
     missing = []
@@ -147,7 +104,7 @@ def test_batches_sessions_and_audit_logs_are_withdrawn_from_ld_admin(world, clie
         assert client.post("/admin/batches", json={"training_id": str(training.id), "name": "New batch"}).status_code == 403
         assert client.post(f"/admin/batches/{batch_id}/sessions", json={"title": "Day 1", "session_date": "2026-11-10"}).status_code == 403
         assert client.get("/admin/audit-logs").status_code == 403
-    assert client_for(world.hr).get("/admin/batches").status_code == 200  # HR read scope unchanged.
+    assert client_for(world.admin).get("/admin/batches").status_code == 200  # Batches stay readable for assignments.
     assert db.scalar(select(func.count()).select_from(TrainingBatch)) >= 1  # Nothing deleted.
 
     admin = client_for(world.admin)

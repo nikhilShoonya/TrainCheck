@@ -111,32 +111,26 @@ test("leaving full screen is a violation, and offline is not", async ({ page, co
   await expect(page.getByRole("heading", { name: /Good Morning, Aarav/ })).toBeVisible();
 });
 
-test("manager sees only the team and the API refuses another team", async ({ page }) => {
-  await signIn(page, ACCOUNTS.manager);
-  await expect(page).toHaveURL(/\/manager$/);
-  await page.goto("/manager/team");
-  await expect(page.getByRole("cell", { name: "E001" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "E006" })).toHaveCount(0);
+for (const account of ["manager", "hr"] as const) {
+  test(`the former ${account} account is an ordinary employee: no Manager or HR workspace`, async ({ page }) => {
+    // The Manager and HR / Leadership roles were removed. These people keep their Employee sign-in.
+    await signIn(page, ACCOUNTS[account]);
+    await expect(page).toHaveURL(/\/(employee|access)/);
+    await expect(page.locator(".sidebar")).not.toContainText("My Team");
+    await expect(page.locator(".sidebar")).not.toContainText("Organisation Overview");
+    const statuses = await page.evaluate(async () => {
+      const csrf = document.cookie.match(/tc_csrf=([^;]*)/)?.[1] ?? "";
+      const write = await fetch("/api/v1/admin/departments", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": decodeURIComponent(csrf) }, body: JSON.stringify({ code: "NOPE", name: "Nope" }) });
+      return [(await fetch("/api/v1/manager/dashboard")).status, (await fetch("/api/v1/reports/organisation-summary")).status, write.status];
+    });
+    expect(statuses).toEqual([404, 403, 403]);
+  });
+}
 
-  await page.goto("/manager/reviews");
-  await expect(page.getByRole("heading", { name: "Pending Behaviour Reviews" })).toBeVisible();
-
-  const denied = await page.evaluate(async () => (await fetch("/api/v1/admin/trainings")).status);
-  expect(denied).toBe(403);
-
-  await page.goto("/lnd");
-  await expect(page.getByRole("heading", { name: "You do not have access to this page" })).toBeVisible();
-});
-
-test("Level 3 behaviour tasks are switched off: no navigation and no open observation tasks", async ({ page }) => {
+test("Level 3 behaviour tasks are switched off: no behaviour navigation", async ({ page }) => {
   // Phase 1: Behaviour is outside the approved scope (BEHAVIOUR_ENABLED=false). History stays readable by URL.
-  await signIn(page, ACCOUNTS.manager);
-  await expect(page.locator(".sidebar")).not.toContainText("Pending Behaviour Reviews");
+  await signIn(page, ACCOUNTS.admin);
   await expect(page.locator(".sidebar")).not.toContainText("Behaviour Questionnaires");
-  await page.goto("/manager/reviews");
-  await expect(page.getByRole("link", { name: "Complete review" })).toHaveCount(0);
-  const tasks = await page.evaluate(async () => (await (await fetch("/api/v1/manager/behaviour-reviews")).json()).data as { submitted_at: string | null }[]);
-  expect(tasks.every((t) => t.submitted_at)).toBe(true);
 });
 
 test("L&D manages training, imports questions and sees the two-section scorecard", async ({ page }) => {
@@ -153,6 +147,10 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await expect(form).toHaveCount(0);
 
   await page.goto("/lnd/imports");
+  const trainingSelect = page.getByLabel("Select training *");
+  const draftLabel = `E2E Training ${code} (${code}) · Draft`;
+  await expect(trainingSelect.locator("option", { hasText: draftLabel })).toHaveCount(1); // Draft trainings are offered.
+  await trainingSelect.selectOption({ label: draftLabel });
   await page.locator('input[type="file"]').setInputFiles({
     name: "bad.csv",
     mimeType: "text/csv",
@@ -160,6 +158,29 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   });
   await page.getByRole("button", { name: "Validate file" }).click();
   await expect(page.getByRole("alert").first()).toContainText("Missing columns");
+
+  // A file without a training column is linked to the selected (draft) training.
+  const header = "id,topic,competency,type,question,option_a,option_b,option_c,option_d,options_extra,correct,explanation,difficulty,marks,level,language,active";
+  const questions = [1, 2].map((n) => `${code}-Q${n},Topic,Applies the documented process,single,Question ${n}?,Right,Wrong,,,,A,Because.,Easy,1,L2,English,Active`);
+  const file = { name: "questions.csv", mimeType: "text/csv", buffer: Buffer.from([header, ...questions].join("\n")) };
+  await page.locator('input[type="file"]').setInputFiles(file);
+  await page.getByRole("button", { name: "Validate file" }).click();
+  const preview = page.locator("#import-preview");
+  await expect(preview).toContainText(`Linked training: E2E Training ${code} (${code}) · Draft`);
+  await expect(preview.getByRole("link", { name: "Open in Question Bank" })).toHaveAttribute("href", /\/lnd\/questions\?training_id=/);
+
+  // Changing the selected training invalidates the preview; it must be validated again.
+  const other = (await trainingSelect.locator("option").allTextContents()).find((label) => label && label !== draftLabel && !label.startsWith("Choose"));
+  if (other) {
+    await trainingSelect.selectOption({ label: other });
+    await expect(preview).toHaveCount(0);
+    await trainingSelect.selectOption({ label: draftLabel });
+  }
+  await page.locator('input[type="file"]').setInputFiles(file);
+  await page.getByRole("button", { name: "Validate file" }).click();
+  await page.getByRole("button", { name: "Import 2 valid rows" }).click();
+  await expect(page.locator("#import-summary")).toContainText("Import finished. 2 rows imported");
+  await expect(page.locator("#import-summary")).toContainText(`E2E Training ${code} (${code})`);
 
   await page.goto("/lnd/scorecards");
   await expect(page.getByRole("heading", { name: "Section 1 · Learning" })).toBeVisible();
@@ -183,23 +204,25 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   expect(statuses).toEqual([403, 403, 200]); // The batch list stays readable for Employee Assignments.
 });
 
-test("HR reads and exports but has no write controls or write access", async ({ page }) => {
-  await signIn(page, ACCOUNTS.hr);
-  await expect(page).toHaveURL(/\/hr$/);
-  await expect(page.locator(".sidebar")).not.toContainText("Training Management");
-  await page.goto("/hr/pass-fail");
-  await expect(page.getByRole("heading", { name: "Pass/Fail and Red-Flag Employees" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Needs Re-training" }).first()).toBeVisible();
-  const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Excel (.xlsx)" }).click();
-  expect((await download).suggestedFilename()).toMatch(/pass-fail.*\.xlsx$/);
-
-  const status = await page.evaluate(async () => {
-    const csrf = document.cookie.match(/tc_csrf=([^;]*)/)?.[1] ?? "";
-    const response = await fetch("/api/v1/admin/departments", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": decodeURIComponent(csrf) }, body: JSON.stringify({ code: "NOPE", name: "Nope" }) });
-    return response.status;
+test("navigation reuses loaded data and sign-in does not repeat the session requests", async ({ page }) => {
+  const api: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/v1/")) api.push(r.url().replace(/^.*\/api\/v1/, ""));
   });
-  expect(status).toBe(403);
+  await signIn(page, ACCOUNTS.admin);
+  await expect(page.locator("article.image-metric").first()).toBeVisible({ timeout: 30_000 });
+  const afterLogin = api.slice(api.indexOf("/auth/login"));
+  expect(afterLogin.filter((p) => p === "/auth/me" || p === "/me/access-state")).toEqual([]); // Reused from the sign-in response.
+
+  await page.locator('nav a[title="Training Management"]').click();
+  await expect(page.locator("#main table tbody tr").first()).toBeVisible({ timeout: 30_000 });
+  api.length = 0;
+  await page.locator('nav a[title="Dashboard"]').click();
+  await expect(page.locator("article.image-metric").first()).toBeVisible();
+  await page.locator('nav a[title="Training Management"]').click();
+  await expect(page.locator("#main table tbody tr").first()).toBeVisible();
+  // Both pages were loaded seconds ago, so they come from the cache without new requests.
+  expect(api.filter((p) => p.startsWith("/admin/dashboard") || p.startsWith("/admin/trainings"))).toEqual([]);
 });
 
 test("the assessment and login work at phone size", async ({ browser }) => {
@@ -214,9 +237,7 @@ test("the assessment and login work at phone size", async ({ browser }) => {
 
 const PAGES: Record<string, string[]> = {
   clear: ["/employee", "/employee/trainings", "/employee/assessments", "/employee/refresher", "/employee/behaviour", "/employee/scorecard", "/notifications", "/profile"],
-  manager: ["/manager", "/manager/team", "/manager/assessments", "/manager/reviews", "/manager/questionnaires", "/manager/scorecards"],
   admin: ["/lnd", "/lnd/trainings", "/lnd/organisation", "/lnd/assignments", "/lnd/completion", "/lnd/questions", "/lnd/imports", "/lnd/assessment-config", "/lnd/behaviour-templates", "/lnd/scorecards", "/lnd/reports", "/notifications"],
-  hr: ["/hr", "/hr/learning", "/hr/departments", "/hr/pass-fail", "/hr/learning-gain", "/hr/behaviour", "/hr/managers", "/hr/scorecards", "/hr/reports"],
 };
 
 for (const [account, paths] of Object.entries(PAGES)) {

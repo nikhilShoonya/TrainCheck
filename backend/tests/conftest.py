@@ -114,13 +114,15 @@ class World:
         self.location = Location(code="L1", name="Location 1")
         db.add_all([*self.departments.values(), *self.functions.values(), self.location])
         db.add(WorkingCalendar(code="DEFAULT", name="Test calendar", timezone="UTC", working_weekdays=[0, 1, 2, 3, 4], is_default=True))
-        self.roles = {c: Role(code=c, name=c) for c in ("EMPLOYEE", "MANAGER", "LD_ADMIN", "HR_READ_ONLY")}
+        self.roles = {c: Role(code=c, name=c) for c in ("EMPLOYEE", "LD_ADMIN")}
         db.add_all(self.roles.values())
         db.flush()
-        self.manager = self.person("M1", "manager1@test.example", ["MANAGER", "EMPLOYEE"], "OPS")
-        self.other_manager = self.person("M2", "manager2@test.example", ["MANAGER", "EMPLOYEE"], "CX")
+        # The Manager and HR / Leadership roles were removed. These people stay (reporting lines are kept as
+        # data) and hold the Employee role only, so they also stand in for "any non-admin user".
+        self.manager = self.person("M1", "manager1@test.example", ["EMPLOYEE"], "OPS")
+        self.other_manager = self.person("M2", "manager2@test.example", ["EMPLOYEE"], "CX")
         self.admin = self.person("A1", "admin@test.example", ["LD_ADMIN", "EMPLOYEE"], "OPS")
-        self.hr = self.person("H1", "hr@test.example", ["HR_READ_ONLY", "EMPLOYEE"], "OPS")
+        self.hr = self.person("H1", "hr@test.example", ["EMPLOYEE"], "OPS")
         self.employee = self.person("E1", "employee@test.example", ["EMPLOYEE"], "OPS", "COMPLIANCE", manager=self.manager)
         self.teammate = self.person("E2", "teammate@test.example", ["EMPLOYEE"], "OPS", "SALES", manager=self.manager)
         self.outsider = self.person("E3", "outsider@test.example", ["EMPLOYEE"], "CX", "SALES", manager=self.other_manager)

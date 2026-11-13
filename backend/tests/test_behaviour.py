@@ -28,11 +28,12 @@ def form_body(form: dict, rating: int = 4, example: str = "Handled a real case u
     return {"responses": [{"template_question_id": q["template_question_id"], "rating": rating, "example_text": example} for q in form["questions"]]}
 
 
-def test_completion_creates_30_60_90_cycles_with_both_reviews(world, db):  # TC-L3-001
+def test_completion_creates_30_60_90_cycles_with_self_reviews(world, db):  # TC-L3-001
     cleared_training(world, world.employee, db)
     cycles = db.scalars(select(BehaviourReviewCycle).order_by(BehaviourReviewCycle.period_days)).all()
     assert [c.period_days for c in cycles] == [30, 60, 90]
-    assert db.scalar(select(func.count()).select_from(BehaviourReview)) == 6
+    reviews = db.scalars(select(BehaviourReview)).all()
+    assert len(reviews) == 3 and {r.reviewer_type for r in reviews} == {"SELF"}  # No manager observations any more.
     assert cycles[0].due_at - (NOW - timedelta(days=40)) == timedelta(days=30)
 
 
@@ -109,56 +110,34 @@ def test_database_enforces_rating_range(world, db):  # DB design §6
     db.rollback()
 
 
-def test_manager_observes_only_own_team(world, db, client_for):  # TC-KIR-006, TC-L3-005
+def test_manager_observation_routes_are_gone(world, db, client_for):  # Manager role removed
     cleared_training(world, world.employee, db)
-    manager = client_for(world.manager)
-    tasks = manager.get("/manager/behaviour-reviews").json()["data"]
-    assert {t["employee_code"] for t in tasks} == {"E1"}
-    other = client_for(world.other_manager)
-    assert other.get("/manager/behaviour-reviews").json()["data"] == []
-    assert other.get(f"/manager/behaviour-reviews/{tasks[0]['review_id']}").status_code == 404
-    assert other.post(f"/manager/behaviour-reviews/{tasks[0]['review_id']}/submit", json={"responses": []}).status_code == 404
-    # An employee cannot use the manager route or open a manager's form.
-    employee = client_for(world.employee)
-    assert employee.get("/manager/behaviour-reviews").status_code == 403
-    assert employee.get(f"/me/behaviour-reviews/{tasks[0]['review_id']}").status_code == 404
+    for person in (world.manager, world.employee):
+        assert client_for(person).get("/manager/behaviour-reviews").status_code == 404
 
 
-def test_self_and_manager_are_compared_on_the_same_competency_and_period(world, db, client_for):  # TC-L3-006, TC-REP-009
+def test_self_rating_reaches_the_behaviour_report(world, db, client_for):  # TC-L3-006, TC-REP-009
     training = cleared_training(world, world.employee, db)
-    employee, manager = client_for(world.employee), client_for(world.manager)
-
+    employee = client_for(world.employee)
     self_task = employee.get("/me/behaviour-reviews").json()["data"][0]
     form = employee.get(f"/me/behaviour-reviews/{self_task['review_id']}").json()["data"]
     employee.post(f"/me/behaviour-reviews/{self_task['review_id']}/submit", json=form_body(form, rating=5))
 
-    report = client_for(world.hr).get(f"/reports/behaviour?training_id={training.id}").json()["data"]
+    report = client_for(world.admin).get(f"/reports/behaviour?training_id={training.id}").json()["data"]
     columns = report["columns"]
     row = next(r for r in report["rows"] if r[columns.index("Period (days)")] == 30)
     assert row[columns.index("Self /5")] == 5
     assert row[columns.index("Manager /5")] == "Not collected"  # Missing stays missing.
-    assert row[columns.index("Gap (manager − self)")] == "Not comparable"
-
-    manager_task = next(t for t in manager.get("/manager/behaviour-reviews").json()["data"] if t["period_days"] == 30)
-    form = manager.get(f"/manager/behaviour-reviews/{manager_task['review_id']}").json()["data"]
-    assert form["self_assessment"] is None  # Self-ratings cannot anchor the observation.
-    assert manager.post(f"/manager/behaviour-reviews/{manager_task['review_id']}/submit", json=form_body(form, rating=3)).status_code == 200
-
-    report = client_for(world.hr).get(f"/reports/behaviour?training_id={training.id}").json()["data"]
-    row = next(r for r in report["rows"] if r[columns.index("Period (days)")] == 30)
-    assert row[columns.index("Manager /5")] == 3
-    assert row[columns.index("Gap (manager − self)")] == -2
-    other_period = next(r for r in report["rows"] if r[columns.index("Period (days)")] == 60)
-    assert other_period[columns.index("Gap (manager − self)")] == "Not comparable"
+    assert client_for(world.hr).get(f"/reports/behaviour?training_id={training.id}").status_code == 403
 
 
 def test_reminders_are_not_duplicated(world, db):  # TC-KIR-007, BR §16.5
     cleared_training(world, world.employee, db)
     behaviour_reminders(db, NOW)
     count = db.scalar(select(func.count()).select_from(Notification).where(Notification.type == "BEHAVIOUR_REVIEW"))
-    assert count == 2  # One for the employee and one for the manager.
+    assert count == 1  # The employee's self-assessment only; manager observations were removed.
     behaviour_reminders(db, NOW)
-    assert db.scalar(select(func.count()).select_from(Notification).where(Notification.type == "BEHAVIOUR_REVIEW")) == 2
+    assert db.scalar(select(func.count()).select_from(Notification).where(Notification.type == "BEHAVIOUR_REVIEW")) == 1
 
 
 def test_cycle_due_date_arrives_with_time(world, db, client_for):
@@ -181,7 +160,7 @@ def test_template_edit_creates_version_and_keeps_existing_cycles(world, db, clie
     assert cycle.template.name != "Revised"
 
 
-def test_hr_cannot_change_templates(world, client_for, db):
+def test_non_admin_cannot_change_templates(world, client_for, db):
     training = cleared_training(world, world.employee, db)
     body = {"name": "Nope", "training_id": str(training.id), "questions": [{"competency_id": str(world.competency.id), "prompt": "Should not save?"}]}
     assert client_for(world.hr).post("/admin/behaviour-templates", json=body).status_code == 403

@@ -1,11 +1,13 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { Icon } from "@/components/icons";
 import { Art } from "@/components/shell/Art";
 import { FormError } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { ApiError, api } from "@/lib/api";
+import { useSession } from "@/lib/hooks";
 import type { AccessState, RoleCode, User } from "@/lib/types";
 import { HOME } from "@/components/shell/nav";
 
@@ -13,9 +15,7 @@ const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "";
 const ROLES: [RoleCode, string, string, string][] = [
   ["EMPLOYEE", "Employee", "person", "employee@traincheck.demo"],
-  ["MANAGER", "Manager", "users", "manager@traincheck.demo"],
   ["LD_ADMIN", "L&D Admin", "settings", "admin@traincheck.demo"],
-  ["HR_READ_ONLY", "HR / Leadership", "chart", "hr@traincheck.demo"],
 ];
 const REMEMBER_KEY = "tc-remember-email";
 
@@ -44,6 +44,8 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<"recovery" | "Google" | "Microsoft" | null>(null);
   const selected = ROLES.find((r) => r[3] === email)?.[0];
+  const router = useRouter();
+  const { adopt } = useSession();
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -57,9 +59,11 @@ export function LoginPage() {
       } catch {
         /* Signing in still works without this preference. */
       }
-      // A full navigation, so the session loads cleanly and nothing protected flashes first.
+      // The sign-in response already holds identity and the gate decision, so the workspace starts from it
+      // (no second /auth/me and /me/access-state round). Nothing protected can show before this point.
       const blocked = result.access_state.access_status === "ASSESSMENT_REQUIRED";
-      window.location.assign(blocked ? "/access/assessment-required" : HOME[result.user.primary_role]);
+      adopt(result.user, result.access_state);
+      router.replace(blocked ? "/access/assessment-required" : HOME[result.user.primary_role]);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Sign-in failed. Please try again.");
       setBusy(false);

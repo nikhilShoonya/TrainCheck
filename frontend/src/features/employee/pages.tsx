@@ -342,7 +342,7 @@ function Reviews({ submitted }: { submitted: boolean }) {
 export function MyBehaviour() {
   return (
     <>
-      <PageTitle eyebrow={EYEBROW} title="Level 3 Self-Assessment" description="Rate how you apply the learned competencies in your daily work. Your manager rates the same competencies separately." />
+      <PageTitle eyebrow={EYEBROW} title="Level 3 Self-Assessment" description="Rate how you apply the learned competencies in your daily work." />
       <Reviews submitted={false} />
     </>
   );
@@ -350,7 +350,7 @@ export function MyBehaviour() {
 
 export function MyReview() {
   const { reviewId } = useParams<{ reviewId: string }>();
-  return <ReviewFormPage reviewId={reviewId} kind="SELF" />;
+  return <ReviewFormPage reviewId={reviewId} />;
 }
 
 export function MyScorecard() {

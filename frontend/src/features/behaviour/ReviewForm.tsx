@@ -11,9 +11,10 @@ import { day } from "@/lib/utils";
 // Sample wording. L&D and HR have not yet approved the final rating anchors (OD-BRD-015).
 const ANCHORS = ["Not demonstrated", "Rarely demonstrated", "Partially demonstrated", "Consistently demonstrated", "Role-model demonstration"];
 
-export function ReviewFormPage({ reviewId, kind }: { reviewId: string; kind: "SELF" | "MANAGER" }) {
-  const base = kind === "SELF" ? "/me/behaviour-reviews" : "/manager/behaviour-reviews";
-  const back = kind === "SELF" ? "/employee/behaviour" : "/manager/reviews";
+/** The employee's own Level 3 self-assessment. Manager observations were removed with the Manager role. */
+export function ReviewFormPage({ reviewId }: { reviewId: string }) {
+  const base = "/me/behaviour-reviews";
+  const back = "/employee/behaviour";
   const state = useApi<ReviewFormData>(`${base}/${reviewId}`);
   const router = useRouter();
   const toast = useToast();
@@ -50,8 +51,8 @@ export function ReviewFormPage({ reviewId, kind }: { reviewId: string; kind: "SE
         return (
           <>
             <PageTitle
-              eyebrow={kind === "SELF" ? "LEVEL 3 · SELF-ASSESSMENT" : "LEVEL 3 · MANAGER OBSERVATION"}
-              title={kind === "SELF" ? "My behaviour self-assessment" : `Observation: ${form.employee_name}`}
+              eyebrow="LEVEL 3 · SELF-ASSESSMENT"
+              title="My behaviour self-assessment"
               description={`${form.training_title} · ${form.period_days}-day follow-up · Due ${day(form.due_at)}`}
               action={<Badge status={form.status} />}
             />
@@ -79,7 +80,7 @@ export function ReviewFormPage({ reviewId, kind }: { reviewId: string; kind: "SE
             ) : (
               <form className="panel" onSubmit={(e) => void submit(e, form)}>
                 <p>
-                  {kind === "SELF" ? "Rate how often you apply each competency in your daily work." : "Rate what you have observed. Your observation is recorded separately from the employee's self-rating, and you see their rating only after you submit."} Ratings use the same competencies on both forms.
+                  Rate how often you apply each competency in your daily work.
                 </p>
                 {form.questions.map((q) => (
                   <fieldset className="competency-field" key={q.template_question_id}>

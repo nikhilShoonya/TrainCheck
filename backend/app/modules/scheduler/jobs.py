@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from app.core.clock import utcnow
 from app.core.config import get_settings
 from app.core.db import session_factory
-from app.core.deps import current_manager_id
 from app.core.enums import AssessmentType, AttemptStatus, ObligationStatus, ReviewerType
 from app.models import AssessmentAttempt, AssessmentObligation, BehaviourReview, BehaviourReviewCycle
 from app.modules.assessment.gate import alert_unavailable, obligation_startable
@@ -25,8 +24,7 @@ from app.modules.reports.router import run_due_schedules
 logger = logging.getLogger("traincheck.jobs")
 
 # Proposed defaults from the project brief (Business Rules §16.2). They need Finvasia approval.
-MANAGER_ESCALATION_WORKING_DAYS = 2
-HR_ESCALATION_WORKING_DAYS = 5
+LD_ESCALATION_WORKING_DAYS = 2  # Overdue post-tests are escalated to L&D Admin.
 
 
 def finalise_expired(db: Session, now: datetime | None = None) -> int:
@@ -62,12 +60,8 @@ def pending_assessment_reminders(db: Session, now: datetime | None = None) -> in
         waited = calendar.working_days_between(calendar.local_date(o.due_at), today)
         heading = f"Assessment overdue: {title}" if waited >= 1 else f"Assessment due: {title}"
         notify_employee(db, o.employee_id, "ASSESSMENT_DUE", heading, "Sign in to complete your mandatory assessment.", "/access/assessment-required", f"due:{o.id}:{today.isoformat()}", now)
-        if waited >= MANAGER_ESCALATION_WORKING_DAYS:
-            manager = current_manager_id(db, o.employee_id)
-            if manager:
-                notify_employee(db, manager, "ASSESSMENT_ESCALATION", f"Pending assessment: {o.employee.full_name}", f"{title} has been pending for {MANAGER_ESCALATION_WORKING_DAYS} or more working days.", "/manager/team", f"escalate-manager:{o.id}", now)
-        if waited >= HR_ESCALATION_WORKING_DAYS:
-            notify_roles(db, ("LD_ADMIN", "HR_READ_ONLY"), "ASSESSMENT_ESCALATION", f"Pending assessment: {o.employee.full_name}", f"{title} has been pending for {HR_ESCALATION_WORKING_DAYS} or more working days.", None, f"escalate-hr:{o.id}", now)
+        if waited >= LD_ESCALATION_WORKING_DAYS:
+            notify_roles(db, ("LD_ADMIN",), "ASSESSMENT_ESCALATION", f"Pending assessment: {o.employee.full_name}", f"{title} has been pending for {LD_ESCALATION_WORKING_DAYS} or more working days.", None, f"escalate-ld:{o.id}", now)
         sent += 1
     db.commit()
     return sent
@@ -89,17 +83,12 @@ def behaviour_reminders(db: Session, now: datetime | None = None) -> int:
         cycle = review.cycle
         late = overdue_working_days(db, review, now)
         stage = "overdue" if late >= 1 else "due"
-        if review.reviewer_type == ReviewerType.SELF:
-            target, link = cycle.employee_id, "/employee/behaviour"
-            title = f"{cycle.period_days}-day self-assessment {stage}"
-            message = f"Tell us how you apply {cycle.training.title} in your daily work."
-        else:
-            target, link = current_manager_id(db, cycle.employee_id), "/manager/reviews"
-            title = f"{cycle.period_days}-day behaviour observation {stage}"
-            message = f"Complete your observation of {cycle.employee.full_name} for {cycle.training.title}."
-        if target:
-            notify_employee(db, target, "BEHAVIOUR_REVIEW", title, message, link, f"review:{review.id}:{stage}", now)
-            sent += 1
+        if review.reviewer_type != ReviewerType.SELF:
+            continue  # Manager observations were removed with the Manager role; older open ones get no reminder.
+        title = f"{cycle.period_days}-day self-assessment {stage}"
+        message = f"Tell us how you apply {cycle.training.title} in your daily work."
+        notify_employee(db, cycle.employee_id, "BEHAVIOUR_REVIEW", title, message, "/employee/behaviour", f"review:{review.id}:{stage}", now)
+        sent += 1
     db.commit()
     return sent
 

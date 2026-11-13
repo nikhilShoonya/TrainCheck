@@ -1,4 +1,4 @@
-"""Behaviour APIs: employee self-assessment, manager observation and L&D template management."""
+"""Behaviour APIs: employee self-assessment and L&D template management."""
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_gate_clear, require_manager, require_reader, team_employee_ids
+from app.core.deps import CurrentUser, require_admin, require_gate_clear
 from app.core.enums import ReviewerType
-from app.core.errors import forbidden, not_found, validation
+from app.core.errors import not_found, validation
 from app.core.responses import iso, ok
 from app.models import BehaviourReview, BehaviourTemplate, BehaviourTemplateQuestion, Competency
 from app.modules.behaviour import service
@@ -119,47 +119,6 @@ def submit_my_review(review_id: uuid.UUID, body: SubmitReviewIn, user: CurrentUs
     return ok(review_summary(review))
 
 
-# ---------- Manager ----------
-
-@router.get("/manager/behaviour-reviews")
-def manager_reviews(user: CurrentUser = Depends(require_manager), db: Session = Depends(get_db)) -> dict:
-    team = team_employee_ids(db, user.employee_id)
-    return ok([review_summary(r) for r in service.reviews_for_team(db, team, user.employee_id)])
-
-
-def _team_review(db: Session, review_id: uuid.UUID, user: CurrentUser, for_submit: bool = False) -> BehaviourReview:
-    review = _load_review(db, review_id)
-    if review.reviewer_type != ReviewerType.MANAGER:
-        raise not_found()
-    in_team = review.cycle.employee_id in team_employee_ids(db, user.employee_id)
-    wrote_it = review.submitted_by_employee_id == user.employee_id
-    if (for_submit and not in_team) or not (in_team or wrote_it):
-        raise not_found()  # The same response whether the record exists or not.
-    return review
-
-
-@router.get("/manager/behaviour-reviews/{review_id}")
-def manager_review(review_id: uuid.UUID, user: CurrentUser = Depends(require_manager), db: Session = Depends(get_db)) -> dict:
-    review = _team_review(db, review_id, user)
-    data = review_form(review)
-    own = next((r for r in review.cycle.reviews if r.reviewer_type == ReviewerType.SELF), None)
-    # Self-ratings appear only after the manager has submitted, so they cannot anchor the observation.
-    data["self_assessment"] = review_form(own)["questions"] if own and own.submitted_at and review.submitted_at else None
-    return ok(data)
-
-
-@router.post("/manager/behaviour-reviews/{review_id}/submit")
-def submit_manager_review(review_id: uuid.UUID, body: SubmitReviewIn, user: CurrentUser = Depends(require_manager), db: Session = Depends(get_db)) -> dict:
-    service.require_enabled()
-    review = _team_review(db, review_id, user, for_submit=True)
-    if review.cycle.employee_id == user.employee_id:
-        raise forbidden("A manager cannot observe their own behaviour review.")
-    service.submit_review(db, review, user.employee_id, [r.model_dump() for r in body.responses])
-    record_audit(db, user.id, "BEHAVIOUR_OBSERVATION_SUBMITTED", "behaviour_review", review.id)
-    db.commit()
-    return ok(review_summary(review))
-
-
 # ---------- L&D templates ----------
 
 def template_view(template: BehaviourTemplate) -> dict:
@@ -197,7 +156,7 @@ def _add_questions(db: Session, template: BehaviourTemplate, questions: list[Tem
 
 
 @router.get("/admin/behaviour-templates")
-def list_templates(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+def list_templates(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     templates = db.scalars(
         select(BehaviourTemplate)
         .options(selectinload(BehaviourTemplate.questions).selectinload(BehaviourTemplateQuestion.competency), selectinload(BehaviourTemplate.training), selectinload(BehaviourTemplate.function))

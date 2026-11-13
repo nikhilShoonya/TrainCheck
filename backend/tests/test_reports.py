@@ -1,10 +1,8 @@
 """Reports, scorecard and exports. TC-REP-*, TC-KIR-010, SC-2L-101, SC-2L-102."""
-import io
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from openpyxl import load_workbook
 from sqlalchemy import select
 
 from app.models import AuditLog, Question
@@ -44,7 +42,7 @@ def test_all_seven_reports_load(world, db, client_for, code):  # TC-REP-011
 @pytest.mark.parametrize("fmt", FORMATS)
 def test_exports_generate_and_download(world, db, client_for, code, fmt):  # TC-REP-003, -004, -011
     fixture_data(world, db, client_for)
-    client = client_for(world.hr)
+    client = client_for(world.admin)
     response = client.post("/reports/exports", json={"report_code": code, "export_format": fmt})
     assert response.status_code == 200, response.text
     export = response.json()["data"]
@@ -69,7 +67,7 @@ def test_pass_fail_reconciles_to_attempts(world, db, client_for):  # TC-REP-002
 
 
 def test_filters_apply_consistently(world, db, client_for):  # TC-REP-001, PRD-REPORT-013
-    training = fixture_data(world, db, client_for)
+    fixture_data(world, db, client_for)
     other = world.training("T2")
     world.enrol(world.employee, other)
     admin = client_for(world.admin)
@@ -79,26 +77,12 @@ def test_filters_apply_consistently(world, db, client_for):  # TC-REP-001, PRD-R
     assert grade == []
     by_training = rows_as_dicts(admin.get(f"/reports/compliance?training_id={other.id}").json()["data"])
     assert {r["Training"] for r in by_training} == {other.title}
-    by_manager = rows_as_dicts(admin.get(f"/reports/compliance?manager_id={world.manager.id}&training_id={training.id}").json()["data"])
-    assert {r["Employee ID"] for r in by_manager} == {"E1", "E2"}
+    assert "Manager" not in admin.get("/reports/compliance").json()["data"]["columns"]  # Reporting lines are no longer read.
     future = rows_as_dicts(admin.get(f"/reports/compliance?date_from={(NOW + timedelta(days=1)).date()}").json()["data"])
     assert future == []
     by_trainer = rows_as_dicts(admin.get(f"/reports/compliance?trainer_id={world.trainer.id}").json()["data"])
     assert len(by_trainer) == 4
     assert rows_as_dicts(admin.get(f"/reports/compliance?location_id={world.location.id}").json()["data"])
-
-
-def test_managers_keep_only_the_team_scorecard_export(world, db, client_for):  # Team Reports removed; SEC-014
-    training = fixture_data(world, db, client_for)
-    manager = client_for(world.manager)
-    assert manager.get("/reports/pass-fail").status_code == 403
-    assert manager.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "XLSX"}).status_code == 403
-    assert [c["code"] for c in manager.get("/reports/catalogue").json()["data"]] == ["scorecard"]
-    export = manager.post("/reports/exports", json={"report_code": "scorecard", "export_format": "XLSX", "filters": {"training_id": str(training.id)}})
-    assert export.status_code == 200, export.text
-    content = manager.get(f"/reports/exports/{export.json()['data']['id']}/download").content
-    values = [str(c.value) for row in load_workbook(io.BytesIO(content)).active.iter_rows() for c in row]
-    assert any("Team of" in v for v in values)  # The Team Scorecards export keeps the team scope.
 
 
 def test_export_permissions(world, db, client_for):  # TC-REP-005, SEC-009
@@ -110,10 +94,11 @@ def test_export_permissions(world, db, client_for):  # TC-REP-005, SEC-009
     assert employee.get("/reports/employee-history").status_code == 403  # Assessment History was removed.
     assert employee.get("/reports/catalogue").json()["data"] == []
 
-    hr = client_for(world.hr)
-    private = hr.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV"}).json()["data"]
+    second_admin = world.person("A2", "admin2@test.example", ["LD_ADMIN", "EMPLOYEE"])
+    world.db.commit()
+    private = client_for(second_admin).post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV"}).json()["data"]
     assert employee.get(f"/reports/exports/{private['id']}/download").status_code == 404
-    assert client_for(world.admin).get(f"/reports/exports/{private['id']}/download").status_code == 404
+    assert client_for(world.admin).get(f"/reports/exports/{private['id']}/download").status_code == 404  # Only the owner downloads.
     assert db.scalar(select(AuditLog).where(AuditLog.action == "REPORT_EXPORTED")) is not None
 
 
@@ -155,7 +140,7 @@ def test_blank_answers_are_excluded_from_item_analysis(world, db, client_for):  
 
 def test_scorecard_has_only_learning_and_behaviour(world, db, client_for):  # TC-KIR-010, SC-2L-101
     training = fixture_data(world, db, client_for)
-    card = client_for(world.hr).get(f"/scorecards/{training.id}").json()["data"]
+    card = client_for(world.admin).get(f"/scorecards/{training.id}").json()["data"]
     assert set(card) == {"training", "generated_at", "learning", "behaviour", "interpretation"}
     learning = card["learning"]
     assert learning["state"] == "Available"
@@ -187,19 +172,14 @@ def test_scorecard_learning_incomplete_when_some_results_missing(world, db, clie
     assert client_for(world.admin).get(f"/scorecards/{training.id}").json()["data"]["learning"]["state"] == "Incomplete"
 
 
-def test_manager_scorecard_is_team_scoped(world, db, client_for):
+def test_scorecards_and_filter_options_are_ld_only(world, db, client_for):
     training = fixture_data(world, db, client_for)
-    card = client_for(world.other_manager).get(f"/scorecards/{training.id}").json()["data"]
-    assert card["learning"]["assigned"] == 1  # Only the outsider is on this manager's team.
-    assert client_for(world.employee).get(f"/scorecards/{training.id}").status_code == 403
-
-
-def test_filter_options_are_scoped(world, db, client_for):
-    fixture_data(world, db, client_for)
-    options = client_for(world.other_manager).get("/reports/filter-options").json()["data"]
-    assert [d["name"] for d in options["departments"]] == ["Cx"]
-    assert options["managers"] == []
-    assert {m["name"] for m in client_for(world.hr).get("/reports/filter-options").json()["data"]["managers"]} == {"Person M1", "Person M2"}
+    for person in (world.employee, world.manager, world.hr):
+        assert client_for(person).get(f"/scorecards/{training.id}").status_code == 403
+        assert client_for(person).get("/reports/filter-options").status_code == 403
+    options = client_for(world.admin).get("/reports/filter-options").json()["data"]
+    assert [d["name"] for d in options["departments"]] == ["Cx", "Ops"]
+    assert "managers" not in options
 
 
 def test_scheduled_report_delivery_and_history(world, db, client_for):  # PRD-REPORT-014, P3-010
@@ -208,7 +188,7 @@ def test_scheduled_report_delivery_and_history(world, db, client_for):  # PRD-RE
 
     fixture_data(world, db, client_for)
     assert client_for(world.manager).post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).status_code == 403
-    client = client_for(world.hr)
+    client = client_for(world.admin)
     created = client.post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).json()["data"]
     assert run_due_schedules(db, NOW) == 0
 
@@ -217,7 +197,7 @@ def test_scheduled_report_delivery_and_history(world, db, client_for):  # PRD-RE
     assert run_due_schedules(db, later) == 0  # Running again does not deliver twice.
 
     clock.freeze(NOW + timedelta(days=8))
-    client = client_for(world.hr)
+    client = client_for(world.admin)
     schedule = next(s for s in client.get("/reports/schedules").json()["data"] if s["id"] == created["id"])
     assert schedule["deliveries"][0]["status"] == "DELIVERED"
     notes = client.get("/me/notifications").json()["data"]
@@ -234,37 +214,30 @@ def test_only_report_users_can_schedule(world, client_for):
 
 def test_dashboards_keep_missing_values_as_none(world, client_for):
     assert client_for(world.admin).get("/admin/dashboard").json()["data"]["summary"]["pass_rate"] is None
-    assert client_for(world.manager).get("/manager/dashboard").json()["data"]["summary"]["pass_rate"] is None
     assert client_for(world.employee).get("/me/dashboard").json()["data"]["overall_score"] is None
 
 
 def test_all_role_dashboards_load_with_data(world, db, client_for):
     fixture_data(world, db, client_for)
     assert client_for(world.admin).get("/admin/dashboard").json()["data"]["total_employees"] == 7
-    org = client_for(world.hr).get("/reports/organisation-summary").json()["data"]
+    org = client_for(world.admin).get("/reports/organisation-summary").json()["data"]
     assert org["summary"]["assessed"] == 3 and org["trend"]
-    team = client_for(world.manager).get("/manager/dashboard").json()["data"]
-    assert team["summary"]["employees"] == 2
     own = client_for(world.employee).get("/me/dashboard").json()["data"]
     assert own["overall_score"] == 90.0
     assert client_for(world.employee).get("/me/certificates").status_code == 404  # Certificates were removed from the product.
     assert client_for(world.teammate).get("/me/refresher-materials").json()["data"][0]["refresher_text"]
 
 
-def test_analytics_and_manager_evaluation(world, db, client_for, behaviour_on):  # Legacy Level 3 trend; needs Behaviour on.
+def test_analytics(world, db, client_for, behaviour_on):  # Legacy Level 3 trend; needs Behaviour on.
     fixture_data(world, db, client_for)
-    hr = client_for(world.hr)
-    data = hr.get("/reports/analytics").json()["data"]
+    admin = client_for(world.admin)
+    data = admin.get("/reports/analytics").json()["data"]
     assert {d["department"] for d in data["departments"]} == {"Ops", "Cx"}
     assert {f["function"] for f in data["functions"]} == {"Compliance", "Sales"}
     assert data["topics"] and data["behaviour_trend"]
     assert data["behaviour_trend"][0]["self_mean"] is None  # No ratings yet: missing, not zero.
-    evaluation = hr.get("/reports/manager-evaluation").json()["data"]
-    assert {m["manager"] for m in evaluation} == {"Person M1", "Person M2"}
-    assert evaluation[0]["completion_rate"] is None
-    assert client_for(world.manager).get("/reports/manager-evaluation").status_code == 403
-    team_only = client_for(world.other_manager).get("/reports/analytics").json()["data"]
-    assert team_only["summary"]["employees"] == 1
+    assert admin.get("/reports/manager-evaluation").status_code == 404  # Removed with the Manager role.
+    assert client_for(world.other_manager).get("/reports/analytics").status_code == 403
 
 
 def test_personal_history_export_and_page_api_are_retired(world, db, client_for):  # Assessment History removed

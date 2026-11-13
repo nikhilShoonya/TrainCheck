@@ -11,7 +11,7 @@ from app.core.enums import AttemptStatus, ReportCode, ReviewerType
 from app.core.responses import display_percent
 from app.models import AttemptQuestion, Training
 from app.modules.behaviour.service import review_status
-from app.modules.reports.data import Row, assessment_timing, behaviour_reviews, manager_names, mean
+from app.modules.reports.data import Row, assessment_timing, behaviour_reviews, mean
 from app.modules.reports.scorecard import behaviour_state, gain_values, learning_state
 
 MISSING = "Not collected"
@@ -53,12 +53,11 @@ def _name(item) -> str:
 
 
 def compliance(db: Session, rows: list[Row]) -> Report:
-    report = Report(ReportCode.COMPLIANCE, *TITLES[ReportCode.COMPLIANCE], ["Employee", "Employee ID", "Department", "Location", "Manager", "Training", "Trainer", "Batch", "Assigned", "Completed", "Assessment Timing", "Result"])
-    managers = manager_names(db, [r.enrolment.employee_id for r in rows])
+    report = Report(ReportCode.COMPLIANCE, *TITLES[ReportCode.COMPLIANCE], ["Employee", "Employee ID", "Department", "Location", "Training", "Trainer", "Batch", "Assigned", "Completed", "Assessment Timing", "Result"])
     now = utcnow()
     for r in rows:
         e, t = r.enrolment.employee, r.enrolment.training
-        report.rows.append([e.full_name, e.employee_code, _name(e.department), _name(e.location), managers.get(e.id, "Unassigned"), t.title, _name(t.trainer), r.enrolment.batch.name if r.enrolment.batch else "Unassigned", _date(r.enrolment.assigned_at), _date(r.enrolment.completion.completed_at) if r.enrolment.completion else "Not completed", assessment_timing(r, now), r.result])
+        report.rows.append([e.full_name, e.employee_code, _name(e.department), _name(e.location), t.title, _name(t.trainer), r.enrolment.batch.name if r.enrolment.batch else "Unassigned", _date(r.enrolment.assigned_at), _date(r.enrolment.completion.completed_at) if r.enrolment.completion else "Not completed", assessment_timing(r, now), r.result])
     report.definitions = ["Completed means training completion was recorded; it does not mean the assessment was passed.", "Overdue means the assessment has been due for at least one day with no submission.", "Date filters select the training-completion cohort."]
     return report
 

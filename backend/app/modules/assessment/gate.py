@@ -35,14 +35,14 @@ def finalise_expired_attempts(db: Session, employee_id: uuid.UUID, now: datetime
         finalise_attempt(db, attempt.id, now=now)
 
 
-def obligation_startable(db: Session, obligation: AssessmentObligation, cache: dict) -> bool:
+def obligation_startable(db: Session, obligation: AssessmentObligation, cache: dict, pools=None) -> bool:
     """Whether the obligation's own configuration can still draw a full assessment. Cached per config."""
     from app.modules.assessment.service import pool_problem
 
     if obligation.status == ObligationStatus.IN_PROGRESS:
         return True  # The questions were drawn when the attempt started.
     if obligation.config_id not in cache:
-        cache[obligation.config_id] = pool_problem(db, obligation.config) is None
+        cache[obligation.config_id] = pool_problem(db, obligation.config, pools) is None
     return cache[obligation.config_id]
 
 

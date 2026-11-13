@@ -19,13 +19,13 @@ from app.core.db import get_db
 from app.core.enums import AccountStatus, EmploymentStatus, RoleCode
 from app.core.errors import ApiError, forbidden
 from app.core.security import hash_token
-from app.models import Employee, ManagerAssignment, UserAccount, UserRole, UserSession
+from app.models import Employee, UserAccount, UserRole, UserSession
 
 SESSION_COOKIE = "tc_session"
 CSRF_COOKIE = "tc_csrf"
 CSRF_HEADER = "x-csrf-token"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-PRIMARY_ROLE_ORDER = [RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY, RoleCode.MANAGER, RoleCode.EMPLOYEE]
+PRIMARY_ROLE_ORDER = [RoleCode.LD_ADMIN, RoleCode.EMPLOYEE]
 
 
 @dataclass
@@ -116,9 +116,6 @@ def require_roles(*codes: RoleCode):
 
 
 require_admin = require_roles(RoleCode.LD_ADMIN)
-require_manager = require_roles(RoleCode.MANAGER)
-require_reader = require_roles(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY)  # Organisation-wide read scope.
-require_report_user = require_roles(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY, RoleCode.MANAGER)
 
 
 def require_withdrawn(user: CurrentUser = Depends(require_admin)) -> CurrentUser:
@@ -126,28 +123,3 @@ def require_withdrawn(user: CurrentUser = Depends(require_admin)) -> CurrentUser
     Built on require_admin so every other role is refused exactly as before; L&D Admin is now refused too.
     Records, tables and audit recording (app.core.audit) are untouched."""
     raise forbidden("This feature is no longer available.")
-
-
-def team_employee_ids(db: Session, manager_employee_id: uuid.UUID) -> list[uuid.UUID]:
-    """A manager's current team, always resolved here from effective-dated records."""
-    today = utcnow().date()
-    return list(
-        db.scalars(
-            select(ManagerAssignment.employee_id).where(
-                ManagerAssignment.manager_employee_id == manager_employee_id,
-                ManagerAssignment.effective_from <= today,
-                (ManagerAssignment.effective_to.is_(None)) | (ManagerAssignment.effective_to >= today),
-            )
-        )
-    )
-
-
-def current_manager_id(db: Session, employee_id: uuid.UUID) -> uuid.UUID | None:
-    today = utcnow().date()
-    return db.scalar(
-        select(ManagerAssignment.manager_employee_id).where(
-            ManagerAssignment.employee_id == employee_id,
-            ManagerAssignment.effective_from <= today,
-            (ManagerAssignment.effective_to.is_(None)) | (ManagerAssignment.effective_to >= today),
-        )
-    )

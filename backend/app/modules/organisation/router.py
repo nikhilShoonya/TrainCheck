@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.db import get_db
-from app.core.deps import CurrentUser, current_manager_id, require_admin, require_reader
+from app.core.deps import CurrentUser, require_admin
 from app.core.errors import conflict, not_found
 from app.core.responses import ok
 from app.models import CalendarHoliday, Competency, Department, Employee, Function, Location, Trainer, WorkingCalendar
@@ -57,7 +57,7 @@ def unit_view(unit: Department | Function) -> dict:
 
 def _crud_units(path: str, model: type, label: str) -> None:
     @router.get(f"/{path}", name=f"list_{path}")
-    def list_units(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+    def list_units(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
         return ok([unit_view(u) for u in db.scalars(select(model).order_by(model.name))])
 
     @router.post(f"/{path}", name=f"create_{path}")
@@ -95,12 +95,12 @@ _crud_units("functions", Function, "function")
 
 
 @router.get("/locations")
-def list_locations(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+def list_locations(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok([{"id": str(x.id), "code": x.code, "name": x.name, "timezone": x.timezone} for x in db.scalars(select(Location).order_by(Location.name))])
 
 
 @router.get("/trainers")
-def list_trainers(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+def list_trainers(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok([{"id": str(t.id), "name": t.name, "email": t.email, "is_active": t.is_active} for t in db.scalars(select(Trainer).order_by(Trainer.name))])
 
 
@@ -130,7 +130,7 @@ def competency_view(c: Competency) -> dict:
 
 
 @router.get("/competencies")
-def list_competencies(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+def list_competencies(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok([competency_view(c) for c in db.scalars(select(Competency).order_by(Competency.name))])
 
 
@@ -168,7 +168,6 @@ def list_employees(_: CurrentUser = Depends(require_admin), db: Session = Depend
                 "location": e.location.name if e.location else None,
                 "grade": e.grade,
                 "employment_status": e.employment_status,
-                "manager_employee_id": str(m) if (m := current_manager_id(db, e.id)) else None,
             }
             for e in rows
         ]
@@ -194,7 +193,7 @@ def calendar_view(calendar: WorkingCalendar) -> dict:
 
 
 @router.get("/calendar")
-def get_calendar(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+def get_calendar(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok(calendar_view(_default_calendar(db)))
 
 

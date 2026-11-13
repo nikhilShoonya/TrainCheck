@@ -54,7 +54,7 @@ def _lookup(db: Session, model: type, code: str | None):
 
 def _ensure_roles(db: Session) -> dict[str, Role]:
     roles = {r.code: r for r in db.scalars(select(Role))}
-    labels = {"EMPLOYEE": "Employee", "MANAGER": "Manager", "LD_ADMIN": "L&D Admin", "HR_READ_ONLY": "HR / Leadership"}
+    labels = {"EMPLOYEE": "Employee", "LD_ADMIN": "L&D Admin"}
     for code, name in labels.items():
         if code not in roles:
             roles[code] = Role(code=code, name=name)

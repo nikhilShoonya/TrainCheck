@@ -1,14 +1,17 @@
 """The employee's own workspace. Identity always comes from the session, never from the client."""
+import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear
-from app.core.enums import ObligationStatus, ResultStatus, ReviewerType
+from app.core.enums import AssessmentType, ObligationStatus, ResultStatus, ReviewerType
 from app.core.responses import display_percent, iso, ok
+from app.models import AssessmentConfig
 from app.modules.behaviour.service import review_status, reviews_for_self
 from app.modules.reports.data import Row, assessment_timing, behaviour_means, behaviour_reviews, load_rows, mean, summary
 from app.modules.reports.scorecard import gain_values
@@ -16,10 +19,11 @@ from app.modules.reports.scorecard import gain_values
 router = APIRouter(prefix="/me", tags=["Employee"])
 
 
-def training_card(r: Row, now) -> dict:
+def training_card(r: Row, now, pretest_ready: set[uuid.UUID]) -> dict:
     e, t = r.enrolment, r.enrolment.training
     config = r.obligation.config if r.obligation else None
-    pre_available = t.pretest_enabled and e.completion is None and r.pre_attempt is None
+    # Offered only once pre-test rules are saved; otherwise starting it fails with "no pre-test configured".
+    pre_available = t.pretest_enabled and t.id in pretest_ready and e.completion is None and r.pre_attempt is None
     return {
         "enrolment_id": str(e.id),
         "training_id": str(t.id),
@@ -56,11 +60,21 @@ def _rows(db: Session, user: CurrentUser) -> list[Row]:
     return load_rows(db, [user.employee_id])
 
 
+def _pretest_ready(db: Session, rows: list[Row]) -> set[uuid.UUID]:
+    """Trainings among these rows that have active pre-test rules."""
+    ids = {r.enrolment.training_id for r in rows if r.enrolment.training.pretest_enabled}
+    if not ids:
+        return set()
+    query = select(AssessmentConfig.training_id).where(AssessmentConfig.training_id.in_(ids), AssessmentConfig.assessment_type == AssessmentType.PRE_TEST, AssessmentConfig.is_active)
+    return set(db.scalars(query))
+
+
 @router.get("/dashboard")
 def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     now = utcnow()
     rows = _rows(db, user)
-    cards = [training_card(r, now) for r in rows]
+    ready = _pretest_ready(db, rows)
+    cards = [training_card(r, now, ready) for r in rows]
     window = now - timedelta(days=90)
     points = sorted(
         ({"label": r.enrolment.training.title, "score": display_percent(r.latest), "date": iso(r.post_attempts[-1].submitted_at)} for r in rows if r.post_attempts and r.post_attempts[-1].submitted_at >= window),
@@ -99,7 +113,9 @@ def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Dep
 @router.get("/trainings")
 def trainings(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     now = utcnow()
-    return ok([training_card(r, now) for r in _rows(db, user)])
+    rows = _rows(db, user)
+    ready = _pretest_ready(db, rows)
+    return ok([training_card(r, now, ready) for r in rows])
 
 
 @router.get("/refresher-materials")
@@ -107,9 +123,11 @@ def refresher_materials(user: CurrentUser = Depends(require_gate_clear), db: Ses
     """Refreshers for trainings the employee has not yet passed, plus their training materials."""
     now = utcnow()
     result = []
-    for r in _rows(db, user):
+    rows = _rows(db, user)
+    ready = _pretest_ready(db, rows)
+    for r in rows:
         if r.result in (ResultStatus.NOT_PASSED, "NEEDS_RETRAINING"):
-            card = training_card(r, now)
+            card = training_card(r, now, ready)
             card["refresher_text"] = r.enrolment.training.refresher_text
             card["refresher_url"] = r.enrolment.training.refresher_url
             result.append(card)

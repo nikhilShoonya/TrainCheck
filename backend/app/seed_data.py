@@ -25,7 +25,8 @@ EMPLOYEES = [
     ("E010", "Anika Sood", "e010@traincheck.demo", "CX", "SUPPORT", "Demo G2", "M002"),
 ]
 
-ROLES = {"M001": ["MANAGER", "EMPLOYEE"], "M002": ["MANAGER", "EMPLOYEE"], "A001": ["LD_ADMIN", "EMPLOYEE"], "H001": ["HR_READ_ONLY", "EMPLOYEE"]}
+# Everyone else is EMPLOYEE only. M001, M002 and H001 stay as people (reporting-line data is kept) with no extra role.
+ROLES = {"A001": ["LD_ADMIN", "EMPLOYEE"]}
 
 COMPETENCIES = [
     ("Applies the documented process", "Uses the training's process accurately in relevant work."),

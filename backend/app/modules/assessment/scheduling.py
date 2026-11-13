@@ -63,6 +63,9 @@ def calculate_due_at(calendar: CalendarView, completed_at: datetime, config: Ass
         return completed_at
     if config.schedule_mode == ScheduleMode.NEXT_WORKING_DAY:
         return calendar.start_of_day(calendar.next_working_day(day))
+    if config.schedule_mode == ScheduleMode.FIXED_DATE:
+        # From the start of the chosen day. Completion recorded on or after it: due at once, never in the past.
+        return max(calendar.start_of_day(config.schedule_date), completed_at)
     if config.schedule_uses_working_days:
         return calendar.start_of_day(calendar.add_working_days(day, config.schedule_delay_days))
     return calendar.start_of_day(day + timedelta(days=config.schedule_delay_days))
@@ -73,6 +76,7 @@ def schedule_snapshot(calendar: CalendarView, config: AssessmentConfig) -> dict:
     return {
         "mode": config.schedule_mode,
         "delay_days": config.schedule_delay_days,
+        "date": config.schedule_date.isoformat() if config.schedule_date else None,
         "working_days": config.schedule_uses_working_days,
         "timezone": calendar.timezone,
         "weekdays": sorted(calendar.weekdays),

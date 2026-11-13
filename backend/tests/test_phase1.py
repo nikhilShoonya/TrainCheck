@@ -383,7 +383,6 @@ def test_behaviour_writes_are_refused_but_history_is_readable(world, db, client_
     employee = client_for(world.employee)
     assert employee.post(f"/me/behaviour-reviews/{review.id}/submit", json={"responses": []}).json()["error"]["code"] == "BEHAVIOUR_DISABLED"
     assert employee.get("/me/behaviour-reviews").json()["data"] == []  # No open tasks while switched off.
-    assert client_for(world.manager).get("/manager/behaviour-reviews").json()["data"] == []
     admin = client_for(world.admin)
     assert admin.post("/admin/behaviour-templates", json={"name": "New", "training_id": str(training.id), "questions": []}).status_code in (400, 409)
     assert admin.get(f"/scorecards/{training.id}").status_code == 200  # Reports still load.

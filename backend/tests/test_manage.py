@@ -12,17 +12,22 @@ def row(code, email, **extra):
 
 
 def test_import_creates_people_accounts_and_reporting_lines(world, db, client_for):
-    result = import_employees(db, [row("N1", "n1@test.example", manager_code="N2"), row("N2", "n2@test.example", roles="MANAGER|EMPLOYEE")])
+    result = import_employees(db, [row("N1", "n1@test.example", manager_code="N2"), row("N2", "n2@test.example")])
     assert result.errors == [] and len(result.created) == 2
     db.commit()
 
     passwords = dict(result.created)
-    client = ApiClient()
-    assert client.login("n1@test.example", passwords["n1@test.example"]).status_code == 200
-    manager = ApiClient()
-    assert manager.login("n2@test.example", passwords["n2@test.example"]).status_code == 200
-    people = manager.get("/manager/team-employees").json()["data"]
-    assert [p["employee_code"] for p in people] == ["N1"]
+    for email in ("n1@test.example", "n2@test.example"):
+        assert ApiClient().login(email, passwords[email]).status_code == 200
+    # The reporting line is still stored as data, though no role reads it any more.
+    n1, n2 = (db.scalar(select(Employee).where(Employee.employee_code == c)) for c in ("N1", "N2"))
+    assert db.scalar(select(ManagerAssignment).where(ManagerAssignment.employee_id == n1.id)).manager_employee_id == n2.id
+
+
+def test_import_rejects_the_removed_roles(world, db):
+    for removed in ("MANAGER", "HR_READ_ONLY"):
+        result = import_employees(db, [row("N9", "n9@test.example", roles=f"{removed}|EMPLOYEE")])
+        assert f"unknown role '{removed}'" in result.errors[0]
 
 
 def test_import_applies_nothing_when_any_row_is_wrong(world, db):

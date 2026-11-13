@@ -13,16 +13,16 @@ from sqlalchemy.orm import Session
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_gate_clear, require_reader, require_report_user, team_employee_ids
-from app.core.enums import Cadence, DeliveryStatus, ExportFormat, ExportStatus, ReportCode, ReviewerType, RoleCode
+from app.core.deps import CurrentUser, require_admin, require_gate_clear
+from app.core.enums import Cadence, DeliveryStatus, ExportFormat, ExportStatus, ReportCode, RoleCode
 from app.core.errors import forbidden, not_found
 from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
-from app.models import Employee, ManagerAssignment, ReportDelivery, ReportExport, ReportSchedule, Training, UserAccount
+from app.models import Function, ReportDelivery, ReportExport, ReportSchedule, Training, UserAccount
 from app.modules.notifications.service import notify_account
 from app.modules.reports import exports
 from app.modules.reports.catalogue import BUILDERS, Report
-from app.modules.reports.data import ReportFilters, behaviour_reviews, departments_summary, employee_scope, load_rows, mean, monthly_trend, rate, summary
+from app.modules.reports.data import ReportFilters, behaviour_reviews, departments_summary, employee_scope, load_rows, mean, monthly_trend, summary
 from app.modules.reports.scorecard import build_scorecard, question_performance
 
 router = APIRouter(tags=["Reports"])
@@ -34,22 +34,18 @@ def filters_dep(
     date_to: date | None = None,
     department_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
-    manager_id: uuid.UUID | None = None,
     training_id: uuid.UUID | None = None,
     trainer_id: uuid.UUID | None = None,
     batch_id: uuid.UUID | None = None,
     grade: str | None = None,
     function_id: uuid.UUID | None = None,
 ) -> ReportFilters:
-    return ReportFilters(date_from, date_to, department_id, location_id, manager_id, training_id, trainer_id, batch_id, grade or None, function_id)
+    return ReportFilters(date_from, date_to, department_id, location_id, training_id, trainer_id, batch_id, grade or None, function_id)
 
 
 def resolve_scope(db: Session, user: CurrentUser, code: ReportCode) -> list[uuid.UUID] | None:
-    """L&D and HR get the organisation. Managers keep only the Team Scorecard export, scoped to their team
-    (the Team Reports page was removed). Employees have no report access (Assessment History was removed)."""
-    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
-        return employee_scope(db, user)
-    if user.has_role(RoleCode.MANAGER) and code == ReportCode.SCORECARD:
+    """L&D Admin gets the organisation. Employees have no report access (Assessment History was removed)."""
+    if user.has_role(RoleCode.LD_ADMIN):
         return employee_scope(db, user)
     raise forbidden()
 
@@ -59,10 +55,8 @@ def build_report(db: Session, user: CurrentUser, code: ReportCode, filters: Repo
 
 
 def scope_label(user: CurrentUser) -> str:
-    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
+    if user.has_role(RoleCode.LD_ADMIN):
         return "Organisation"
-    if user.has_role(RoleCode.MANAGER):
-        return f"Team of {user.employee.full_name}"
     return f"Own record: {user.employee.full_name}"
 
 
@@ -85,15 +79,12 @@ def report_view(report: Report, filters: ReportFilters) -> dict:
 def catalogue(user: CurrentUser = Depends(require_gate_clear)) -> dict:
     from app.modules.reports.catalogue import TITLES
 
-    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
-        codes = list(ReportCode)
-    else:
-        codes = [ReportCode.SCORECARD] if user.has_role(RoleCode.MANAGER) else []
+    codes = list(ReportCode) if user.has_role(RoleCode.LD_ADMIN) else []
     return ok([{"code": c.value, "title": TITLES[c][0], "description": TITLES[c][1]} for c in codes])
 
 
 @router.get("/reports/filter-options")
-def filter_options(user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def filter_options(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Dropdown values drawn only from data the caller may see."""
     rows = load_rows(db, employee_scope(db, user))
     people = {r.enrolment.employee_id: r.enrolment.employee for r in rows}
@@ -104,21 +95,10 @@ def filter_options(user: CurrentUser = Depends(require_report_user), db: Session
         seen = {str(i.id): i.name for i in items if i}
         return [{"id": k, "name": v} for k, v in sorted(seen.items(), key=lambda kv: kv[1])]
 
-    managers: list[dict] = []
-    if employee_scope(db, user) is None:
-        today = utcnow().date()
-        result = db.execute(
-            select(Employee.id, Employee.full_name)
-            .join(ManagerAssignment, ManagerAssignment.manager_employee_id == Employee.id)
-            .where((ManagerAssignment.effective_to.is_(None)) | (ManagerAssignment.effective_to >= today))
-            .distinct()
-        )
-        managers = [{"id": str(i), "name": n} for i, n in sorted(result, key=lambda r: r[1])]
     return ok(
         {
             "departments": unique(p.department for p in people.values()),
             "locations": unique(p.location for p in people.values()),
-            "managers": managers,
             "trainings": [{"id": str(k), "name": v.title} for k, v in sorted(trainings.items(), key=lambda kv: kv[1].title)],
             "trainers": unique(t.trainer for t in trainings.values()),
             "batches": [{"id": str(k), "name": v.name} for k, v in sorted(batches.items(), key=lambda kv: kv[1].name)],
@@ -128,7 +108,7 @@ def filter_options(user: CurrentUser = Depends(require_report_user), db: Session
 
 
 @router.get("/reports/organisation-summary")
-def organisation_summary(user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def organisation_summary(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     rows = load_rows(db, employee_scope(db, user))
     return ok({"summary": summary(rows), "departments": departments_summary(rows), "trend": monthly_trend(rows, utcnow())})
 
@@ -141,14 +121,14 @@ def _training_in_scope(db: Session, training_id: uuid.UUID) -> Training:
 
 
 @router.get("/scorecards")
-def list_scorecards(user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def list_scorecards(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     rows = load_rows(db, employee_scope(db, user))
     seen = {r.enrolment.training_id: r.enrolment.training for r in rows}
     return ok([{"id": str(k), "title": v.title, "code": v.training_code} for k, v in sorted(seen.items(), key=lambda kv: kv[1].title)])
 
 
 @router.get("/scorecards/{training_id}", dependencies=[expensive("report")])
-def scorecard(training_id: uuid.UUID, filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def scorecard(training_id: uuid.UUID, filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     training = _training_in_scope(db, training_id)
     filters.training_id = training_id
     return ok(build_scorecard(db, training, load_rows(db, employee_scope(db, user), filters)))
@@ -157,13 +137,15 @@ def scorecard(training_id: uuid.UUID, filters: ReportFilters = Depends(filters_d
 # ---------- Analytics pages ----------
 
 @router.get("/reports/analytics", dependencies=[expensive("report")])
-def analytics(filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def analytics(filters: ReportFilters = Depends(filters_dep), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Department and function comparison, topic gaps and behaviour trend (Phase 3)."""
     rows = load_rows(db, employee_scope(db, user), filters)
     groups: dict[str, list] = defaultdict(list)
+    # Functions for every employee in one query (reading employee.function per row ran one query per function).
+    function_ids = {r.enrolment.employee.function_id for r in rows if r.enrolment.employee.function_id}
+    function_names = dict(db.execute(select(Function.id, Function.name).where(Function.id.in_(function_ids))).all()) if function_ids else {}
     for r in rows:
-        function = r.enrolment.employee.function
-        groups[function.name if function else "Unassigned"].append(r)
+        groups[function_names.get(r.enrolment.employee.function_id, "Unassigned")].append(r)
     topics, weakest = question_performance(db, rows)
     reviews = behaviour_reviews(db, [r.enrolment.id for r in rows])
     periods: dict[int, dict[str, list[int]]] = defaultdict(lambda: {"SELF": [], "MANAGER": []})
@@ -180,26 +162,6 @@ def analytics(filters: ReportFilters = Depends(filters_dep), user: CurrentUser =
             "trend": monthly_trend(rows, utcnow()),
         }
     )
-
-
-@router.get("/reports/manager-evaluation", dependencies=[expensive("report")])
-def manager_evaluation(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
-    """How far each manager has completed assigned observations. Describes task completion only."""
-    now = utcnow()
-    today = now.date()
-    managers = db.execute(
-        select(Employee).join(ManagerAssignment, ManagerAssignment.manager_employee_id == Employee.id).where((ManagerAssignment.effective_to.is_(None)) | (ManagerAssignment.effective_to >= today)).distinct()
-    ).scalars().all()
-    out = []
-    for manager in sorted(managers, key=lambda m: m.full_name):
-        team = team_employee_ids(db, manager.id)
-        reviews = [r for r in behaviour_reviews(db, [x.enrolment.id for x in load_rows(db, team)]) if r.reviewer_type == ReviewerType.MANAGER]
-        due = [r for r in reviews if r.cycle.due_at <= now]
-        submitted = [r for r in due if r.submitted_at]
-        overdue = [r for r in due if not r.submitted_at and (now - r.cycle.due_at).days >= 1]
-        ratings = [x.rating for r in submitted for x in r.responses]
-        out.append({"manager": manager.full_name, "employee_code": manager.employee_code, "team_size": len(team), "observations_due": len(due), "observations_submitted": len(submitted), "observations_overdue": len(overdue), "completion_rate": rate(len(submitted), len(due)), "mean_rating_given": mean(ratings)})
-    return ok(out)
 
 
 # ---------- Exports ----------
@@ -301,16 +263,14 @@ def schedule_view(schedule: ReportSchedule) -> dict:
 
 
 @router.get("/reports/schedules")
-def list_schedules(user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def list_schedules(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     schedules = db.scalars(select(ReportSchedule).where(ReportSchedule.owner_user_id == user.id).order_by(ReportSchedule.created_at.desc())).all()
     return ok([schedule_view(s) for s in schedules])
 
 
 @router.post("/reports/schedules")
-def create_schedule(body: ScheduleIn, user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def create_schedule(body: ScheduleIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """The owner is the only recipient, so a schedule can never send a report beyond the owner's scope."""
-    if not user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
-        raise forbidden()  # Scheduled delivery belonged to the removed manager Team Reports page.
     filters = ReportFilters.from_stored(body.filters)
     schedule = ReportSchedule(owner_user_id=user.id, report_code=body.report_code, export_format=body.export_format, filters=filters.stored(), cadence=body.cadence, next_run_at=next_run(body.cadence, utcnow()))
     db.add(schedule)
@@ -322,7 +282,7 @@ def create_schedule(body: ScheduleIn, user: CurrentUser = Depends(require_report
 
 
 @router.delete("/reports/schedules/{schedule_id}")
-def stop_schedule(schedule_id: uuid.UUID, user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
+def stop_schedule(schedule_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     schedule = db.get(ReportSchedule, schedule_id)
     if schedule is None or schedule.owner_user_id != user.id:
         raise not_found()

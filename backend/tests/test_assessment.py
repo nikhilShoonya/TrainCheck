@@ -319,7 +319,7 @@ def test_three_failures_flag_needs_retraining_and_notify(world, client_for, db):
         code: db.scalar(select(func.count()).select_from(Notification).join(UserAccount, UserAccount.id == Notification.user_account_id).where(UserAccount.employee_id == person.id, Notification.type == "FINAL_FAILURE"))
         for code, person in {"manager": world.manager, "admin": world.admin, "hr": world.hr, "other": world.other_manager, "self": world.employee}.items()
     }
-    assert recipients == {"manager": 1, "admin": 1, "hr": 1, "other": 0, "self": 1}
+    assert recipients == {"manager": 0, "admin": 1, "hr": 0, "other": 0, "self": 1}  # L&D and the employee only.
 
 
 def test_pass_on_retake_keeps_all_attempts(world, client_for, db):  # TC-RET-004

@@ -5,11 +5,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_gate_clear, require_withdrawn, team_employee_ids
+from app.core.deps import CurrentUser, require_admin, require_gate_clear, require_withdrawn
 from app.core.enums import AssessmentType, ImportStatus, RoleCode, TrainingStatus
 from app.core.responses import iso, ok
-from app.models import AuditLog, Employee, ImportJob, Training, UserAccount
-from app.modules.assessment.service import active_config, pool_problem
+from app.models import AssessmentConfig, AuditLog, Employee, ImportJob, Training, UserAccount
+from app.modules.assessment.service import PoolData, pool_problem
 from app.modules.reports.data import departments_summary, load_rows, monthly_trend, summary
 
 router = APIRouter(tags=["Administration"])
@@ -51,9 +51,12 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
 
     recent = []
     needs_setup = 0
+    ids = [t.id for t in trainings]
+    configs = {c.training_id: c for c in db.scalars(select(AssessmentConfig).where(AssessmentConfig.training_id.in_(ids), AssessmentConfig.assessment_type == AssessmentType.POST_TEST, AssessmentConfig.is_active))} if ids else {}
+    pools = PoolData(db, ids)
     for t in trainings:
-        config = active_config(db, t.id, AssessmentType.POST_TEST)
-        if t.status != TrainingStatus.ACTIVE or config is None or pool_problem(db, config):
+        config = configs.get(t.id)
+        if t.status != TrainingStatus.ACTIVE or config is None or pool_problem(db, config, pools):
             needs_setup += 1
         group = groups.get(t.id, [])
         recent.append({"id": str(t.id), "title": t.title, "status": t.status, "enrolled": len(group), "pass_rate": summary(group)["pass_rate"]})
@@ -76,13 +79,8 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
 
 @router.get("/search")
 def search(q: str = Query(min_length=1, max_length=120), user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    """Scoped search. An employee finds only assigned training; a manager only the team's."""
-    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
-        scope = None
-    elif user.has_role(RoleCode.MANAGER):
-        scope = [*team_employee_ids(db, user.employee_id), user.employee_id]
-    else:
-        scope = [user.employee_id]
+    """Scoped search. L&D Admin searches the organisation; an employee finds only assigned training."""
+    scope = None if user.has_role(RoleCode.LD_ADMIN) else [user.employee_id]
     needle = q.lower()
     seen: dict[str, dict] = {}
     for r in load_rows(db, scope):

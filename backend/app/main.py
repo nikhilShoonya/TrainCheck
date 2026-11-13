@@ -18,7 +18,6 @@ from app.modules.behaviour.router import router as behaviour_router
 from app.modules.employee.router import router as employee_router
 from app.modules.identity.router import router as identity_router
 from app.modules.imports.router import router as imports_router
-from app.modules.manager.router import router as manager_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.organisation.router import router as organisation_router
 from app.modules.question_bank.router import router as question_router
@@ -98,7 +97,6 @@ def create_app() -> FastAPI:
         identity_router,
         assessment_router,
         employee_router,
-        manager_router,
         notifications_router,
         behaviour_router,
         training_router,

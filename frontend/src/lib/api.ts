@@ -19,6 +19,14 @@ function csrfToken(): string {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
+type MutationListener = (path: string) => void;
+const mutationListeners: MutationListener[] = [];
+
+/** Called after every successful change (POST, PUT, PATCH, DELETE) so cached screens can refresh. */
+export function onApiMutation(listener: MutationListener): void {
+  mutationListeners.push(listener);
+}
+
 function handleAccessCodes(error: ApiError): void {
   if (typeof window === "undefined") return;
   const { pathname } = window.location;
@@ -43,6 +51,7 @@ async function send<T>(method: string, path: string, body?: unknown, form?: Form
     handleAccessCodes(error);
     throw error;
   }
+  if (method !== "GET") for (const listener of mutationListeners) listener(path);
   return payload?.data as T;
 }
 

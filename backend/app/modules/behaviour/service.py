@@ -1,4 +1,4 @@
-"""Level 3 Behaviour: templates, 30/60/90-day cycles, self-assessment and manager observation."""
+"""Level 3 Behaviour: templates, 30/60/90-day cycles and self-assessment."""
 import uuid
 from datetime import datetime, timedelta
 
@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.clock import utcnow
 from app.core.config import get_settings
-from app.core.deps import current_manager_id
 from app.core.enums import ReviewerType, ReviewStatus
 from app.core.errors import conflict, validation
 from app.models import (
@@ -45,7 +44,6 @@ def create_cycles(db: Session, enrolment: Enrolment, completed_at: datetime) -> 
     template = resolve_template(db, training.id, enrolment.employee.function_id)
     if template is None:
         return 0  # The scorecard shows "Not configured". Nothing is invented.
-    manager_id = current_manager_id(db, enrolment.employee_id)
     created = 0
     for days in sorted(set(training.followup_days or [])):
         cycle = BehaviourReviewCycle(
@@ -59,7 +57,6 @@ def create_cycles(db: Session, enrolment: Enrolment, completed_at: datetime) -> 
         db.add(cycle)
         db.flush()
         db.add(BehaviourReview(cycle_id=cycle.id, reviewer_type=ReviewerType.SELF, assigned_reviewer_employee_id=enrolment.employee_id))
-        db.add(BehaviourReview(cycle_id=cycle.id, reviewer_type=ReviewerType.MANAGER, assigned_reviewer_employee_id=manager_id))
         created += 1
     db.flush()
     return created
@@ -109,21 +106,6 @@ def reviews_for_self(db: Session, employee_id: uuid.UUID) -> list[BehaviourRevie
     if not enabled():
         query = query.where(BehaviourReview.submitted_at.is_not(None))  # History only; no open tasks.
     return list(db.scalars(query))
-
-
-def reviews_for_team(db: Session, team_ids: list[uuid.UUID], manager_employee_id: uuid.UUID) -> list[BehaviourReview]:
-    """Open tasks follow the current team. Submitted observations stay with the manager who wrote them."""
-    open_tasks = (BehaviourReview.submitted_at.is_(None)) & (BehaviourReviewCycle.employee_id.in_(team_ids))
-    written = BehaviourReview.submitted_by_employee_id == manager_employee_id
-    return list(
-        db.scalars(
-            select(BehaviourReview)
-            .join(BehaviourReview.cycle)
-            .options(*_loaded())
-            .where(BehaviourReview.reviewer_type == ReviewerType.MANAGER, (open_tasks | written) if enabled() else written)
-            .order_by(BehaviourReviewCycle.due_at)
-        )
-    )
 
 
 def submit_review(db: Session, review: BehaviourReview, submitter_employee_id: uuid.UUID, responses: list[dict], now: datetime | None = None) -> None:

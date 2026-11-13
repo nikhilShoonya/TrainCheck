@@ -11,7 +11,6 @@ import type { Named, ReportData } from "@/lib/types";
 interface FilterOptions {
   departments: Named[];
   locations: Named[];
-  managers: Named[];
   trainings: Named[];
   trainers: Named[];
   batches: Named[];
@@ -45,7 +44,6 @@ export function FilterBar({ filters, onApply, showDates = true }: { filters: Fil
       ) : null}
       <SelectField label="Department" name="department_id" placeholder="All departments" options={toOptions(o?.departments)} defaultValue={filters.department_id ?? ""} />
       <SelectField label="Location" name="location_id" placeholder="All locations" options={toOptions(o?.locations)} defaultValue={filters.location_id ?? ""} />
-      {o?.managers.length ? <SelectField label="Manager" name="manager_id" placeholder="All managers" options={toOptions(o.managers)} defaultValue={filters.manager_id ?? ""} /> : null}
       <SelectField label="Training" name="training_id" placeholder="All training" options={toOptions(o?.trainings)} defaultValue={filters.training_id ?? ""} />
       <SelectField label="Trainer" name="trainer_id" placeholder="All trainers" options={toOptions(o?.trainers)} defaultValue={filters.trainer_id ?? ""} />
       <SelectField label="Batch" name="batch_id" placeholder="All batches" options={toOptions(o?.batches)} defaultValue={filters.batch_id ?? ""} />

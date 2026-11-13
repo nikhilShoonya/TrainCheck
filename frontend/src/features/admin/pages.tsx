@@ -19,7 +19,12 @@ import Link from "next/link";
 const EYEBROW = "L&D ADMIN";
 const SCOPE_LABEL: Record<string, string> = { COMMON: "Common (all departments)", DEPARTMENT: "Department-specific", FUNCTION: "Function-specific", COMBINED: "Department and function" };
 const TYPE_LABEL: Record<string, string> = { MCQ_SINGLE: "Single choice", MCQ_MULTIPLE: "Multiple choice", TRUE_FALSE: "True / False", SCENARIO: "Scenario" };
-const SCHEDULE_LABEL: Record<string, string> = { SAME_DAY: "Same day", NEXT_WORKING_DAY: "Next working day", DELAY_DAYS: "After a delay" };
+const SCHEDULE_LABEL: Record<string, string> = { SAME_DAY: "Same day", NEXT_WORKING_DAY: "Next working day", DELAY_DAYS: "After a delay", FIXED_DATE: "On a specific date" };
+/** Today's date in the browser, as the YYYY-MM-DD a date input uses. */
+const todayInput = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+};
 
 const names = (items?: Named[]) => (items ?? []).map((x) => ({ value: x.id, label: x.name }));
 
@@ -1585,10 +1590,19 @@ function QuestionBankInner() {
 
 /* ---------- Import centre ---------- */
 
+interface ImportTraining {
+  id: string;
+  code: string;
+  title: string;
+  status: string;
+}
+
 interface ImportJob {
   id: string;
   import_type: string;
   file_name: string;
+  training?: ImportTraining | null;
+  trainings?: ImportTraining[];
   status: string;
   total_rows: number;
   accepted_rows: number;
@@ -1618,24 +1632,58 @@ const ROW_STATUS: Record<string, [string, string]> = {
   INVALID: ["Rejected", "danger"],
 };
 
+/** Where a question import's questions go: the selected training, or the trainings named in a file-based import. */
+function ImportTrainingLinks({ job }: { job: ImportJob }) {
+  const list = job.training ? [job.training] : (job.trainings ?? []);
+  if (job.import_type !== "QUESTIONS" || !list.length) return null;
+  return (
+    <p className="import-training">
+      {job.training ? "Linked training: " : "Linked trainings (from the file): "}
+      {list.map((t, i) => (
+        <span key={t.id}>
+          {i ? "; " : ""}
+          <strong>{t.title}</strong> ({t.code}){t.status === "DRAFT" ? " · Draft" : ""} ·{" "}
+          <Link href={`/lnd/questions?training_id=${t.id}`}>Open in Question Bank</Link>
+        </span>
+      ))}
+    </p>
+  );
+}
+
 export function ImportCentre() {
   const [kind, setKind] = useState("QUESTIONS");
+  const [trainingId, setTrainingId] = useState("");
+  const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
   const [job, setJob] = useState<ImportJob | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const recent = useApi<ImportJob[]>("/admin/imports");
+  const [editing, setEditing] = useState<ImportJob | null>(null);
+  const [deleting, setDeleting] = useState<ImportJob | null>(null);
   const toast = useToast();
 
   const upload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     form.set("import_type", kind);
+    if (kind === "QUESTIONS" && !trainingId) {
+      setError("Select the training these questions belong to.");
+      return;
+    }
+    const sent = formSnapshot();
     setBusy(true);
     setError("");
     setJob(null);
     try {
-      setJob(await api.upload<ImportJob>("/admin/imports", form));
+      const validated = await api.upload<ImportJob>("/admin/imports", form);
+      const current = formSnapshot();
+      if (current.training !== sent.training || current.file !== sent.file) {
+        // The type, training or file changed while validating: this preview no longer matches the form.
+        void api.post(`/admin/imports/${validated.id}/cancel`).catch(() => {});
+        return;
+      }
+      setJob(validated);
       void recent.reload();
     } catch (e) {
       setError(fieldErrors(e));
@@ -1658,6 +1706,13 @@ export function ImportCentre() {
     }
   };
   const download = (path: string, name: string) => downloadFile(path, name).catch((e: ApiError) => toast(e.message));
+  /** Shows an import's rows in the preview above, with the form set to match it. */
+  const showJob = (full: ImportJob) => {
+    setKind(full.import_type);
+    setTrainingId(full.training?.id ?? "");
+    setJob(full);
+    setError("");
+  };
 
   /** Drops a validated preview. One that was never imported is cancelled, so it cannot be imported later by mistake. */
   const discardPreview = () => {
@@ -1666,6 +1721,8 @@ export function ImportCentre() {
     setError("");
   };
   const fileInput = () => document.querySelector<HTMLInputElement>("#import-form input[type=file]");
+  /** What the form holds now. The training select exists only for question imports, so a type change shows here too. */
+  const formSnapshot = () => ({ training: document.querySelector<HTMLSelectElement>("#import-form select[name=training_id]")?.value ?? null, file: fileInput()?.files?.[0] ?? null });
   const focusById = (id: string) => {
     const el = document.getElementById(id);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1689,8 +1746,11 @@ export function ImportCentre() {
     { label: "2 · Review validation", enabled: Boolean(job), done: finished, go: () => focusById("import-summary") },
     { label: "3 · Confirm import", enabled: finished || Boolean(job?.accepted_rows), done: finished, go: () => focusById(finished ? "import-summary" : "import-commit") },
   ];
+  const importable = (trainings.data ?? []).filter((t) => t.status !== "ARCHIVED");
   const hint = !job
-    ? "Choose the import type and a file, then select Validate file. Nothing is saved until step 3."
+    ? kind === "QUESTIONS"
+      ? "Choose the training and a file, then select Validate file. Nothing is saved until step 3."
+      : "Choose the import type and a file, then select Validate file. Nothing is saved until step 3."
     : finished
       ? "Import finished. Select 1 · Choose file to import another file."
       : job.accepted_rows
@@ -1715,7 +1775,13 @@ export function ImportCentre() {
         <p className="small import-hint" role="status">
           {hint}
         </p>
-        <form id="import-form" onSubmit={(e) => void upload(e)} onChange={(e) => (e.target as HTMLElement).getAttribute("type") === "file" && job && discardPreview()}>
+        <form
+          id="import-form"
+          onSubmit={(e) => void upload(e)}
+          onChange={(e) => {
+            if ((e.target as HTMLElement).getAttribute("type") === "file" && job) discardPreview();
+          }}
+        >
           <SelectField
             label="Import type"
             value={kind}
@@ -1725,6 +1791,25 @@ export function ImportCentre() {
             }}
             options={[{ value: "QUESTIONS", label: "Question bank" }, { value: "COMPLETIONS", label: "Training completions" }]}
           />
+          {kind === "QUESTIONS" ? (
+            <div className="import-training-select">
+              <SelectField
+                label="Select training *"
+                name="training_id"
+                required
+                value={trainingId}
+                placeholder={trainings.data ? "Choose a draft or active training" : "Loading trainings…"}
+                onChange={(e) => {
+                  setTrainingId(e.target.value);
+                  if (job) discardPreview();
+                }}
+                options={importable.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})${t.status === "DRAFT" ? " · Draft" : ""}` }))}
+              />
+              <p className="small">All questions in this file will be linked to the selected training. The file&apos;s training column can be left blank; a code in it must match this training.</p>
+              {trainings.data && !importable.length ? <p className="small form-error">No draft or active training exists. Create one in Training Management first.</p> : null}
+              {trainings.error ? <p className="small form-error">Trainings could not be loaded. {trainings.error.message}</p> : null}
+            </div>
+          ) : null}
           <div
             className={`upload-zone${dragging ? " is-dragging" : ""}`}
             onDragOver={(e) => {
@@ -1737,6 +1822,8 @@ export function ImportCentre() {
               setDragging(false);
               const input = e.currentTarget.querySelector<HTMLInputElement>("input[type=file]");
               if (input && e.dataTransfer.files.length) {
+                // Setting files does not fire a change event, so the old preview is invalidated here.
+                if (job) discardPreview();
                 input.files = e.dataTransfer.files;
                 toast("File selected. Choose Validate file to review its rows.");
               }
@@ -1769,6 +1856,7 @@ export function ImportCentre() {
             <div className="notice" id="import-summary" tabIndex={-1}>
               {job.status === "READY" ? `${job.file_name} validated. ${job.accepted_rows} valid, ${job.rejected_rows} rejected or duplicate. Nothing has been imported yet.` : `Import finished. ${rows(job.accepted_rows)} imported, ${rows(job.rejected_rows)} rejected or skipped as duplicates.`}
               {importNotes(job)}
+              <ImportTrainingLinks job={job} />
             </div>
             <DataTable
               headers={["Row", "Record", "Status", "Problem"]}
@@ -1804,32 +1892,90 @@ export function ImportCentre() {
         <Loaded state={recent}>
           {(rows) => (
             <DataTable
-              headers={["File", "Type", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)", ""]}
+              headers={["File", "Type", "Training", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)", ""]}
               emptyTitle="No imports yet."
               emptyHint="Validate a file above to begin."
               rows={rows.map((j) => [
                 j.file_name,
                 j.import_type === "QUESTIONS" ? "Question bank" : "Completions",
+                j.training ? `${j.training.title} (${j.training.code})` : j.import_type === "QUESTIONS" ? "Named in file" : "—",
                 j.status.replaceAll("_", " ").toLowerCase(),
                 j.total_rows,
                 j.accepted_rows,
                 j.rejected_rows,
                 dateTime(j.created_at),
-                <Btn key="v" kind="text" onClick={() => void api.get<ImportJob>(`/admin/imports/${j.id}`).then((full) => {
-                  setKind(full.import_type);
-                  setJob(full);
-                  setError("");
-                }).catch((e: ApiError) => toast(e.message))}>
-                  View
-                </Btn>,
+                <div className="row wrap" key="a">
+                  <Btn kind="text" onClick={() => void api.get<ImportJob>(`/admin/imports/${j.id}`).then(showJob).catch((e: ApiError) => toast(e.message))}>
+                    View
+                  </Btn>
+                  {UNAPPLIED_IMPORT.includes(j.status) ? (
+                    <>
+                      <Btn kind="text" onClick={() => setEditing(j)}>
+                        Edit
+                      </Btn>
+                      <Btn kind="text" tone="danger" onClick={() => setDeleting(j)}>
+                        Delete
+                      </Btn>
+                    </>
+                  ) : null}
+                </div>,
               ])}
             />
           )}
         </Loaded>
       </section>
+      {editing ? (
+        <DialogForm
+          title="Edit import"
+          submitLabel="Validate file"
+          onClose={() => setEditing(null)}
+          onSubmit={async (form) => {
+            const updated = await api.upload<ImportJob>(`/admin/imports/${editing.id}/replace`, form);
+            showJob(updated);
+            void recent.reload();
+            toast(`${updated.file_name} validated. ${updated.accepted_rows} valid, ${updated.rejected_rows} rejected or duplicate. Nothing has been imported yet.`);
+          }}
+        >
+          <p className="small">
+            {editing.file_name} · {rows(editing.total_rows)}. Choose a corrected file{editing.import_type === "QUESTIONS" ? " and the training" : ""}. Its rows replace the current ones in this import and are validated again; nothing is imported until you confirm.
+          </p>
+          {editing.import_type === "QUESTIONS" ? (
+            <SelectField
+              label="Select training *"
+              name="training_id"
+              required
+              defaultValue={editing.training?.id ?? ""}
+              placeholder="Choose a draft or active training"
+              options={importable.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})${t.status === "DRAFT" ? " · Draft" : ""}` }))}
+            />
+          ) : null}
+          <label className="field">
+            Select CSV or Excel file *
+            <input type="file" name="file" accept=".csv,.xlsx" required />
+          </label>
+        </DialogForm>
+      ) : null}
+      {deleting ? (
+        <ConfirmDialog
+          title="Delete import?"
+          danger
+          confirmLabel="Delete import"
+          body={<p>{deleting.file_name} · {rows(deleting.total_rows)}. This removes the import and its validation results. Nothing was imported from it, so no questions or completions are affected.</p>}
+          onClose={() => setDeleting(null)}
+          onConfirm={async () => {
+            await api.del(`/admin/imports/${deleting.id}`);
+            if (job?.id === deleting.id) setJob(null);
+            toast("Import deleted.");
+            void recent.reload();
+          }}
+        />
+      ) : null}
     </>
   );
 }
+
+/** Imports that never applied anything. Only these can be edited or deleted; completed imports are the record of what was added. */
+const UNAPPLIED_IMPORT = ["READY", "CANCELLED", "FAILED"];
 
 /* ---------- Assessment configuration ---------- */
 
@@ -1962,6 +2108,7 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
             schedule_mode: post ? form.get("schedule_mode") : "SAME_DAY",
             schedule_delay_days: post ? Number(form.get("schedule_delay_days") ?? 0) : 0,
             schedule_uses_working_days: form.has("schedule_uses_working_days"),
+            schedule_date: post && mode === "FIXED_DATE" ? form.get("schedule_date") : null,
             difficulty_mix: mix,
             show_explanations: form.has("show_explanations"),
             shuffle_questions: form.has("shuffle_questions"),
@@ -1993,7 +2140,9 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
           <div className="form-grid">
             <SelectField label="When the assessment becomes due" name="schedule_mode" value={mode} onChange={(e) => setMode(e.target.value)} options={Object.entries(SCHEDULE_LABEL).map(([value, label]) => ({ value, label }))} />
             {mode === "DELAY_DAYS" ? <TextField label="Delay in days *" name="schedule_delay_days" type="number" required min={1} max={365} defaultValue={current?.schedule_delay_days || 7} /> : null}
+            {mode === "FIXED_DATE" ? <TextField label="Assessment date *" name="schedule_date" type="date" required min={todayInput()} defaultValue={current?.schedule_date ?? ""} /> : null}
           </div>
+          {mode === "FIXED_DATE" ? <p className="small">The assessment opens on this date for everyone whose completion is recorded by then. If completion is recorded after this date, the assessment is due straight away.</p> : null}
           {mode === "DELAY_DAYS" ? (
             <label className="checkline">
               <input type="checkbox" name="schedule_uses_working_days" defaultChecked={current?.schedule_uses_working_days} /> Count working days instead of calendar days
@@ -2075,7 +2224,7 @@ export function AssessmentConfig() {
                 t.config?.question_count ?? "—",
                 t.config ? `${t.config.duration_minutes} min` : "—",
                 t.config?.max_attempts ?? "—",
-                t.config ? SCHEDULE_LABEL[t.config.schedule_mode] : "—",
+                t.config ? (t.config.schedule_mode === "FIXED_DATE" && t.config.schedule_date ? `On ${day(t.config.schedule_date)}` : SCHEDULE_LABEL[t.config.schedule_mode]) : "—",
                 <div className="row wrap" key="a">
                   <Btn onClick={() => setEditing({ id: t.id, kind: "POST_TEST" })}>Assessment Rules</Btn>
                   {t.pretest_enabled ? (
@@ -2148,7 +2297,7 @@ function TemplateForm({ template, onClose, onSaved }: { template: Template | nul
         <SelectField label="Training" name="training_id" placeholder="Any training" options={(trainings.data ?? []).map((t) => ({ value: t.id, label: t.title }))} defaultValue={template?.training_id ?? ""} />
         <SelectField label="Function" name="function_id" placeholder="Any function" options={names(c.functions.data ?? [])} defaultValue={template?.function_id ?? ""} />
       </div>
-      <p className="small">The most specific match wins: training and function, then training, then function. Self-assessment and manager forms use the same questionnaire.</p>
+      <p className="small">The most specific match wins: training and function, then training, then function.</p>
       {rows.map((row, i) => (
         <fieldset className="competency-field" key={row.key}>
           <legend>Question {i + 1}</legend>
@@ -2183,7 +2332,7 @@ export function BehaviourTemplates() {
       <PageTitle
         eyebrow={EYEBROW}
         title="Behaviour Questionnaire Management"
-        description="Configure Level 3 questionnaires by training and function. Each question maps to a competency, so self and manager ratings can be compared."
+        description="Configure Level 3 questionnaires by training and function. Each question maps to a competency."
         action={
           <Btn kind="primary" onClick={() => setForm({ template: null })}>
             <Icon name="plus" /> New Questionnaire

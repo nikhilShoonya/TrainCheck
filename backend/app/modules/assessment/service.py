@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
-from app.core.deps import current_manager_id
 from app.core.enums import (
     VIOLATION_EVENT_TYPES,
     AssessmentType,
@@ -75,23 +74,49 @@ SUGGESTED_QUESTIONS_PER_ATTEMPT = 10
 EXAMPLE_CODES = 5
 
 
-def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None = None, difficulty_mix: dict[str, int] | None = None) -> dict:
+class PoolData:
+    """Linked questions (with options) and answer keys for several trainings, read in three queries.
+    Lets list pages report every training's pool without one round of queries per training."""
+
+    def __init__(self, db: Session, training_ids: list[uuid.UUID]) -> None:
+        self.linked: dict[uuid.UUID, list[Question]] = {t: [] for t in training_ids}
+        if training_ids:
+            rows = db.execute(
+                select(QuestionTrainingTag.training_id, Question)
+                .join(Question, Question.id == QuestionTrainingTag.question_id)
+                .options(selectinload(Question.options))
+                .where(QuestionTrainingTag.training_id.in_(training_ids))
+                .order_by(Question.question_code)
+            ).all()
+            for training_id, question in rows:
+                self.linked[training_id].append(question)
+        active = {q.id for questions in self.linked.values() for q in questions if q.status == QuestionStatus.ACTIVE}
+        self.keys = answer_keys(db, list(active)) if active else {}
+
+
+def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None = None, difficulty_mix: dict[str, int] | None = None, pools: PoolData | None = None) -> dict:
     """Describes a training's question pool and, given a configuration, whether it can run (BR §7, §20.4).
 
     Eligible means: linked to this training, Active, has an answer key and has at least two options.
     The same rule decides what start_attempt may draw, so this report and the engine always agree.
+    `pools` supplies already-loaded data for list pages; the result is identical.
     """
-    linked = list(
-        db.scalars(
-            select(Question)
-            .join(QuestionTrainingTag, QuestionTrainingTag.question_id == Question.id)
-            .options(selectinload(Question.options))
-            .where(QuestionTrainingTag.training_id == training_id)
-            .order_by(Question.question_code)
+    if pools is not None and training_id in pools.linked:
+        linked = pools.linked[training_id]
+        active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
+        keys = pools.keys
+    else:
+        linked = list(
+            db.scalars(
+                select(Question)
+                .join(QuestionTrainingTag, QuestionTrainingTag.question_id == Question.id)
+                .options(selectinload(Question.options))
+                .where(QuestionTrainingTag.training_id == training_id)
+                .order_by(Question.question_code)
+            )
         )
-    )
-    active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
-    keys = answer_keys(db, [q.id for q in active]) if active else {}
+        active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
+        keys = answer_keys(db, [q.id for q in active]) if active else {}
     missing_key = [q for q in active if not keys.get(q.id)]
     few_options = [q for q in active if len(q.options) < 2]
     eligible = [q for q in active if keys.get(q.id) and len(q.options) >= 2]
@@ -160,9 +185,9 @@ def pool_message(report: dict, training_title: str) -> str:
     return " ".join(parts) or "The active question pool cannot satisfy this configuration."
 
 
-def pool_problem(db: Session, config: AssessmentConfig) -> dict | None:
+def pool_problem(db: Session, config: AssessmentConfig, pools: "PoolData | None" = None) -> dict | None:
     """Explains why a configuration cannot run, or returns None when it can (BR §20.4)."""
-    report = pool_report(db, config.training_id, config.question_count, config.difficulty_mix)
+    report = pool_report(db, config.training_id, config.question_count, config.difficulty_mix, pools)
     return None if report["ready"] else report
 
 
@@ -525,13 +550,10 @@ def _notify_final_failure(db: Session, attempt: AssessmentAttempt, obligation: A
     title = f"Needs Re-training: {employee.full_name}"
     message = (
         f"{employee.full_name} ({employee.employee_code}) used all {counted_attempts(obligation)} attempts for "
-        f"{obligation.training.title}. Open the team or learning records for scores and next steps."
+        f"{obligation.training.title}. Open the learning records for scores and next steps."
     )
     key = f"final-failure:{obligation.id}"
-    manager_id = current_manager_id(db, employee.id)
-    if manager_id:
-        notify_employee(db, manager_id, "FINAL_FAILURE", title, message, "/manager/team", key, now)
-    notify_roles(db, ("LD_ADMIN", "HR_READ_ONLY"), "FINAL_FAILURE", title, message, None, key, now)
+    notify_roles(db, ("LD_ADMIN",), "FINAL_FAILURE", title, message, None, key, now)
     notify_employee(db, employee.id, "FINAL_FAILURE", f"{obligation.training.title}: Needs Re-training", "You have used all attempts. L&D will arrange your next learning step. This is a learning follow-up, not a disciplinary record.", "/employee/assessments", key, now)
 
 

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { ToastProvider } from "@/components/ui";
 import { SessionProvider } from "@/lib/hooks";
+import { QueryProvider } from "@/lib/query";
 import "@/styles/tailwind.css";
 import "@/styles/prototype/styles.css";
 import "@/styles/prototype/reference.css";
@@ -26,9 +27,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <a className="skip" href="#main">
           Skip to content
         </a>
-        <SessionProvider>
-          <ToastProvider>{children}</ToastProvider>
-        </SessionProvider>
+        <QueryProvider>
+          <SessionProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </SessionProvider>
+        </QueryProvider>
       </body>
     </html>
   );

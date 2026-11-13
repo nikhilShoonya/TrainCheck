@@ -58,7 +58,7 @@ def _org(db: Session, now: datetime) -> dict:
     locations = {c: Location(code=c, name=n) for c, n in S.LOCATIONS}
     db.add_all([*departments.values(), *functions.values(), *locations.values()])
     db.add(WorkingCalendar(code="DEFAULT", name="Illustrative Monday to Friday calendar (not Finvasia policy)", timezone=get_settings().default_timezone, working_weekdays=[0, 1, 2, 3, 4], is_default=True))
-    roles = {r.value: Role(code=r.value, name={"EMPLOYEE": "Employee", "MANAGER": "Manager", "LD_ADMIN": "L&D Admin", "HR_READ_ONLY": "HR / Leadership"}[r.value]) for r in RoleCode}
+    roles = {r.value: Role(code=r.value, name={"EMPLOYEE": "Employee", "LD_ADMIN": "L&D Admin"}[r.value]) for r in RoleCode}
     db.add_all(roles.values())
     db.flush()
 
@@ -248,7 +248,6 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
     record_completion(db, done, now - timedelta(days=65), "MANUAL", None)
     _take(db, _post(db, done), 90, now - timedelta(days=64), rng)
     _review(db, done, 30, "SELF", 3, e["E002"], now - timedelta(days=34))
-    _review(db, done, 30, "MANAGER", 3, e["M001"], now - timedelta(days=33))
     _review(db, done, 60, "SELF", 4, e["E002"], now - timedelta(days=4))
     second = _enrol(db, e["E002"], t["T002"], old)
     record_completion(db, second, now - timedelta(days=20), "MANUAL", None)
@@ -278,7 +277,6 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
         _take(db, _post(db, enrolment), score, now - timedelta(days=days - 1), rng)
     observed = db.scalar(select(Enrolment).where(Enrolment.employee_id == e["E006"].id))
     _review(db, observed, 30, "SELF", 4, e["E006"], now - timedelta(days=14))
-    _review(db, observed, 30, "MANAGER", 3, e["M002"], now - timedelta(days=13))
 
     # E010: assigned only; completion not yet recorded.
     _enrol(db, e["E010"], t["T002"], now - timedelta(days=3))

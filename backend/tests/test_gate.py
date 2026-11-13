@@ -84,11 +84,9 @@ def test_protected_apis_are_blocked_while_gate_active(world, client_for):  # TC-
         assert response.json()["error"]["code"] == "ASSESSMENT_REQUIRED"
 
 
-def test_gate_blocks_managers_and_admins_with_due_training(world, client_for):  # BR §5.4
+def test_gate_blocks_admins_with_due_training(world, client_for):  # BR §5.4
     training = world.training()
-    world.complete(world.manager, training)
     world.complete(world.admin, training)
-    assert client_for(world.manager).get("/manager/dashboard").json()["error"]["code"] == "ASSESSMENT_REQUIRED"
     assert client_for(world.admin).get("/admin/trainings").json()["error"]["code"] == "ASSESSMENT_REQUIRED"
 
 

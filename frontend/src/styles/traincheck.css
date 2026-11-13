@@ -46,3 +46,10 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 
 /* The manager dashboard's Team Training Status panel was removed; the remaining panel spans the row. */
 .manager-secondary-grid:has(> :only-child){grid-template-columns:1fr}
+
+/* Background refresh of data already on screen: a small status pill that never shifts the layout. */
+.tc-refreshing{position:fixed;right:16px;bottom:16px;z-index:40;padding:5px 12px;border:1px solid #DCE3E8;border-radius:999px;background:#fff;color:#1F3A5F;font-size:12px;font-weight:600;box-shadow:0 2px 8px rgba(11,31,51,.12);pointer-events:none}
+.tc-refreshing ~ .tc-refreshing{display:none}
+.tc-stale-notice{margin-bottom:12px}
+@media (prefers-reduced-motion:no-preference){.tc-refreshing{animation:tc-fade-in .2s ease-out}}
+@keyframes tc-fade-in{from{opacity:0}to{opacity:1}}

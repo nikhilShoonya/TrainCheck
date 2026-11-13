@@ -2,7 +2,7 @@ import type { PoolReport } from "./pool";
 
 /* Shapes returned by the backend. Status values mirror backend/app/core/enums.py and must not diverge. */
 
-export type RoleCode = "EMPLOYEE" | "MANAGER" | "LD_ADMIN" | "HR_READ_ONLY";
+export type RoleCode = "EMPLOYEE" | "LD_ADMIN";
 
 export interface User {
   id: string;
@@ -310,6 +310,8 @@ export interface ConfigView {
   schedule_mode: string;
   schedule_delay_days: number;
   schedule_uses_working_days: boolean;
+  /** FIXED_DATE only: the day the assessment is held (YYYY-MM-DD). */
+  schedule_date: string | null;
   difficulty_mix: Record<string, number> | null;
   show_explanations: boolean;
   shuffle_questions: boolean;

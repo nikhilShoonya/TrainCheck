@@ -209,11 +209,13 @@ def test_imports_have_their_own_tighter_limit(world, limits):
 
 def test_export_and_report_limits_are_per_user(world, limits):
     limits(rate_limit_user_per_minute=50, rate_limit_anonymous_per_minute=10)
-    hr, admin = signed_in(world.hr.work_email), signed_in(world.admin.work_email)
+    second = world.person("A2", "admin2@test.example", ["LD_ADMIN", "EMPLOYEE"])
+    world.db.commit()
+    other, admin = signed_in(second.work_email), signed_in(world.admin.work_email)
     export = {"report_code": "compliance", "export_format": "CSV"}
-    assert [hr.post("/reports/exports", json=export).status_code for _ in range(3)] == [200, 200, 429]
-    assert admin.post("/reports/exports", json=export).status_code == 200  # HR's usage does not block L&D.
-    assert statuses(hr, "/reports/compliance", 4) == [200, 200, 200, 429]
+    assert [other.post("/reports/exports", json=export).status_code for _ in range(3)] == [200, 200, 429]
+    assert admin.post("/reports/exports", json=export).status_code == 200  # One admin's usage does not block another.
+    assert statuses(other, "/reports/compliance", 4) == [200, 200, 200, 429]
 
 
 def test_bulk_assignment_has_its_own_limit(world, limits):

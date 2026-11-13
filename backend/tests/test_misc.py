@@ -18,14 +18,19 @@ from app.models import (
     AuditLog,
     CalendarHoliday,
     Enrolment,
+    ImportJob,
+    ImportJobRow,
     Notification,
     Question,
     QuestionAnswerKey,
     QuestionRevision,
+    QuestionTrainingTag,
     Training,
+    UserAccount,
     WorkingCalendar,
 )
 from app.modules.assessment.scheduling import CalendarView, calculate_due_at
+from app.modules.assessment.service import pool_report
 from app.modules.reports.scorecard import gain_values
 from app.modules.scheduler.jobs import pending_assessment_reminders
 from tests.conftest import NOW, take
@@ -93,11 +98,29 @@ def test_pre_test_unavailable_after_completion_or_when_disabled(world, db, clien
     assert client.post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True}).json()["error"]["code"] == "PRE_TEST_UNAVAILABLE"
 
 
+def test_pre_test_offered_only_once_its_rules_are_saved(world, db, client_for):
+    """Enabled on the training but no pre-test rules saved: no Take Pre-test, because starting it would fail."""
+    training = world.training()
+    training.pretest_enabled = True
+    db.commit()
+    world.enrol(world.employee, training)
+    client = client_for(world.employee)
+    card = lambda: next(c for c in client.get("/me/trainings").json()["data"] if c["training_id"] == str(training.id))  # noqa: E731
+    assert card()["pre_test_available"] is False
+
+    from app.core.enums import AssessmentType
+    from app.models import AssessmentConfig
+
+    db.add(AssessmentConfig(training_id=training.id, assessment_type=AssessmentType.PRE_TEST, version=1, question_count=10, duration_seconds=600, max_attempts=1))
+    db.commit()
+    assert card()["pre_test_available"] is True
+
+
 # ---------- Scheduling ----------
 
 class Config:
-    def __init__(self, mode, delay=0, working=False):
-        self.schedule_mode, self.schedule_delay_days, self.schedule_uses_working_days = mode, delay, working
+    def __init__(self, mode, delay=0, working=False, on=None):
+        self.schedule_mode, self.schedule_delay_days, self.schedule_uses_working_days, self.schedule_date = mode, delay, working, on
 
 
 CALENDAR = CalendarView("UTC", [0, 1, 2, 3, 4], {date(2026, 11, 9)})
@@ -111,10 +134,26 @@ FRIDAY = datetime(2026, 11, 6, 15, 0, tzinfo=UTC)
         (Config("NEXT_WORKING_DAY"), datetime(2026, 11, 10, tzinfo=UTC)),  # Weekend and the Monday holiday are skipped.
         (Config("DELAY_DAYS", 3), datetime(2026, 11, 9, tzinfo=UTC)),
         (Config("DELAY_DAYS", 2, True), datetime(2026, 11, 11, tzinfo=UTC)),
+        (Config("FIXED_DATE", on=date(2026, 11, 12)), datetime(2026, 11, 12, tzinfo=UTC)),  # The start of the chosen day.
+        (Config("FIXED_DATE", on=date(2026, 11, 6)), FRIDAY),  # Completed on the chosen day: due at once.
+        (Config("FIXED_DATE", on=date(2026, 11, 2)), FRIDAY),  # Completed after the chosen day: due at once, never in the past.
     ],
 )
 def test_due_date_policies(config, expected):  # MVP-009
     assert calculate_due_at(CALENDAR, FRIDAY, config) == expected
+
+
+def test_fixed_date_rule_needs_a_date_that_has_not_passed(world, client_for):
+    training = world.training()
+    admin = client_for(world.admin)
+    rules = {"question_count": 10, "duration_minutes": 20, "pass_mark_percent": 70, "schedule_mode": "FIXED_DATE"}
+    assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json=rules).status_code == 400
+    past = (NOW - timedelta(days=3)).date().isoformat()
+    assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": past}).status_code == 400
+    future = (NOW + timedelta(days=3)).date().isoformat()
+    saved = admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": future})
+    assert saved.status_code == 200, saved.text
+    assert (saved.json()["data"]["schedule_mode"], saved.json()["data"]["schedule_date"]) == ("FIXED_DATE", future)
 
 
 def test_timezone_decides_the_local_day():  # OD-BRD-004 is configuration, not hard-coded.
@@ -339,8 +378,9 @@ def test_department_and_function_categorisation(world, client_for):
 HEADERS = "id,training,topic,competency,type,question,option_a,option_b,option_c,option_d,options_extra,correct,explanation,difficulty,marks,level,language,active"
 
 
-def upload(client, kind, name, content):
-    return client.post("/admin/imports", files={"file": (name, content)}, data={"import_type": kind})
+def upload(client, kind, name, content, training_id=None):
+    data = {"import_type": kind} if training_id is None else {"import_type": kind, "training_id": str(training_id)}
+    return client.post("/admin/imports", files={"file": (name, content)}, data=data)
 
 
 def valid_row(code="IMP-1", training="T1", **changes):
@@ -442,14 +482,15 @@ def test_completion_import_is_idempotent(world, db, client_for):  # BR §4.5, PR
 
 
 def test_templates_download_and_import_cleanly(world, db, client_for):
-    world.training("T001", questions=0, count=1)
+    training = world.training("ANY-CODE", questions=0, count=1)
     admin = client_for(world.admin)
     csv_template = admin.get("/admin/imports/templates/QUESTIONS")
     xlsx_template = admin.get("/admin/imports/templates/QUESTIONS?format=xlsx")
     assert xlsx_template.content.startswith(b"PK")
-    job = upload(admin, "QUESTIONS", "template.csv", csv_template.content).json()["data"]
+    assert b"T001" not in csv_template.content  # No hard-coded training code.
+    job = upload(admin, "QUESTIONS", "template.csv", csv_template.content, training.id).json()["data"]
     assert job["accepted_rows"] == 1, job
-    job = upload(admin, "QUESTIONS", "template.xlsx", xlsx_template.content).json()["data"]
+    job = upload(admin, "QUESTIONS", "template.xlsx", xlsx_template.content, training.id).json()["data"]
     assert job["accepted_rows"] == 1, job
 
 
@@ -468,22 +509,165 @@ def test_prototype_sample_question_files_import(world, db, client_for, name):  #
 
 def test_employee_cannot_import(world, client_for):
     assert upload(client_for(world.hr), "QUESTIONS", "q.csv", b"id").status_code == 403
+    training = world.training(questions=0, count=1)
+    assert upload(client_for(world.hr), "QUESTIONS", "q.csv", b"id", training.id).status_code == 403
+
+
+# ---------- Imports into a selected training ----------
+
+NO_TRAINING_HEADERS = HEADERS.replace("id,training,", "id,")
+
+
+def no_training_row(code, **changes):
+    values = valid_row(code, **changes).split(",")
+    return ",".join(values[:1] + values[2:])
+
+
+def test_import_into_draft_training_without_training_column(world, db, client_for):
+    training = world.training("DRAFT-1", questions=0, count=1)
+    training.status = "DRAFT"
+    db.commit()
+    admin = client_for(world.admin)
+    text = "\n".join([NO_TRAINING_HEADERS, no_training_row("SEL-1"), no_training_row("SEL-2"), no_training_row("SEL-3", active="Inactive")])
+    job = upload(admin, "QUESTIONS", "q.csv", text.encode(), training.id).json()["data"]
+    assert (job["status"], job["accepted_rows"], job["rejected_rows"]) == ("READY", 3, 0), job["rows"]
+    assert job["training"] == {"id": str(training.id), "code": "DRAFT-1", "title": training.title, "status": "DRAFT"}
+    assert job["trainings"] == [job["training"]]
+    assert db.get(ImportJob, job["id"]).training_id == training.id  # The selection is saved with the preview.
+
+    done = admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]
+    assert done["status"] == "COMPLETED" and done["training"]["code"] == "DRAFT-1"
+    db.expire_all()
+    linked = db.scalars(select(QuestionTrainingTag.training_id).join(Question, Question.id == QuestionTrainingTag.question_id).where(Question.question_code.in_(["SEL-1", "SEL-2", "SEL-3"]))).all()
+    assert linked == [training.id] * 3
+    assert pool_report(db, training.id)["eligible"] == 2  # Active questions count; the inactive one does not.
+    assert db.get(Training, training.id).status == "DRAFT"  # Importing never activates the training.
+    assert admin.get(f"/admin/imports/{job['id']}").json()["data"]["training"]["code"] == "DRAFT-1"
+    listed = admin.get("/admin/imports").json()["data"]
+    assert next(j for j in listed if j["id"] == job["id"])["training"]["code"] == "DRAFT-1"
+
+
+def test_unapplied_import_can_be_edited_and_deleted(world, db, client_for):
+    right = world.training("RIGHT", questions=0, count=1)
+    wrong = world.training("WRONG", questions=0, count=1)
+    admin = client_for(world.admin)
+    text = "\n".join([HEADERS, valid_row("ED-1", training="RIGHT"), valid_row("ED-2", training="RIGHT")]).encode()
+    job = upload(admin, "QUESTIONS", "q.csv", text, wrong.id).json()["data"]
+    assert (job["accepted_rows"], job["rejected_rows"]) == (0, 2)  # Rows name another training.
+
+    # Edit: the same file into the training the rows name, validated into the same entry.
+    edited = admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("fixed.csv", text)}, data={"training_id": str(right.id)}).json()["data"]
+    assert (edited["id"], edited["status"], edited["file_name"], edited["accepted_rows"], edited["rejected_rows"]) == (job["id"], "READY", "fixed.csv", 2, 0)
+    assert edited["training"]["code"] == "RIGHT" and len(edited["rows"]) == 2
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(ImportJobRow).where(ImportJobRow.import_job_id == job["id"])) == 2  # Old rows replaced.
+    assert db.scalar(select(func.count()).select_from(Question)) == 0  # Editing never imports.
+
+    # A completed import is the record of what it added: no edit, no delete.
+    assert admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]["status"] == "COMPLETED"
+    assert admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("q.csv", text)}, data={"training_id": str(right.id)}).status_code == 409
+    assert admin.delete(f"/admin/imports/{job['id']}").status_code == 409
+
+    # A cancelled preview can be deleted with its rows.
+    other = upload(admin, "QUESTIONS", "q.csv", text, wrong.id).json()["data"]
+    admin.post(f"/admin/imports/{other['id']}/cancel")
+    assert admin.delete(f"/admin/imports/{other['id']}").json()["data"] == {"deleted": True}
+    db.expire_all()
+    assert db.get(ImportJob, other["id"]) is None
+    assert db.scalar(select(func.count()).select_from(ImportJobRow).where(ImportJobRow.import_job_id == other["id"])) == 0
+    assert admin.get(f"/admin/imports/{other['id']}").status_code == 404
+
+
+def test_selected_training_blank_matching_and_conflicting_codes(world, db, client_for):
+    training = world.training("SEL", questions=0, count=1)
+    world.training("OTHER", questions=0, count=1)
+    admin = client_for(world.admin)
+    text = "\n".join([HEADERS, valid_row("C-1", training=""), valid_row("C-2", training="SEL"), valid_row("C-3", training="sel"), valid_row("C-4", training="OTHER"), valid_row("C-5", training="NOPE")])
+    job = upload(admin, "QUESTIONS", "q.csv", text.encode(), training.id).json()["data"]
+    rows = {r["row"]: r for r in job["rows"]}
+    assert [rows[n]["status"] for n in (2, 3, 4)] == ["VALID", "VALID", "VALID"]
+    for n, code in ((5, "OTHER"), (6, "NOPE")):
+        assert rows[n]["status"] == "INVALID"
+        assert rows[n]["errors"][0]["field"] == "training"
+        assert f"is for training {code}, but the selected training is SEL" in rows[n]["errors"][0]["message"]
+    admin.post(f"/admin/imports/{job['id']}/commit")
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Question)) == 3
+    assert set(db.scalars(select(QuestionTrainingTag.training_id))) == {training.id}  # Never silently moved to OTHER.
+
+
+def test_invalid_or_archived_training_selection_is_rejected(world, db, client_for):
+    admin = client_for(world.admin)
+    text = "\n".join([NO_TRAINING_HEADERS, no_training_row("X-1")]).encode()
+    missing = upload(admin, "QUESTIONS", "q.csv", text, "00000000-0000-0000-0000-000000000000")
+    assert missing.status_code == 400 and "does not exist" in missing.json()["error"]["message"]
+    assert upload(admin, "QUESTIONS", "q.csv", text, "not-a-uuid").status_code == 400
+    archived = world.training("OLD", questions=0, count=1)
+    archived.status = "ARCHIVED"
+    db.commit()
+    response = upload(admin, "QUESTIONS", "q.csv", text, archived.id)
+    assert response.status_code == 409 and response.json()["error"]["code"] == "TRAINING_NOT_IMPORTABLE"
+    active = world.training("ACT", questions=0, count=1)
+    completions = upload(admin, "COMPLETIONS", "c.csv", b"employee,training,completion_date\nE1,ACT,2026-11-01\n", active.id)
+    assert completions.status_code == 400  # Completion imports keep naming the training on each row.
+    assert db.scalar(select(func.count()).select_from(ImportJob)) == 0
+
+
+def test_commit_rechecks_the_saved_training(world, db, client_for):
+    training = world.training("RECHECK", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = upload(admin, "QUESTIONS", "q.csv", "\n".join([NO_TRAINING_HEADERS, no_training_row("R-1")]).encode(), training.id).json()["data"]
+    training.status = "ARCHIVED"
+    db.commit()
+    response = admin.post(f"/admin/imports/{job['id']}/commit")
+    assert response.status_code == 409 and "validate the file again" in response.json()["error"]["message"]
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Question)) == 0
+    assert db.get(ImportJob, job["id"]).status == "READY"
+
+
+def test_selected_training_keeps_duplicates_skipped_and_never_relinks(world, db, client_for):
+    first = world.training("FIRST", questions=1, count=1)
+    second = world.training("SECOND", questions=0, count=1)
+    admin = client_for(world.admin)
+    existing = db.scalar(select(Question))
+    text = "\n".join([NO_TRAINING_HEADERS, no_training_row(existing.question_code, question="Relink attempt?"), no_training_row("NEW-1"), no_training_row("NEW-1")])
+    job = upload(admin, "QUESTIONS", "q.csv", text.encode(), second.id).json()["data"]
+    assert [r["status"] for r in job["rows"]] == ["DUPLICATE", "VALID", "DUPLICATE"]
+    admin.post(f"/admin/imports/{job['id']}/commit")
+    db.expire_all()
+    question = db.get(Question, existing.id)
+    assert question.question_text != "Relink attempt?"
+    assert [t.id for t in question.trainings] == [first.id]  # The existing question stays on its training.
+
+
+def test_file_based_question_import_stays_compatible(world, db, client_for):
+    training = world.training("FILE-1", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = upload(admin, "QUESTIONS", "q.csv", "\n".join([HEADERS, valid_row("F-1", training="FILE-1"), valid_row("F-2", training="")]).encode()).json()["data"]
+    assert job["training"] is None
+    assert [r["status"] for r in job["rows"]] == ["VALID", "INVALID"]  # Without a selection, every row names its training.
+    assert job["rows"][0]["record"] == "F-1 · FILE-1"
+    assert job["trainings"] == [{"id": str(training.id), "code": "FILE-1", "title": training.title, "status": training.status}]
+    admin.post(f"/admin/imports/{job['id']}/commit")
+    db.expire_all()
+    assert db.scalar(select(QuestionTrainingTag.training_id)) == training.id
 
 
 # ---------- Notifications and audit ----------
 
-def test_pending_escalation_after_two_and_five_working_days(world, db):  # BR §16.2
+def test_pending_escalation_goes_to_ld_after_two_working_days(world, db):  # BR §16.2, Manager and HR roles removed
     world.complete(world.employee, world.training(), NOW)
     pending_assessment_reminders(db, NOW)
     # Completion also sends ASSESSMENT_SCHEDULED; this test is about reminders and escalation only.
     types = lambda: [n.type for n in db.scalars(select(Notification)) if n.type != "ASSESSMENT_SCHEDULED"]  # noqa: E731
     assert types() == ["ASSESSMENT_DUE"]
     pending_assessment_reminders(db, NOW + timedelta(days=2))
-    assert types().count("ASSESSMENT_ESCALATION") == 1  # The manager, at two working days.
-    pending_assessment_reminders(db, NOW + timedelta(days=2))
-    assert types().count("ASSESSMENT_ESCALATION") == 1  # Not repeated.
+    escalations = [n for n in db.scalars(select(Notification)) if n.type == "ASSESSMENT_ESCALATION"]
+    admin_account = db.scalar(select(UserAccount.id).where(UserAccount.employee_id == world.admin.id))
+    assert [n.user_account_id for n in escalations] == [admin_account]  # L&D only, at two working days.
     pending_assessment_reminders(db, NOW + timedelta(days=7))
-    assert types().count("ASSESSMENT_ESCALATION") == 3  # Then L&D and HR.
+    assert types().count("ASSESSMENT_ESCALATION") == 1  # Not repeated, and no later HR step.
 
 
 def test_policy_changes_are_audited_with_before_and_after(world, db, client_for):  # BR §19

@@ -135,11 +135,28 @@ export function ErrorPanel({ error, retry }: { error: ApiError | Error; retry?: 
 }
 
 /** Loading, error and empty handling in one place, so no screen forgets them. */
-export function Loaded<T>({ state, children, empty }: { state: { data: T | null; error: ApiError | null; loading: boolean; reload: () => void }; children: (data: T) => ReactNode; empty?: (data: T) => boolean }) {
-  if (state.error) return <ErrorPanel error={state.error} retry={state.reload} />;
-  if (state.data === null) return <Loading />;
-  if (empty?.(state.data)) return <Empty />;
-  return <>{children(state.data)}</>;
+/** Initial loading, error, empty and loaded states. Data already on screen stays visible while it is
+    refreshed in the background, and if that refresh fails. */
+export function Loaded<T>({ state, children, empty }: { state: { data: T | null; error: ApiError | null; loading: boolean; refreshing?: boolean; reload: () => void }; children: (data: T) => ReactNode; empty?: (data: T) => boolean }) {
+  if (state.data === null) return state.error ? <ErrorPanel error={state.error} retry={state.reload} /> : <Loading />;
+  return (
+    <>
+      {state.error && !state.refreshing ? (
+        <div className="notice tc-stale-notice" role="status">
+          This information could not be refreshed, so you are seeing the last loaded version. {state.error.message}{" "}
+          <Btn kind="text" onClick={() => void state.reload()}>
+            Try again
+          </Btn>
+        </div>
+      ) : null}
+      {state.refreshing ? (
+        <span className="tc-refreshing" role="status" aria-live="polite">
+          Updating…
+        </span>
+      ) : null}
+      {empty?.(state.data) ? <Empty /> : children(state.data)}
+    </>
+  );
 }
 
 export function Metrics({ items }: { items: [string, ReactNode, string][] }) {

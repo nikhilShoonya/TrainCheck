@@ -403,6 +403,7 @@ class AssessmentConfig(Base):
     schedule_mode: Mapped[str] = mapped_column(String(20), default="NEXT_WORKING_DAY")
     schedule_delay_days: Mapped[int] = mapped_column(Integer, default=0)
     schedule_uses_working_days: Mapped[bool] = mapped_column(Boolean, default=False)
+    schedule_date: Mapped[date | None] = mapped_column(Date)  # FIXED_DATE only: the day the post-test is due.
     difficulty_mix: Mapped[dict[str, int] | None] = mapped_column(JSON)  # {"EASY": 4, "MEDIUM": 4, "HARD": 2}
     show_explanations: Mapped[bool] = mapped_column(Boolean, default=False)
     shuffle_questions: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -668,6 +669,10 @@ class ImportJob(Base):
     rejected_rows: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Question imports: the training chosen in the Import Centre. Null for completion imports and for
+    # file-based question imports, where each row names its training.
+    training_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("trainings.id", ondelete="SET NULL"), index=True)
+    training: Mapped[Training | None] = relationship()
     rows: Mapped[list["ImportJobRow"]] = relationship(cascade="all, delete-orphan", order_by="ImportJobRow.row_number")
 
 

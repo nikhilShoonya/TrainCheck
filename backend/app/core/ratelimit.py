@@ -235,6 +235,17 @@ def reset() -> None:
     """Rebuilds limiter and proxy list from current settings. Used at startup and in tests."""
     global _limiter, _trusted
     _limiter, _trusted = None, None
+    with _identity_lock:
+        _identity_cache.clear()
+
+
+# The rate limiter only needs to know which bucket a cookie belongs to. Remembering that for a few seconds
+# saves a database round trip on every request. Authentication is unaffected: require_session still checks
+# the session in the database on every request, so a revoked session is refused immediately.
+IDENTITY_CACHE_SECONDS = 30
+IDENTITY_CACHE_MAX = 10_000
+_identity_cache: dict[str, tuple[float, str | None]] = {}
+_identity_lock = threading.Lock()
 
 
 def client_ip_for(request: Request) -> str:
@@ -248,16 +259,32 @@ def client_ip_for(request: Request) -> str:
 
 
 def session_account_id(token: str) -> str | None:
-    """The account behind a session cookie, only if that session is currently valid."""
+    """The account behind a session cookie, only if that session is currently valid (cached briefly; see above)."""
+    from app.core.security import hash_token
+
+    key = hash_token(token)
+    moment = time.monotonic()
+    with _identity_lock:
+        hit = _identity_cache.get(key)
+    if hit is not None and moment - hit[0] < IDENTITY_CACHE_SECONDS:
+        return hit[1]
+    account = _lookup_session_account(key)
+    with _identity_lock:
+        if len(_identity_cache) >= IDENTITY_CACHE_MAX:
+            _identity_cache.clear()  # Bounded memory; the next requests simply look up again.
+        _identity_cache[key] = (moment, account)
+    return account
+
+
+def _lookup_session_account(token_hash: str) -> str | None:
     from app.core.clock import utcnow
     from app.core.db import session_factory
-    from app.core.security import hash_token
     from app.models import UserSession
 
     settings = get_settings()
     now = utcnow()
     with session_factory()() as db:
-        session = db.scalar(select(UserSession).where(UserSession.session_token_hash == hash_token(token)))
+        session = db.scalar(select(UserSession).where(UserSession.session_token_hash == token_hash))
         if session is None or session.revoked_at is not None or session.expires_at <= now:
             return None
         if session.last_seen_at + timedelta(minutes=settings.session_idle_minutes) <= now:

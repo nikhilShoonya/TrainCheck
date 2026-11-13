@@ -8,8 +8,9 @@ import { Btn, Empty } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
 import { HINDI, navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
-import { api } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import { useApi, useSession } from "@/lib/hooks";
+import { NAV_PREFETCH, prefetchPaths } from "@/lib/query";
 import type { RoleCode, User } from "@/lib/types";
 import { initials } from "@/lib/utils";
 
@@ -38,7 +39,7 @@ function SearchDialog({ query, onClose, role }: { query: string; onClose: () => 
     onClose();
     router.push(href);
   };
-  const trainingsHref = role === "EMPLOYEE" ? "/employee/trainings" : role === "MANAGER" ? "/manager/assessments" : role === "LD_ADMIN" ? "/lnd/trainings" : "/hr/scorecards";
+  const trainingsHref = role === "LD_ADMIN" ? "/lnd/trainings" : "/employee/trainings";
   return (
     <Modal title="Search results" onClose={onClose}>
       <p>Results for “{query}” in your authorised workspace.</p>
@@ -58,7 +59,7 @@ function SearchDialog({ query, onClose, role }: { query: string; onClose: () => 
             <strong>{r.title}</strong>
             <small>{r.subtitle}</small>
           </span>
-          <Btn kind="text" onClick={() => go(r.employee_id && role === "MANAGER" ? `/manager/team/${r.employee_id}` : trainingsHref)}>
+          <Btn kind="text" onClick={() => go(trainingsHref)}>
             View
           </Btn>
         </div>
@@ -77,7 +78,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [online, setOnline] = useState(true);
   const [search, setSearch] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const [unread, setUnread] = useState(0);
+  // From the shared cache: not refetched on every navigation, refreshed after changes such as mark-as-read.
+  const unread = useApi<unknown[]>(user ? "/me/notifications?unread_only=true&limit=50" : null).data?.length ?? 0;
+  const queryClient = useQueryClient();
+  /** Navigation intent: load the page's first data while the pointer or keyboard focus is on its link. */
+  const prefetchFor = (href: string) => {
+    if (user && NAV_PREFETCH[href]) void prefetchPaths(queryClient, user.id, NAV_PREFETCH[href]);
+  };
   const main = useRef<HTMLElement>(null);
 
   // A navigation closes the mobile drawer and moves focus to the new page's heading.
@@ -107,17 +114,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    api
-      .get<unknown>("/me/notifications?unread_only=true&limit=50")
-      .then((rows) => active && setUnread((rows as unknown[]).length))
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [pathname]);
-
   if (!user) return null;
   const role = user.primary_role;
   const items = navFor(role, user.features);
@@ -137,7 +133,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Brand />
         <nav aria-label="Main navigation" lang={language === "Hindi" ? "hi" : "en"}>
           {items.map(([href, text, icon]) => (
-            <Link key={href} href={href} className={`nav-link${href === activeHref ? " active" : ""}`} aria-label={label(text)} title={label(text)} aria-current={href === activeHref ? "page" : undefined}>
+            <Link key={href} href={href} className={`nav-link${href === activeHref ? " active" : ""}`} aria-label={label(text)} title={label(text)} aria-current={href === activeHref ? "page" : undefined} onMouseEnter={() => prefetchFor(href)} onFocus={() => prefetchFor(href)}>
               <Icon name={icon} />
               <span>{label(text)}</span>
             </Link>
@@ -236,7 +232,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
         <footer>
           <span>TrainCheck · Finvasia L&D Evaluation</span>
-          <span>{role === "HR_READ_ONLY" ? "Read-only" : "Learning and behaviour evidence"}</span>
+          <span>Learning and behaviour evidence</span>
         </footer>
       </div>
       {search !== null ? <SearchDialog query={search} role={role} onClose={() => setSearch(null)} /> : null}

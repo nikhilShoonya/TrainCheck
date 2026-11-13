@@ -5,14 +5,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_reader, require_withdrawn
+from app.core.deps import CurrentUser, require_admin, require_withdrawn
 from app.core.enums import (
     AssessmentType,
     AttendanceStatus,
@@ -46,7 +46,7 @@ from app.models import (
 )
 from app.modules.assessment.gate import obligation_startable
 from app.modules.assessment.scheduling import load_calendar
-from app.modules.assessment.service import active_config, next_config_version, pool_message, pool_problem, pool_report
+from app.modules.assessment.service import PoolData, active_config, next_config_version, pool_message, pool_problem, pool_report
 from app.modules.notifications.service import notify_employee
 from app.modules.training import service
 
@@ -149,6 +149,7 @@ class ConfigIn(Strict):
     schedule_mode: ScheduleMode = ScheduleMode.NEXT_WORKING_DAY
     schedule_delay_days: int = Field(default=0, ge=0, le=365)
     schedule_uses_working_days: bool = False
+    schedule_date: date | None = None  # FIXED_DATE only.
     difficulty_mix: dict[Difficulty, int] | None = None
     show_explanations: bool = False
     shuffle_questions: bool = True
@@ -173,6 +174,7 @@ def config_view(config: AssessmentConfig | None) -> dict | None:
         "schedule_mode": config.schedule_mode,
         "schedule_delay_days": config.schedule_delay_days,
         "schedule_uses_working_days": config.schedule_uses_working_days,
+        "schedule_date": config.schedule_date.isoformat() if config.schedule_date else None,
         "difficulty_mix": config.difficulty_mix,
         "show_explanations": config.show_explanations,
         "shuffle_questions": config.shuffle_questions,
@@ -182,26 +184,53 @@ def config_view(config: AssessmentConfig | None) -> dict | None:
     }
 
 
-def config_pool(db: Session, training_id: uuid.UUID, config: AssessmentConfig | None) -> dict:
+def config_pool(db: Session, training_id: uuid.UUID, config: AssessmentConfig | None, pools: PoolData | None = None) -> dict:
     """The question pool measured against the active configuration. Without one, readiness is NOT_CONFIGURED."""
     if config is None:
-        report = pool_report(db, training_id)
+        report = pool_report(db, training_id, pools=pools)
         report.update({"reason": "NOT_CONFIGURED", "reasons": ["NOT_CONFIGURED"], "ready": False})
         return report
-    return pool_report(db, training_id, config.question_count, config.difficulty_mix)
+    return pool_report(db, training_id, config.question_count, config.difficulty_mix, pools)
 
 
-def training_view(db: Session, t: Training, detail: bool = False) -> dict:
-    enrolments = db.scalars(
-        select(Enrolment)
-        .options(selectinload(Enrolment.completion), selectinload(Enrolment.obligations), selectinload(Enrolment.employee))
-        .where(Enrolment.training_id == t.id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
-    ).all()
-    post = active_config(db, t.id, AssessmentType.POST_TEST)
-    pool = config_pool(db, t.id, post)
+class TrainingData:
+    """Everything training_view needs for a set of trainings, read once for all of them (no per-training queries)."""
+
+    def __init__(self, db: Session, trainings: list[Training]) -> None:
+        ids = [t.id for t in trainings]
+        self.enrolments: dict[uuid.UUID, list[Enrolment]] = {i: [] for i in ids}
+        self.post: dict[uuid.UUID, AssessmentConfig] = {}
+        self.unavailable: dict[uuid.UUID, list[AssessmentObligation]] = {i: [] for i in ids}
+        self.pools = PoolData(db, ids)
+        if not ids:
+            return
+        for e in db.scalars(
+            select(Enrolment)
+            .options(selectinload(Enrolment.completion), selectinload(Enrolment.obligations), selectinload(Enrolment.employee))
+            .where(Enrolment.training_id.in_(ids), Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
+        ):
+            self.enrolments[e.training_id].append(e)
+        for c in db.scalars(select(AssessmentConfig).where(AssessmentConfig.training_id.in_(ids), AssessmentConfig.assessment_type == AssessmentType.POST_TEST, AssessmentConfig.is_active)):
+            self.post[c.training_id] = c
+        # Same rule as service.unavailable_for_training, for all trainings at once.
+        cache: dict = {}
+        for o in db.scalars(
+            select(AssessmentObligation)
+            .options(selectinload(AssessmentObligation.config), selectinload(AssessmentObligation.employee))
+            .where(AssessmentObligation.training_id.in_(ids), AssessmentObligation.assessment_type == AssessmentType.POST_TEST, AssessmentObligation.status.in_(service.OPEN_OBLIGATION_STATUSES))
+        ):
+            if not obligation_startable(db, o, cache, self.pools):
+                self.unavailable[o.training_id].append(o)
+
+
+def training_view(db: Session, t: Training, detail: bool = False, data_for: TrainingData | None = None) -> dict:
+    loaded = data_for or TrainingData(db, [t])
+    enrolments = loaded.enrolments[t.id]
+    post = loaded.post.get(t.id)
+    pool = config_pool(db, t.id, post, loaded.pools)
     readiness = service.readiness_from(t, post, pool if post else None)
     pending = [e for e in enrolments if e.completion and not any(o.assessment_type == AssessmentType.POST_TEST for o in e.obligations)]
-    unavailable = service.unavailable_for_training(db, t.id)
+    unavailable = loaded.unavailable[t.id]
     data = {
         "id": str(t.id),
         "training_code": t.training_code,
@@ -263,14 +292,16 @@ def _apply_training(db: Session, t: Training, body: TrainingIn) -> None:
 # ---------- Trainings ----------
 
 @router.get("/trainings")
-def list_trainings(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db), search: str = "", status: str = "") -> dict:
+def list_trainings(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db), search: str = "", status: str = "") -> dict:
     query = select(Training).options(selectinload(Training.owner), selectinload(Training.trainer), selectinload(Training.departments), selectinload(Training.functions), selectinload(Training.competencies)).order_by(Training.title)
     if status:
         query = query.where(Training.status == status)
     if search:
         like = f"%{search}%"
         query = query.where(Training.title.ilike(like) | Training.category.ilike(like) | Training.training_code.ilike(like))
-    return ok([training_view(db, t) for t in db.scalars(query)])
+    trainings = list(db.scalars(query))
+    loaded = TrainingData(db, trainings)
+    return ok([training_view(db, t, data_for=loaded) for t in trainings])
 
 
 @router.post("/trainings")
@@ -297,7 +328,7 @@ def _training(db: Session, training_id: uuid.UUID) -> Training:
 
 
 @router.get("/trainings/{training_id}")
-def get_training(training_id: uuid.UUID, _: CurrentUser = Depends(require_reader), db: Session = Depends(get_db)) -> dict:
+def get_training(training_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok(training_view(db, _training(db, training_id), detail=True))
 
 
@@ -427,6 +458,12 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
     training = _training(db, training_id)
     if body.schedule_mode == ScheduleMode.DELAY_DAYS and body.schedule_delay_days < 1:
         raise validation("Enter a delay of at least 1 day.")
+    schedule_date = body.schedule_date if body.schedule_mode == ScheduleMode.FIXED_DATE else None
+    if body.schedule_mode == ScheduleMode.FIXED_DATE:
+        if schedule_date is None:
+            raise validation("Choose the date the assessment is held.")
+        if schedule_date < load_calendar(db).local_date(utcnow()):
+            raise validation("The assessment date has passed. Choose today or a later date.")
     mix = {k.value: v for k, v in body.difficulty_mix.items()} if body.difficulty_mix else None
     if mix and (any(v < 0 for v in mix.values()) or sum(mix.values()) != body.question_count):
         raise validation("Difficulty counts must total the questions per attempt.")
@@ -442,6 +479,7 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
         schedule_mode=body.schedule_mode,
         schedule_delay_days=body.schedule_delay_days,
         schedule_uses_working_days=body.schedule_uses_working_days,
+        schedule_date=schedule_date,
         difficulty_mix=mix,
         show_explanations=body.show_explanations,
         shuffle_questions=body.shuffle_questions,
@@ -469,8 +507,9 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
 # Creating batches and sessions is withdrawn from L&D Admin (require_withdrawn). The list stays readable:
 # Employee Assignments uses it to attach existing batches, and HR keeps its read access.
 
-def batch_view(db: Session, batch: TrainingBatch) -> dict:
-    assigned = db.scalars(select(Enrolment.id).where(Enrolment.batch_id == batch.id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)).all()
+def batch_view(db: Session, batch: TrainingBatch, assigned_counts: dict | None = None) -> dict:
+    if assigned_counts is None:
+        assigned_counts = _assigned_counts(db, [batch.id])
     return {
         "id": str(batch.id),
         "batch_code": batch.batch_code,
@@ -482,17 +521,28 @@ def batch_view(db: Session, batch: TrainingBatch) -> dict:
         "start_date": batch.start_date.isoformat() if batch.start_date else None,
         "end_date": batch.end_date.isoformat() if batch.end_date else None,
         "status": batch.status,
-        "assigned_count": len(assigned),
+        "assigned_count": assigned_counts.get(batch.id, 0),
         "sessions": [{"id": str(s.id), "title": s.title, "session_date": s.session_date.isoformat(), "delivery_mode": s.delivery_mode, "venue": s.venue} for s in batch.sessions],
     }
 
 
 @router.get("/batches")
-def list_batches(_: CurrentUser = Depends(require_reader), db: Session = Depends(get_db), training_id: uuid.UUID | None = None) -> dict:
+def list_batches(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db), training_id: uuid.UUID | None = None) -> dict:
     query = select(TrainingBatch).options(selectinload(TrainingBatch.training), selectinload(TrainingBatch.trainer), selectinload(TrainingBatch.sessions)).order_by(TrainingBatch.start_date.desc().nulls_last())
     if training_id:
         query = query.where(TrainingBatch.training_id == training_id)
-    return ok([batch_view(db, b) for b in db.scalars(query)])
+    batches = list(db.scalars(query))
+    counts = _assigned_counts(db, [b.id for b in batches])
+    return ok([batch_view(db, b, counts) for b in batches])
+
+
+def _assigned_counts(db: Session, batch_ids: list[uuid.UUID]) -> dict:
+    if not batch_ids:
+        return {}
+    rows = db.execute(
+        select(Enrolment.batch_id, func.count()).where(Enrolment.batch_id.in_(batch_ids), Enrolment.enrolment_status != EnrolmentStatus.CANCELLED).group_by(Enrolment.batch_id)
+    )
+    return dict(rows.all())
 
 
 @router.post("/batches")
@@ -599,7 +649,7 @@ def enrolment_view(e: Enrolment, now: datetime, issues: IssueFinder | None = Non
 
 @router.get("/enrolments")
 def list_enrolments(
-    _: CurrentUser = Depends(require_reader),
+    _: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
     training_id: uuid.UUID | None = None,
     batch_id: uuid.UUID | None = None,
