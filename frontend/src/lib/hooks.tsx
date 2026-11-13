@@ -39,6 +39,7 @@ interface SessionValue {
 }
 
 const SessionContext = createContext<SessionValue | null>(null);
+const SESSION_RETRY_DELAYS_MS = [700, 2000];
 
 /** Loads identity and the gate decision. Nothing protected renders until both are known. */
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -52,11 +53,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const mine = ++generation.current;
     // A signed-in browser has the readable CSRF cookie, so identity and gate state load together.
     const signedIn = typeof document !== "undefined" && document.cookie.includes("tc_csrf=");
-    try {
+    const load = async () => {
       const [me, state] = signedIn
         ? await Promise.all([api.get<{ user: User }>("/auth/me"), api.get<AccessState>("/me/access-state")])
         : [await api.get<{ user: User }>("/auth/me"), null];
-      const gate = state ?? (await api.get<AccessState>("/me/access-state"));
+      return { me, gate: state ?? (await api.get<AccessState>("/me/access-state")) };
+    };
+    try {
+      // A momentary database or network hiccup (5xx, no answer) is retried quietly, as page data is,
+      // instead of replacing the whole workspace with an error. Answers like UNAUTHENTICATED are final.
+      let loaded: Awaited<ReturnType<typeof load>> | undefined;
+      for (let attempt = 0; loaded === undefined; attempt++) {
+        try {
+          loaded = await load();
+        } catch (e) {
+          const transient = e instanceof ApiError && (e.status === 0 || e.status >= 500);
+          if (!transient || attempt >= SESSION_RETRY_DELAYS_MS.length || mine !== generation.current) throw e;
+          await new Promise((resolve) => setTimeout(resolve, SESSION_RETRY_DELAYS_MS[attempt]));
+        }
+      }
+      const { me, gate } = loaded;
       if (mine !== generation.current) return;
       setUser((previous) => {
         if (previous?.id !== me.user.id) clearApiCache(); // Another account: nothing cached may carry over.

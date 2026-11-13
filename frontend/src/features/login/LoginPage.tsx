@@ -18,6 +18,22 @@ const ROLES: [RoleCode, string, string, string][] = [
   ["LD_ADMIN", "L&D Admin", "settings", "admin@traincheck.demo"],
 ];
 const REMEMBER_KEY = "tc-remember-email";
+const RESET_POLL_MS = 3000;
+
+interface ResetJob {
+  state: "IDLE" | "RUNNING" | "DONE" | "FAILED";
+  elapsed_seconds: number | null;
+  error: string | null;
+}
+interface DemoStatus {
+  reset_enabled: boolean;
+  reset: ResetJob | null;
+}
+
+const minutes = (seconds: number | null) => {
+  const s = Math.max(0, seconds ?? 0);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
 
 function rememberedEmail(): string {
   try {
@@ -42,7 +58,53 @@ export function LoginPage() {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [dialog, setDialog] = useState<"recovery" | "Google" | "Microsoft" | null>(null);
+  const [dialog, setDialog] = useState<"recovery" | "reset" | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [notice, setNotice] = useState("");
+  // The backend decides whether reset is allowed here (DEMO_RESET_ENABLED); the button only appears when it is.
+  const [resetAvailable, setResetAvailable] = useState(false);
+  // A reset runs in the background on the server (it takes minutes); this page follows its progress.
+  const [resetJob, setResetJob] = useState<ResetJob | null>(null);
+  const resetRunning = resetJob?.state === "RUNNING";
+  useEffect(() => {
+    if (!DEMO_MODE) return;
+    api
+      .get<DemoStatus>("/demo/status")
+      .then((status) => {
+        setResetAvailable(status.reset_enabled);
+        if (status.reset?.state === "RUNNING") setResetJob(status.reset); // Started earlier, e.g. before a reload.
+      })
+      .catch(() => setResetAvailable(false));
+  }, []);
+  useEffect(() => {
+    if (!resetRunning) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      api
+        .get<DemoStatus>("/demo/status")
+        .then((status) => {
+          if (stopped || !status.reset) return;
+          setResetJob(status.reset);
+          if (status.reset.state === "DONE") {
+            setError("");
+            setEmail(ROLES[0][3]);
+            setPassword(DEMO_PASSWORD);
+            setNotice(`Demo data has been reset (took ${minutes(status.reset.elapsed_seconds)}). Every account, training and result is back to its starting state. You can sign in now.`);
+          } else if (status.reset.state === "FAILED") {
+            setNotice("");
+            setError(status.reset.error ?? "The reset failed, so the previous data was kept. Please try again.");
+          }
+        })
+        .catch(() => {
+          /* A missed poll is retried on the next tick. */
+        });
+    }, RESET_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [resetRunning]);
   const selected = ROLES.find((r) => r[3] === email)?.[0];
   const router = useRouter();
   const { adopt } = useSession();
@@ -67,6 +129,22 @@ export function LoginPage() {
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Sign-in failed. Please try again.");
       setBusy(false);
+    }
+  };
+
+  const resetDemoData = async () => {
+    setResetting(true);
+    setResetError("");
+    try {
+      const started = await api.post<{ started: boolean; reset: ResetJob }>("/demo/reset", { confirm: "RESET" });
+      setDialog(null);
+      setError("");
+      setNotice("");
+      setResetJob(started.reset);
+    } catch (e) {
+      setResetError(e instanceof ApiError ? e.message : "The demo data could not be reset. Please try again.");
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -164,47 +242,35 @@ export function LoginPage() {
               Forgot password?
             </button>
           </div>
+          {resetRunning ? (
+            <p className="login-reset-notice running" role="status">
+              <Icon name="refresh" />
+              <span>
+                <strong>Resetting demo data… {minutes(resetJob?.elapsed_seconds ?? 0)}</strong> This usually takes a few minutes. Sign-in opens again as soon as it finishes; this page updates by itself.
+              </span>
+            </p>
+          ) : notice ? (
+            <p className="login-reset-notice" role="status">
+              {notice}
+            </p>
+          ) : null}
           <FormError message={error} />
-          <button className="btn primary wide login-sign-in" type="submit" disabled={busy}>
+          <button className="btn primary wide login-sign-in" type="submit" disabled={busy || resetRunning}>
             {busy ? "Signing in…" : "Sign In"} <Icon name="arrow" />
           </button>
         </form>
-        <div className="login-divider">
-          <span>Or continue with</span>
-        </div>
-        <div className="login-sso">
-          <button type="button" aria-describedby="sso-description" onClick={() => setDialog("Google")}>
-            <span className="google-g">G</span>Continue with Google
+        {DEMO_MODE && resetAvailable ? (
+          <button
+            type="button"
+            className="btn secondary wide login-reset-demo"
+            disabled={resetRunning}
+            onClick={() => {
+              setResetError("");
+              setDialog("reset");
+            }}
+          >
+            <Icon name="refresh" /> {resetRunning ? "Reset in progress…" : "Reset demo data"}
           </button>
-          <button type="button" aria-describedby="sso-description" onClick={() => setDialog("Microsoft")}>
-            <span className="microsoft-mark">
-              <i />
-              <i />
-              <i />
-              <i />
-            </span>
-            Continue with Microsoft
-          </button>
-        </div>
-        <p id="sso-description" className="sr-only">
-          Single sign-on is not connected yet. These buttons explain what is needed.
-        </p>
-        {DEMO_MODE ? (
-          <>
-            <div className="login-demo-disclosure">
-              <Icon name="shield" />
-              <div>
-                <strong>Demo Workspace</strong>
-                <p>This environment uses fictional data. Single sign-on is not connected.</p>
-              </div>
-            </div>
-            <details className="login-demo-help">
-              <summary>Demo accounts & help</summary>
-              <p>
-                Use <strong>clear@traincheck.demo</strong> to view an employee dashboard without due work. <strong>employee@traincheck.demo</strong> opens the mandatory assessment first. <strong>manager2@traincheck.demo</strong> is a second manager.
-              </p>
-            </details>
-          </>
         ) : null}
       </section>
       {dialog === "recovery" ? (
@@ -212,9 +278,19 @@ export function LoginPage() {
           <p>Ask your TrainCheck system administrator for a one-time password, then change it in My profile. Self-service recovery by email will be added once Finvasia approves an email provider.</p>
         </Modal>
       ) : null}
-      {dialog === "Google" || dialog === "Microsoft" ? (
-        <Modal title={`${dialog} sign-in is not connected`} onClose={() => setDialog(null)}>
-          <p>{dialog} sign-in needs an approved identity provider and identity mapping from Finvasia IT. Please use your email and password for now.</p>
+      {dialog === "reset" ? (
+        <Modal title="Reset demo data?" onClose={() => !resetting && setDialog(null)}>
+          <p>This erases everything done in this demo, for every employee and admin account: assessment attempts, results, enrolments, trainings, questions, imports and changed passwords. The original demo data is then loaded again, as on a fresh install.</p>
+          <p>It takes a few minutes. Anyone signed in is signed out when it finishes. This cannot be undone.</p>
+          <FormError message={resetError} />
+          <div className="dialog-actions">
+            <button type="button" className="btn secondary" onClick={() => setDialog(null)} disabled={resetting}>
+              Cancel
+            </button>
+            <button type="button" className="btn danger-btn" onClick={() => void resetDemoData()} disabled={resetting}>
+              {resetting ? "Starting…" : "Reset demo data"}
+            </button>
+          </div>
         </Modal>
       ) : null}
     </main>

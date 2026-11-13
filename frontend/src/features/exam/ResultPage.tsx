@@ -1,15 +1,16 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import { FocusShell } from "@/components/shell/AppShell";
 import { HOME } from "@/components/shell/nav";
 import { Badge, Btn, ErrorPanel, Loading, Metrics, useToast } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
-import type { AccessState, ResultView } from "@/lib/types";
+import type { AccessState, FeedbackView, ResultView } from "@/lib/types";
 import { dateTime, duration } from "@/lib/utils";
+import { FeedbackDialog } from "./FeedbackForm";
 import { VIOLATION_LABELS } from "./monitor";
 
 const REASONS: Record<string, string> = { MANUAL: "Submitted by you", TIME_EXPIRED: "Submitted automatically when time ran out" };
@@ -22,6 +23,21 @@ export function ResultPage() {
   const toast = useToast();
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+  // Feedback is asked once per post-training assessment; the form opens by itself when it is still owed.
+  const feedbackState = useApi<FeedbackView>(`/attempts/${attemptId}/feedback`);
+  const [savedFeedback, setSavedFeedback] = useState<FeedbackView | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [autoOpened, setAutoOpened] = useState(false);
+  const feedback = savedFeedback ?? feedbackState.data;
+  const feedbackRequired = Boolean(feedback?.required);
+  useEffect(() => {
+    if (feedbackRequired && !autoOpened) {
+      // Opening the form once the server says feedback is owed is the purpose of this effect.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAutoOpened(true);
+      setFeedbackOpen(true);
+    }
+  }, [feedbackRequired, autoOpened]);
 
   if (state.error) {
     return (
@@ -45,6 +61,10 @@ export function ResultPage() {
     }
   };
   const proceed = () => {
+    if (feedbackRequired) {
+      setFeedbackOpen(true);
+      return;
+    }
     // A full load, so the session re-reads the gate decision instead of acting on the one from before this result.
     window.location.assign(more ? "/access/assessment-required" : user ? HOME[user.primary_role] : "/login");
   };
@@ -169,7 +189,7 @@ export function ResultPage() {
           <div className="notice left">
             {r.needs_retraining ? (
               <p>
-                <strong>Needs Re-training.</strong> You have used all attempts. Your manager and HR/L&D have been notified and will arrange your next learning step. This is a learning follow-up, not a disciplinary record.
+                <strong>Needs Re-training.</strong> You have used all attempts. The L&amp;D team has been notified and will arrange your next learning step. This is a learning follow-up, not a disciplinary record.
               </p>
             ) : (
               <p>{r.attempts_remaining} attempt(s) remaining. Acknowledge the refresher, then your retake becomes due at your next sign-in. If you do not acknowledge it, the retake opens at your next sign-in from the next working day.</p>
@@ -190,10 +210,40 @@ export function ResultPage() {
             {error ? <ErrorPanel error={error} /> : null}
           </div>
         ) : null}
+        {feedbackRequired ? (
+          <div className="notice left feedback-thanks" role="status">
+            <Icon name="chat" />
+            <div>
+              <strong>One last step: share your feedback.</strong> Five quick questions about this training and its assessment, needed before you continue.{" "}
+              <Btn kind="text" onClick={() => setFeedbackOpen(true)}>
+                Give feedback
+              </Btn>
+            </div>
+          </div>
+        ) : feedback?.submitted ? (
+          <div className="notice left feedback-thanks" role="status">
+            <Icon name="check" />
+            <div>
+              <strong>Thank you for your feedback.</strong> It has been shared with the L&amp;D team.
+            </div>
+          </div>
+        ) : null}
         <Btn kind="wide" onClick={proceed}>
-          {more ? "Continue to next assessment" : "Continue to my workspace"} <Icon name="arrow" />
+          {feedbackRequired ? "Give feedback to continue" : more ? "Continue to next assessment" : "Continue to my workspace"} <Icon name="arrow" />
         </Btn>
       </div>
+      {feedbackOpen && feedback && feedbackRequired ? (
+        <FeedbackDialog
+          attemptId={attemptId}
+          view={feedback}
+          onClose={() => setFeedbackOpen(false)}
+          onSubmitted={(saved) => {
+            setSavedFeedback(saved);
+            setFeedbackOpen(false);
+            toast("Thank you. Your feedback has been sent to the L&D team.");
+          }}
+        />
+      ) : null}
     </FocusShell>
   );
 }

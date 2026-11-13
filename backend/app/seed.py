@@ -1,7 +1,7 @@
 """Load synthetic development data.  Usage:  python -m app.seed  [--reset]
 
 Results are produced by the real services, so they carry genuine snapshots and scores.
-Refuses to run in production. `--reset` erases every table first.
+Refuses to run in production. `--reset` replaces every table's contents (see reset_and_seed).
 """
 import random
 import sys
@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import seed_data as S
@@ -20,6 +20,7 @@ from app.core.enums import AssessmentType, ObligationStatus, RoleCode, TrainingS
 from app.core.security import hash_password
 from app.models import (
     AssessmentConfig,
+    AssessmentFeedback,
     AssessmentObligation,
     BehaviourReview,
     BehaviourReviewCycle,
@@ -58,8 +59,12 @@ def _org(db: Session, now: datetime) -> dict:
     locations = {c: Location(code=c, name=n) for c, n in S.LOCATIONS}
     db.add_all([*departments.values(), *functions.values(), *locations.values()])
     db.add(WorkingCalendar(code="DEFAULT", name="Illustrative Monday to Friday calendar (not Finvasia policy)", timezone=get_settings().default_timezone, working_weekdays=[0, 1, 2, 3, 4], is_default=True))
-    roles = {r.value: Role(code=r.value, name={"EMPLOYEE": "Employee", "LD_ADMIN": "L&D Admin"}[r.value]) for r in RoleCode}
-    db.add_all(roles.values())
+    # Reuse role rows that already exist: migration d5a2e7c91f04 creates EMPLOYEE even in an empty database.
+    roles = {r.code: r for r in db.scalars(select(Role))}
+    for r in RoleCode:
+        if r.value not in roles:
+            roles[r.value] = Role(code=r.value, name={"EMPLOYEE": "Employee", "LD_ADMIN": "L&D Admin"}[r.value])
+            db.add(roles[r.value])
     db.flush()
 
     password = hash_password(S.DEMO_PASSWORD)
@@ -225,6 +230,30 @@ def _review(db: Session, enrolment: Enrolment, period: int, kind: str, rating: i
     behaviour.submit_review(db, review, submitter.id, responses, now=at)
 
 
+def _feedback(db: Session, enrolment: Enrolment, ratings: tuple[int, int, int, int, int], comment: str | None) -> None:
+    """The employee's feedback, given just after the first submitted attempt of the post-training assessment."""
+    obligation = _post(db, enrolment)
+    db.refresh(obligation)
+    first = obligation.attempts[0]
+    relevance, clarity, alignment, fairness, confidence = ratings
+    db.add(
+        AssessmentFeedback(
+            obligation_id=obligation.id,
+            attempt_id=first.id,
+            employee_id=enrolment.employee_id,
+            training_id=enrolment.training_id,
+            relevance_rating=relevance,
+            clarity_rating=clarity,
+            alignment_rating=alignment,
+            fairness_rating=fairness,
+            confidence_rating=confidence,
+            comment_text=comment,
+            submitted_at=first.submitted_at + timedelta(minutes=3),
+        )
+    )
+    db.flush()
+
+
 def _pre_test(db: Session, enrolment: Enrolment, score: int, at: datetime, rng: random.Random) -> None:
     config = assessment.active_config(db, enrolment.training_id, AssessmentType.PRE_TEST)
     obligation = AssessmentObligation(enrolment_id=enrolment.id, employee_id=enrolment.employee_id, training_id=enrolment.training_id, config_id=config.id, assessment_type=AssessmentType.PRE_TEST, status=ObligationStatus.DUE, due_at=at)
@@ -278,6 +307,19 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
     observed = db.scalar(select(Enrolment).where(Enrolment.employee_id == e["E006"].id))
     _review(db, observed, 30, "SELF", 4, e["E006"], now - timedelta(days=14))
 
+    # Feedback given after the post-training assessments. E004 and E009 have not given theirs.
+    _feedback(db, done, (5, 4, 5, 4, 5), "Clear examples. The scenario questions matched what we practised.")
+    _feedback(db, second, (4, 4, 4, 3, 4), "The time limit felt a little tight for the scenario questions.")
+    _feedback(db, failed, (4, 3, 3, 3, 3), "Some assessment questions covered topics only touched on briefly in the session.")
+    _feedback(db, passed, (5, 5, 4, 4, 5), None)
+    for code, ratings, comment in (
+        ("E005", (5, 5, 5, 5, 5), "Very useful for my daily work."),
+        ("E006", (3, 4, 4, 4, 3), None),
+        ("E007", (4, 5, 4, 4, 4), "Good pace and well explained."),
+        ("E008", (5, 4, 5, 5, 4), None),
+    ):
+        _feedback(db, db.scalar(select(Enrolment).where(Enrolment.employee_id == e[code].id)), ratings, comment)
+
     # E010: assigned only; completion not yet recorded.
     _enrol(db, e["E010"], t["T002"], now - timedelta(days=3))
     db.flush()
@@ -291,19 +333,57 @@ def seed(db: Session, now: datetime | None = None) -> None:
     db.commit()
 
 
-def reset(engine) -> None:
-    tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
-    with engine.begin() as connection:
-        connection.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+BUILD_SCHEMA = "demo_build"
+
+
+def _swap_sql() -> str:
+    """One statement that empties every application table and copies the freshly built rows in.
+
+    A single DO block, so the switch is one round trip and the tables are locked only for that moment.
+    Columns are named explicitly: the live tables were built by migrations, so their column order can differ.
+    """
+    tables = Base.metadata.sorted_tables
+    everything = ", ".join(f'public."{t.name}"' for t in tables)
+    copies = "\n".join(
+        f'  INSERT INTO public."{t.name}" ({cols}) SELECT {cols} FROM {BUILD_SCHEMA}."{t.name}";'  # noqa: S608 - names come from the app's own table metadata, never from input
+        for t in tables
+        for cols in [", ".join(f'"{c.name}"' for c in t.columns)]
+    )
+    return f"DO $reset$\nBEGIN\n  TRUNCATE {everything} RESTART IDENTITY CASCADE;\n{copies}\nEND\n$reset$"
+
+
+def reset_and_seed(now: datetime | None = None) -> None:
+    """Replace every table's contents with freshly generated synthetic data, all or nothing.
+
+    Generating the data takes many small queries, which is slow against a remote database such as Neon.
+    So it is built first in a private schema while the application keeps working normally, and only then
+    swapped into the live tables in one short step. Everything runs in one transaction: if anything fails,
+    the live data is untouched and the private schema disappears with the rollback.
+    """
+    if get_settings().is_production:
+        raise RuntimeError("Refusing to load synthetic data in production.")
+    with get_engine().connect() as connection, connection.begin():
+        connection.exec_driver_sql(f"DROP SCHEMA IF EXISTS {BUILD_SCHEMA} CASCADE")
+        connection.exec_driver_sql(f"CREATE SCHEMA {BUILD_SCHEMA}")
+        # Every unqualified name now means the private schema, for the ORM and for the services alike.
+        connection.exec_driver_sql(f"SET LOCAL search_path TO {BUILD_SCHEMA}")
+        Base.metadata.create_all(connection, checkfirst=False)
+        # The session joins this transaction through a savepoint, so seed()'s commit cannot end it early.
+        with Session(bind=connection, autoflush=False, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+            seed(db, now)
+        connection.exec_driver_sql("SET LOCAL search_path TO public")
+        connection.exec_driver_sql(_swap_sql())
+        connection.exec_driver_sql(f"DROP SCHEMA {BUILD_SCHEMA} CASCADE")
 
 
 def main() -> None:
     settings = get_settings()
     if settings.is_production:
         sys.exit("Refusing to load synthetic data in production.")
-    engine = get_engine()
     if "--reset" in sys.argv:
-        reset(engine)
+        reset_and_seed()
+        print("Synthetic data loaded. Sign in with the demo accounts; the password is in app/seed_data.py.")
+        return
     with session_factory()() as db:
         if db.scalar(select(Employee.id).limit(1)):
             sys.exit("Data already exists. Use --reset to erase it and load the synthetic data again.")

@@ -53,3 +53,175 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .tc-stale-notice{margin-bottom:12px}
 @media (prefers-reduced-motion:no-preference){.tc-refreshing{animation:tc-fade-in .2s ease-out}}
 @keyframes tc-fade-in{from{opacity:0}to{opacity:1}}
+
+/* Demo data reset on the sign-in page */
+.impact-login-card .login-reset-demo{margin-top:16px}
+.impact-login-card .login-reset-notice{margin:0 0 16px;padding:10px 14px;border-radius:8px;background:#e7f2e9;color:#0b5a35;font-size:14px}
+
+/* Sign-in page: fits one window, never scrolls.
+   Every vertical size (spacing, logos, headline, text, tiles, card, fields, buttons) scales with the window
+   height and stops at the original size on tall screens, so large monitors look exactly as designed. The office
+   photo is pinned to the bottom-left: it keeps its full width (--scene-w) unless the window is short, where its
+   height is limited (--scene-h) so it fits under the Learning / Behaviour tiles. The story column reserves
+   that height, so the photo never covers the tiles. */
+.green-impact-login{--scene-w:58vw}
+@media(max-width:1449px){.green-impact-login{--scene-w:57vw}}
+@media(max-width:1100px){.green-impact-login{--scene-w:55vw}}
+@media(min-width:701px){
+  .green-impact-login{
+    --pt:clamp(14px,3.2vh,52px);--pb:clamp(10px,2.2vh,40px);
+    --scene-h:min(calc(var(--scene-w) * 291 / 845),44dvh);
+    padding-top:var(--pt);padding-bottom:var(--pb);min-height:100dvh;align-items:start;
+  }
+  .green-impact-login .login-office-scene{width:calc(var(--scene-h) * 845 / 291)}
+  /* The photo's top ~10% is pale sky fading in, so the tiles may sit over it. */
+  .green-impact-login .impact-login-story{min-height:0;padding-bottom:max(0px,calc(var(--scene-h) * .9 - var(--pb) - 2px))}
+  .green-impact-login .login-brand-head{height:clamp(42px,7.4vh,72px);gap:clamp(18px,3.6vh,42px)}
+  .green-impact-login .login-traincheck-logo{width:clamp(160px,29vh,285px)}
+  .green-impact-login .login-finvasia-logo{width:clamp(110px,20vh,196px)}
+  .green-impact-login .login-brand-head>i{height:clamp(30px,5.4vh,53px)}
+  .green-impact-login .login-positioning{margin-top:clamp(10px,3.2vh,50px)}
+  .green-impact-login .login-positioning .eyebrow{font-size:clamp(11px,1.6vh,14px);letter-spacing:clamp(2px,.4vh,4px);margin-bottom:clamp(16px,3.1vh,31px)}
+  .green-impact-login .login-positioning .eyebrow:after{bottom:clamp(-15px,-1.4vh,-8px)}
+  .green-impact-login .login-positioning h1{font-size:clamp(26px,min(3.3vw,5.6vh),55px)}
+  .green-impact-login .login-positioning>p{font-size:clamp(13px,min(1.15vw,2.2vh),19px);margin-top:clamp(8px,2vh,23px)}
+  .green-impact-login .login-levels{margin-top:clamp(10px,2.8vh,34px)}
+  .green-impact-login .login-levels>div{min-height:0;gap:clamp(3px,.8vh,7px)}
+  .green-impact-login .login-levels>div>span{width:clamp(36px,6.6vh,58px);height:clamp(36px,6.6vh,58px);border-radius:clamp(10px,1.8vh,16px)}
+  .green-impact-login .login-levels>div>span>svg{width:clamp(22px,4vh,35px);height:clamp(22px,4vh,35px)}
+  .green-impact-login .login-levels>div+div:before{top:clamp(14px,3vh,29px);height:clamp(48px,9vh,76px)}
+  .green-impact-login .login-levels h2{font-size:clamp(14px,2.1vh,18px)}
+  .green-impact-login .login-levels p{font-size:clamp(12px,1.75vh,14px)}
+}
+/* The sign-in card, on every screen size. */
+.green-impact-login .impact-login-card{margin-top:0;padding:clamp(16px,3.4vh,29px) clamp(18px,2.6vw,44px) clamp(14px,2.8vh,24px)}
+/* Laptops and desktops: 20px taller card (10px more at the top and bottom), as requested. */
+@media(min-width:701px){.green-impact-login .impact-login-card{padding-top:calc(clamp(16px,3.4vh,29px) + 10px);padding-bottom:calc(clamp(14px,2.8vh,24px) + 10px)}}
+.green-impact-login .impact-login-card>h2{font-size:clamp(21px,4.2vh,34px)}
+.green-impact-login .login-subtitle{font-size:clamp(13px,2.2vh,19px);margin:2px 0 clamp(10px,3vh,28px)}
+.green-impact-login .demo-roles{margin:0 0 clamp(10px,2.6vh,23px)}
+.green-impact-login .role-choice{min-height:clamp(56px,11.5vh,100px);gap:clamp(4px,1vh,10px);padding:clamp(6px,1.2vh,12px) 6px}
+.green-impact-login .role-choice>svg{width:clamp(20px,3.4vh,28px);height:clamp(20px,3.4vh,28px)}
+.green-impact-login .login-input-field{margin-bottom:clamp(8px,1.9vh,16px);gap:clamp(4px,.8vh,7px)}
+.green-impact-login .login-input-field>span{height:clamp(38px,5.8vh,46px)}
+.green-impact-login .login-options{margin-bottom:clamp(10px,2.6vh,23px)}
+.green-impact-login .login-sign-in{min-height:clamp(42px,6.6vh,55px);font-size:clamp(15px,2.3vh,19px)}
+.green-impact-login .impact-login-card .form-error{margin-bottom:clamp(8px,1.6vh,16px)}
+.green-impact-login .impact-login-card .login-reset-demo{margin-top:clamp(8px,1.8vh,16px);min-height:clamp(36px,5.2vh,42px)}
+.green-impact-login .impact-login-card .login-reset-notice{margin-bottom:clamp(8px,1.6vh,16px);padding:clamp(6px,1.1vh,10px) 14px;font-size:clamp(12px,1.7vh,14px)}
+/* Phones: one compact column (the photo is already hidden). The long description is left out; on shorter phones
+   the tile descriptions, and on the shortest the tiles, tagline and subtitle, so the sign-in form always fits. */
+@media(max-width:700px){
+  .green-impact-login{padding:14px 16px;gap:14px;min-height:100dvh}
+  .green-impact-login .impact-login-story{min-height:0;padding-bottom:0}
+  .green-impact-login .login-brand-head{height:40px;gap:14px}
+  .green-impact-login .login-traincheck-logo{width:160px}
+  .green-impact-login .login-finvasia-logo{width:104px}
+  .green-impact-login .login-brand-head>i{height:26px}
+  .green-impact-login .login-positioning{margin-top:12px}
+  .green-impact-login .login-positioning .eyebrow{font-size:11px;letter-spacing:1.4px;margin-bottom:16px}
+  .green-impact-login .login-positioning .eyebrow:after{bottom:-8px;width:36px}
+  .green-impact-login .login-positioning h1{font-size:26px;line-height:1.15;letter-spacing:-.8px}
+  .green-impact-login .login-positioning>p{display:none}
+  .green-impact-login .login-levels{margin-top:12px}
+  .green-impact-login .login-levels>div{min-height:0;gap:4px}
+  .green-impact-login .login-levels>div>span{width:34px;height:34px;border-radius:10px}
+  .green-impact-login .login-levels>div>span>svg{width:20px;height:20px}
+  .green-impact-login .login-levels>div+div:before{top:6px;height:60px}
+  .green-impact-login .login-levels h2{font-size:14px}
+  .green-impact-login .login-levels p{font-size:12px;line-height:1.4;margin-top:2px}
+  .green-impact-login .impact-login-card{padding:16px 16px 14px;border-radius:18px}
+  .green-impact-login .impact-login-card>h2{font-size:22px}
+  .green-impact-login .login-subtitle{font-size:13px;margin:2px 0 10px}
+  .green-impact-login .demo-roles{margin-bottom:10px;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .green-impact-login .role-choice{min-height:56px;padding:6px;gap:4px}
+  .green-impact-login .role-choice>svg{width:20px;height:20px}
+  .green-impact-login .login-input-field{margin-bottom:8px;gap:4px}
+  .green-impact-login .login-input-field>span{height:40px}
+  .green-impact-login .login-options{margin-bottom:10px}
+  .green-impact-login .login-sign-in{min-height:44px;font-size:15px}
+  .green-impact-login .impact-login-card .login-reset-demo{margin-top:8px;min-height:36px}
+}
+@media(max-width:700px) and (max-height:820px){
+  .green-impact-login .login-levels p{display:none}
+  .green-impact-login .login-levels>div+div:before{height:46px}
+}
+@media(max-width:700px) and (max-height:720px){
+  .green-impact-login .login-levels,.green-impact-login .login-positioning .eyebrow,.green-impact-login .login-subtitle{display:none}
+  .green-impact-login .login-positioning{margin-top:10px}
+  .green-impact-login .impact-login-card>h2{margin-bottom:10px}
+}
+
+/* Feedback after a post-training assessment */
+.feedback-form>p{font-size:14px;margin:0 0 18px}
+.feedback-questions{list-style:none;margin:0 0 8px;padding:0;display:grid;gap:14px}
+.feedback-questions fieldset{border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:0}
+.feedback-questions legend{display:flex;gap:10px;align-items:flex-start;font-size:14px;font-weight:600;color:var(--text);padding:0;margin-bottom:12px;float:left;width:100%}
+.feedback-questions legend+*{clear:both}
+.feedback-number{display:inline-grid;place-items:center;flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#e7f2eb;color:#005b3b;font-size:12px}
+.feedback-scale{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.feedback-scale label{position:relative;display:grid;place-items:center;min-height:42px;border:1px solid #c3ced9;border-radius:8px;cursor:pointer;font-weight:600;background:#fff;transition:background .15s,border-color .15s}
+.feedback-scale label:hover{border-color:#087443;background:#f3f8f5}
+.feedback-scale label.selected{background:#087443;border-color:#087443;color:#fff}
+.feedback-scale input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.feedback-scale label:has(input:focus-visible){outline:3px solid var(--accent);outline-offset:2px}
+.feedback-scale-labels{display:flex;justify-content:space-between;gap:12px;margin-top:6px;font-size:12px;color:var(--secondary)}
+.feedback-form .field{margin:16px 0 4px}
+.feedback-form .field small{text-align:right;font-weight:400}
+.feedback-form .dialog-actions{align-items:center}
+.feedback-progress{margin-right:auto}
+.feedback-thanks{display:flex;gap:12px;align-items:flex-start;text-align:left}
+.feedback-thanks>svg{color:#087443;margin-top:2px}
+
+/* L&D Admin: Training Feedback */
+.feedback-averages{display:grid;gap:14px}
+.feedback-average{display:grid;grid-template-columns:minmax(0,1fr) 180px 44px;gap:16px;align-items:center;font-size:14px}
+.feedback-average progress{height:8px}
+.feedback-average strong{text-align:right}
+.feedback-rating-cell{white-space:nowrap;font-variant-numeric:tabular-nums}
+.feedback-comment{max-width:340px;white-space:normal;font-size:13px;color:var(--text)}
+@media(max-width:700px){.feedback-average{grid-template-columns:1fr 44px}.feedback-average progress{grid-column:1/-1;grid-row:2}}
+.impact-login-card .login-reset-notice.running{display:flex;gap:10px;align-items:flex-start;background:#eef4fb;color:#1f3a5f}
+.impact-login-card .login-reset-notice.running>svg{flex-shrink:0;margin-top:2px}
+@media (prefers-reduced-motion:no-preference){.impact-login-card .login-reset-notice.running>svg{animation:tc-spin 1.2s linear infinite}}
+@keyframes tc-spin{to{transform:rotate(360deg)}}
+/* The selected role's check mark is decoration: aria-pressed already announces the choice. */
+.impact-login-card .role-choice.selected:after{content:'✓' / ''}
+
+/* "Assessment required" page (and the pre-test intro, which shares .gate-panel): fits one window on laptops
+   and desktops. Sizes scale with the window height and stop at the original size on tall screens (1080p and
+   up look exactly as designed). Phones keep their normal scrolling layout. */
+@media(min-width:701px){
+  .assessment-layout:has(.gate-panel){min-height:100dvh}
+  .assessment-layout:has(.gate-panel) .focus-header{height:clamp(52px,8.4vh,80px)}
+  .assessment-layout:has(.gate-panel) .assessment-main{padding:clamp(10px,3.4vh,48px) 24px}
+  .assessment-layout:has(.gate-panel) .focus-footer{padding:clamp(6px,1.8vh,20px) 20px;font-size:clamp(12px,1.6vh,13px)}
+  .gate-panel .gate-icon{width:clamp(40px,6.6vh,64px);height:clamp(40px,6.6vh,64px);border-radius:clamp(11px,1.7vh,16px);margin-bottom:clamp(10px,2.6vh,28px)}
+  .gate-panel .gate-icon svg{width:clamp(22px,3.4vh,32px);height:clamp(22px,3.4vh,32px)}
+  .gate-panel>.eyebrow{font-size:clamp(11px,1.5vh,13px);margin-bottom:clamp(2px,.8vh,9px)}
+  .gate-panel h1{font-size:clamp(26px,4.4vh,36px);margin:clamp(4px,1.1vh,12px) 0}
+  .gate-panel .lead{font-size:clamp(16px,2.4vh,20px);margin-bottom:clamp(2px,.8vh,8px)}
+  .gate-panel>p:not(.lead){font-size:clamp(13px,1.8vh,15px);margin:clamp(2px,.8vh,8px) 0 clamp(4px,1.4vh,16px)}
+  .gate-panel .gate-training{padding:clamp(12px,2.4vh,26px) clamp(16px,2.4vh,26px);margin:clamp(8px,2.6vh,32px) 0 clamp(8px,2vh,24px)}
+  .gate-panel .gate-training>.eyebrow{font-size:clamp(11px,1.5vh,13px);margin-bottom:clamp(2px,.8vh,9px)}
+  .gate-panel .gate-training h2{font-size:clamp(16px,2.3vh,19px)}
+  .gate-panel .gate-training p{margin:clamp(2px,.6vh,8px) 0 0}
+  .gate-panel .gate-training .metrics{margin-top:clamp(8px,1.8vh,20px);padding-top:clamp(8px,1.8vh,22px)}
+  .gate-panel .gate-training .metrics strong{font-size:clamp(19px,3vh,25px);margin:clamp(1px,.6vh,8px) 0 clamp(1px,.4vh,5px)}
+  .gate-panel .gate-training .metrics .muted,.gate-panel .gate-training .metrics small{font-size:clamp(12px,1.6vh,13px)}
+  .gate-panel>.btn.wide{min-height:clamp(40px,5.6vh,48px)}
+  .gate-panel>.notice{padding:clamp(8px,1.6vh,14px) 16px;margin:0;line-height:1.5}
+  .gate-panel>.notice p{margin:clamp(2px,.5vh,8px) 0 clamp(4px,1vh,12px);font-size:clamp(13px,1.8vh,14px)}
+  .gate-panel>.notice p.small{margin-bottom:0}
+  .gate-panel>.notice .btn{min-height:clamp(34px,4.8vh,42px)}
+  .gate-panel>p.small{margin:clamp(6px,1.4vh,16px) 0 0}
+  .gate-panel details{margin-top:clamp(6px,1.6vh,24px)}
+}
+/* Short laptop windows, or mid-height ones when the taller "Refresher first" box is shown: the decorative
+   shield gives its room to the content. */
+@media(min-width:701px) and (max-height:760px){
+  .gate-panel .gate-icon{display:none}
+}
+@media(min-width:701px) and (max-height:960px){
+  .gate-panel:has(>.notice) .gate-icon{display:none}
+}

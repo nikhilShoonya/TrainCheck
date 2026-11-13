@@ -1,6 +1,7 @@
 """All TrainCheck tables. Physical schema lives in migrations/; this file is the reference.
 
 Scope change SC-2L: there are deliberately no Level 1 Reaction or Level 4 KPI/ROI tables.
+AssessmentFeedback (five ratings after a post-training assessment) was added later at the product owner's request.
 """
 import uuid
 from datetime import date, datetime
@@ -539,6 +540,32 @@ class RefresherAcknowledgement(Base):
     attempts_at_time: Mapped[int] = mapped_column(Integer)
     acknowledged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     __table_args__ = (UniqueConstraint("obligation_id", "attempts_at_time"),)
+
+
+class AssessmentFeedback(Base):
+    """The employee's feedback on a training and its post-training assessment. One per assessment (obligation),
+    given after the first submitted attempt; retakes do not ask again. Questions live in app/modules/feedback."""
+
+    __tablename__ = "assessment_feedback"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    obligation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assessment_obligations.id"), unique=True)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assessment_attempts.id"))
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    training_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trainings.id"), index=True)
+    relevance_rating: Mapped[int] = mapped_column(Integer)
+    clarity_rating: Mapped[int] = mapped_column(Integer)
+    alignment_rating: Mapped[int] = mapped_column(Integer)
+    fairness_rating: Mapped[int] = mapped_column(Integer)
+    confidence_rating: Mapped[int] = mapped_column(Integer)
+    comment_text: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    employee: Mapped[Employee] = relationship()
+    training: Mapped[Training] = relationship()
+    attempt: Mapped[AssessmentAttempt] = relationship()
+    __table_args__ = tuple(
+        CheckConstraint(f"{column} BETWEEN 1 AND 5", name=f"ck_feedback_{column}")
+        for column in ("relevance_rating", "clarity_rating", "alignment_rating", "fairness_rating", "confidence_rating")
+    )
 
 
 # ---------- Level 3 Behaviour ----------

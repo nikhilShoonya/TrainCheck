@@ -7,7 +7,7 @@ import { Art } from "@/components/shell/Art";
 import { Btn, BtnLink } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import type { BehaviourMeans, Summary } from "@/lib/types";
-import { formatNumber, percent } from "@/lib/utils";
+import { formatNumber, greeting, percent } from "@/lib/utils";
 import { useState } from "react";
 
 export function Panel({ title, action, className = "", children }: { title: ReactNode; action?: ReactNode; className?: string; children: ReactNode }) {
@@ -45,7 +45,7 @@ export function Welcome({ heading, description }: { heading: ReactNode; descript
 export function GoodMorning({ name }: { name: string }) {
   return (
     <>
-      Good Morning, {name} <span aria-hidden="true">👋</span>
+      {greeting()}, {name} <span aria-hidden="true">👋</span>
     </>
   );
 }

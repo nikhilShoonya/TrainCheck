@@ -1038,7 +1038,17 @@ function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (res
 }
 
 export function Assignments() {
-  const [search, setSearch] = useState("");
+  return (
+    <Suspense fallback={<Loading />}>
+      <AssignmentsInner />
+    </Suspense>
+  );
+}
+
+function AssignmentsInner() {
+  // ?search= lets other pages (such as the global search) open this list filtered to one employee.
+  const searchFromLink = useSearchParams().get("search") ?? "";
+  const [search, setSearch] = useState(searchFromLink);
   const [stage, setStage] = useState("");
   const state = useApi<EnrolmentRow[]>(`/admin/enrolments${toQuery({ search })}`);
   const [assigning, setAssigning] = useState(false);
@@ -1067,7 +1077,7 @@ export function Assignments() {
             setStage(String(v.get("stage") ?? ""));
           }}
         >
-          <TextField label="Search" name="search" placeholder="Employee name or ID" />
+          <TextField label="Search" name="search" placeholder="Employee name or ID" defaultValue={searchFromLink} />
           <SelectField label="Stage" name="stage" placeholder="All assignments" options={[{ value: "pending", label: "Awaiting completion" }, { value: "completed", label: "Completed" }]} />
           <button className="btn secondary" type="submit">
             Apply filters

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Business decision pending: may PARTIAL attendance count as training completion? Off until approved.
     completion_allows_partial_attendance: bool = False
 
+    # Lets anyone who can reach the sign-in page erase every table and reload the synthetic demo data.
+    # Only for demo environments. Always refused in production, whatever this is set to.
+    demo_reset_enabled: bool = False
+
     # Rate limiting (see app/core/ratelimit.py). Limits are requests per minute per identity.
     rate_limit_enabled: bool = True
     rate_limit_store: str = "memory"  # "memory" for one backend instance, "database" for several
@@ -47,6 +51,7 @@ class Settings(BaseSettings):
     rate_limit_export_per_minute: int = 30
     rate_limit_bulk_per_minute: int = 30
     rate_limit_report_per_minute: int = 120
+    rate_limit_demo_reset_per_minute: int = 2
     # Proxies whose X-Forwarded-For is believed: exact addresses or CIDR ranges, comma separated.
     # Empty means none: every caller is identified by its own connection address.
     trusted_proxies: str = ""

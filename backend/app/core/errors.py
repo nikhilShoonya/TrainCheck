@@ -71,7 +71,9 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(OperationalError)
     async def _database_down(_: Request, exc: OperationalError) -> JSONResponse:
         # Fails closed: no gate decision can be made, so no protected data is returned (TC-GATE-010).
-        logger.error("Database unavailable: %s", type(exc).__name__)
+        # The driver's first line names the cause (dropped connection, timeout, ...) without query parameters.
+        detail = str(getattr(exc, "orig", None) or "").strip().splitlines()[:1]
+        logger.error("Database unavailable: %s %s", type(exc).__name__, detail[0] if detail else "")
         return JSONResponse(status_code=503, content=error_body("SERVICE_UNAVAILABLE", "TrainCheck is temporarily unavailable. Please try again shortly."))
 
     @app.exception_handler(Exception)

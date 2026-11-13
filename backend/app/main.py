@@ -15,7 +15,9 @@ from app.core.errors import error_body, install_error_handlers, new_request_id, 
 from app.modules.assessment.router import router as assessment_router
 from app.modules.audit.router import router as admin_misc_router
 from app.modules.behaviour.router import router as behaviour_router
+from app.modules.demo.router import router as demo_router
 from app.modules.employee.router import router as employee_router
+from app.modules.feedback.router import router as feedback_router
 from app.modules.identity.router import router as identity_router
 from app.modules.imports.router import router as imports_router
 from app.modules.notifications.router import router as notifications_router
@@ -105,6 +107,8 @@ def create_app() -> FastAPI:
         imports_router,
         reports_router,
         admin_misc_router,
+        demo_router,
+        feedback_router,
     ):
         api.include_router(router)
     app.include_router(api)

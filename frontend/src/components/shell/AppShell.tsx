@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
-import { Btn, Empty } from "@/components/ui";
+import { Btn, Empty, ErrorPanel } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
 import { HINDI, navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
@@ -40,6 +40,8 @@ function SearchDialog({ query, onClose, role }: { query: string; onClose: () => 
     router.push(href);
   };
   const trainingsHref = role === "LD_ADMIN" ? "/lnd/trainings" : "/employee/trainings";
+  // An employee result opens that person's assignments; only L&D Admins receive employee results.
+  const hrefFor = (r: { type: string; subtitle: string | null; title: string }) => (r.type === "employee" ? `/lnd/assignments?search=${encodeURIComponent(r.subtitle ?? r.title)}` : trainingsHref);
   return (
     <Modal title="Search results" onClose={onClose}>
       <p>Results for “{query}” in your authorised workspace.</p>
@@ -59,11 +61,17 @@ function SearchDialog({ query, onClose, role }: { query: string; onClose: () => 
             <strong>{r.title}</strong>
             <small>{r.subtitle}</small>
           </span>
-          <Btn kind="text" onClick={() => go(trainingsHref)}>
+          <Btn kind="text" onClick={() => go(hrefFor(r))}>
             View
           </Btn>
         </div>
       ))}
+      {results.data === null && !results.error ? (
+        <p className="small" role="status">
+          Searching…
+        </p>
+      ) : null}
+      {results.error ? <ErrorPanel error={results.error} retry={results.reload} /> : null}
       {results.data && !pages.length && !results.data.length ? <Empty title="No matching records." hint="Try another word." /> : null}
     </Modal>
   );
@@ -86,14 +94,35 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (user && NAV_PREFETCH[href]) void prefetchPaths(queryClient, user.id, NAV_PREFETCH[href]);
   };
   const main = useRef<HTMLElement>(null);
+  const profileMenu = useRef<HTMLDetailsElement>(null);
 
-  // A navigation closes the mobile drawer and moves focus to the new page's heading.
+  // A navigation closes the mobile drawer and the account menu, and moves focus to the new page's heading.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNavOpen(false);
+    if (profileMenu.current) profileMenu.current.open = false;
     window.scrollTo(0, 0);
     main.current?.querySelector<HTMLElement>("h1")?.focus();
   }, [pathname]);
+
+  // The account menu is a <details>, which stays open by itself: close it on a click outside or Escape.
+  useEffect(() => {
+    const close = (event: Event) => {
+      const menu = profileMenu.current;
+      if (!menu?.open) return;
+      if (event instanceof KeyboardEvent) {
+        if (event.key !== "Escape") return;
+        menu.open = false;
+        menu.querySelector("summary")?.focus();
+      } else if (!menu.contains(event.target as Node)) menu.open = false;
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -157,9 +186,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span className="side-wave" />
         </div>
         <div className="sidebar-tools">
-          <Btn kind="text" onClick={() => setCollapsed((c) => !c)}>
+          {/* The text is hidden while collapsed, so the label keeps the button named for screen readers. */}
+          <Btn kind="text" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} aria-controls="sidebar" title={collapsed ? "Expand sidebar" : undefined} onClick={() => setCollapsed((c) => !c)}>
             <Icon name={collapsed ? "chevron" : "menu"} />
-            <span>Collapse sidebar</span>
+            <span>{collapsed ? "Expand sidebar" : "Collapse sidebar"}</span>
           </Btn>
         </div>
       </aside>
@@ -196,7 +226,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="bell" />
               {unread ? <span className="notification-dot" /> : null}
             </Link>
-            <details className="profile-menu">
+            <details className="profile-menu" ref={profileMenu}>
               <summary>
                 <span className="avatar reference-avatar">
                   <Portrait user={user} />

@@ -356,3 +356,49 @@ export interface TrainingAdmin {
   pending_scheduling?: AffectedEmployee[];
   unavailable_assessments?: AffectedEmployee[];
 }
+
+/* Feedback after a post-training assessment (five 1-5 ratings and an optional comment). */
+export type FeedbackKey = "relevance" | "clarity" | "alignment" | "fairness" | "confidence";
+
+export interface FeedbackQuestion {
+  key: FeedbackKey;
+  text: string;
+  low_label: string;
+  high_label: string;
+}
+
+export interface FeedbackView {
+  required: boolean;
+  training_title: string;
+  questions: FeedbackQuestion[];
+  submitted: { ratings: Record<FeedbackKey, number>; comment: string | null; submitted_at: string } | null;
+}
+
+export interface FeedbackAdmin {
+  questions: FeedbackQuestion[];
+  summary: { responses: number; trainings: number; averages: Record<FeedbackKey, number | null>; overall: number | null };
+  trainings: {
+    training_id: string;
+    training_code: string;
+    training_title: string;
+    responses: number;
+    averages: Record<FeedbackKey, number | null>;
+    overall: number | null;
+    latest_at: string;
+  }[];
+  responses: {
+    id: string;
+    employee_name: string;
+    employee_code: string;
+    department: string | null;
+    training_id: string;
+    training_title: string;
+    score_percent: number | null;
+    result_status: string | null;
+    ratings: Record<FeedbackKey, number>;
+    average: number | null;
+    comment: string | null;
+    submitted_at: string;
+  }[];
+  training_options: Named[];
+}

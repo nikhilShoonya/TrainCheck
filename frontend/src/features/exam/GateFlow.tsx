@@ -9,7 +9,7 @@ import { Btn, ErrorPanel, Loading, Metrics } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
 import type { AccessState, AttemptView } from "@/lib/types";
-import { clock, firstName } from "@/lib/utils";
+import { clock, firstName, greeting } from "@/lib/utils";
 import { ExamView } from "./ExamView";
 import { enterFullscreen, isFullscreen, runSystemCheck, systemCheckPassed, type Check } from "./monitor";
 
@@ -306,7 +306,7 @@ export function GateFlow() {
           <Icon name="shield" />
         </div>
         <span className="eyebrow">A MOMENT TO CHECK YOUR LEARNING</span>
-        <h1 tabIndex={-1}>Good morning, {firstName(user.full_name)}.</h1>
+        <h1 tabIndex={-1}>{greeting()}, {firstName(user.full_name)}.</h1>
         <p className="lead">Your training assessment is due.</p>
         <p>Complete your due assessments before opening your TrainCheck workspace.</p>
         {error ? <ErrorPanel error={error} /> : null}

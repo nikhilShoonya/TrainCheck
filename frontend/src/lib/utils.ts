@@ -32,3 +32,9 @@ export const clock = (seconds: number) => {
 };
 
 export const duration = (seconds: number) => `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
+
+/** "Good morning/afternoon/evening" for the viewer's local time. Only call it in the browser. */
+export const greeting = (now: Date = new Date()) => {
+  const hour = now.getHours();
+  return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+};

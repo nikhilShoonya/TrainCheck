@@ -22,6 +22,7 @@ export const NAV: Record<RoleCode, NavItem[]> = {
     ["/lnd/assessment-config", "Assessment Configuration", "settings"],
     ["/lnd/behaviour-templates", "Behaviour Questionnaires", "chat"],
     ["/lnd/scorecards", "Learning & Behaviour Scorecards", "award"],
+    ["/lnd/feedback", "Training Feedback", "chat"],
     ["/lnd/reports", "Reports & Analytics", "chart"],
     ["/notifications", "Notifications", "bell"],
   ],
@@ -84,6 +85,7 @@ export const HINDI: Record<string, string> = {
   "Assessment Configuration": "आकलन सेटिंग",
   "Learning & Behaviour Scorecards": "सीखने और व्यवहार के स्कोरकार्ड",
   "Reports & Analytics": "रिपोर्ट और विश्लेषण",
+  "Training Feedback": "प्रशिक्षण प्रतिक्रिया",
   Notifications: "सूचनाएं",
   "Audit Logs": "बदलाव का इतिहास",
 };
