@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 
 from app.core import clock
-from app.models import AssessmentAttempt, AssessmentObligation, AttemptSecurityEvent, Notification, UserAccount
+from app.models import AssessmentAttempt, AssessmentObligation, AttemptSecurityEvent, Notification, Question, UserAccount
 from tests.conftest import NOW, answer_with_score, relogin, start, submit, take
 
 
@@ -157,8 +157,13 @@ def test_difficulty_mix_is_followed(world, client_for, db):  # TC-ATT-009
     assert levels.count("EASY") == 3 and levels.count("MEDIUM") == 2 and levels.count("HARD") == 1
 
 
-def test_insufficient_pool_blocks_start_with_shortfall(world, client_for):  # TC-ATT-010
-    obligation = world.complete(world.employee, world.training(questions=5, count=10))
+def test_insufficient_pool_blocks_start_with_shortfall(world, client_for, db):  # TC-ATT-010
+    # Phase 1: an unusable obligation is never created, so the pool shrinks after scheduling instead.
+    training = world.training(questions=10, count=10)
+    obligation = world.complete(world.employee, training)
+    for question in db.scalars(select(Question).where(Question.question_code.in_([f"T1-Q{i:02d}" for i in range(1, 6)]))):
+        question.status = "INACTIVE"
+    db.commit()
     response = client_for(world.employee).post(f"/assessment-obligations/{obligation.id}/attempts", json={"instructions_acknowledged": True})
     assert response.status_code == 422
     body = response.json()["error"]

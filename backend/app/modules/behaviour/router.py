@@ -111,6 +111,7 @@ def my_review(review_id: uuid.UUID, user: CurrentUser = Depends(require_gate_cle
 
 @router.post("/me/behaviour-reviews/{review_id}/submit")
 def submit_my_review(review_id: uuid.UUID, body: SubmitReviewIn, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
+    service.require_enabled()
     review = _own_review(db, review_id, user)
     service.submit_review(db, review, user.employee_id, [r.model_dump() for r in body.responses])
     record_audit(db, user.id, "BEHAVIOUR_SELF_SUBMITTED", "behaviour_review", review.id)
@@ -149,6 +150,7 @@ def manager_review(review_id: uuid.UUID, user: CurrentUser = Depends(require_man
 
 @router.post("/manager/behaviour-reviews/{review_id}/submit")
 def submit_manager_review(review_id: uuid.UUID, body: SubmitReviewIn, user: CurrentUser = Depends(require_manager), db: Session = Depends(get_db)) -> dict:
+    service.require_enabled()
     review = _team_review(db, review_id, user, for_submit=True)
     if review.cycle.employee_id == user.employee_id:
         raise forbidden("A manager cannot observe their own behaviour review.")
@@ -207,6 +209,7 @@ def list_templates(_: CurrentUser = Depends(require_reader), db: Session = Depen
 
 @router.post("/admin/behaviour-templates")
 def create_template(body: TemplateIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    service.require_enabled()
     if body.training_id is None and body.function_id is None:
         raise validation("Choose a training, a function or both for this questionnaire.")
     count = db.scalar(select(func.count()).select_from(BehaviourTemplate)) or 0
@@ -223,6 +226,7 @@ def create_template(body: TemplateIn, user: CurrentUser = Depends(require_admin)
 @router.patch("/admin/behaviour-templates/{template_id}")
 def update_template(template_id: uuid.UUID, body: TemplateIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Creates a new version. Cycles already created keep the version they started with."""
+    service.require_enabled()
     current = db.get(BehaviourTemplate, template_id)
     if current is None or not current.is_active:
         raise not_found()

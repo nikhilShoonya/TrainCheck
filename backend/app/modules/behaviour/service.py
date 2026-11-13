@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.clock import utcnow
+from app.core.config import get_settings
 from app.core.deps import current_manager_id
 from app.core.enums import ReviewerType, ReviewStatus
 from app.core.errors import conflict, validation
@@ -87,30 +88,39 @@ def _loaded() -> list:
     ]
 
 
+def enabled() -> bool:
+    """Level 3 is outside the approved scope. When off, only submitted history is shown and nothing new is created."""
+    return get_settings().behaviour_enabled
+
+
+def require_enabled() -> None:
+    if not enabled():
+        raise conflict("BEHAVIOUR_DISABLED", "Level 3 behaviour follow-ups are outside the approved scope and are switched off. Existing records remain readable.")
+
+
 def reviews_for_self(db: Session, employee_id: uuid.UUID) -> list[BehaviourReview]:
-    return list(
-        db.scalars(
-            select(BehaviourReview)
-            .join(BehaviourReview.cycle)
-            .options(*_loaded())
-            .where(BehaviourReviewCycle.employee_id == employee_id, BehaviourReview.reviewer_type == ReviewerType.SELF)
-            .order_by(BehaviourReviewCycle.due_at)
-        )
+    query = (
+        select(BehaviourReview)
+        .join(BehaviourReview.cycle)
+        .options(*_loaded())
+        .where(BehaviourReviewCycle.employee_id == employee_id, BehaviourReview.reviewer_type == ReviewerType.SELF)
+        .order_by(BehaviourReviewCycle.due_at)
     )
+    if not enabled():
+        query = query.where(BehaviourReview.submitted_at.is_not(None))  # History only; no open tasks.
+    return list(db.scalars(query))
 
 
 def reviews_for_team(db: Session, team_ids: list[uuid.UUID], manager_employee_id: uuid.UUID) -> list[BehaviourReview]:
     """Open tasks follow the current team. Submitted observations stay with the manager who wrote them."""
+    open_tasks = (BehaviourReview.submitted_at.is_(None)) & (BehaviourReviewCycle.employee_id.in_(team_ids))
+    written = BehaviourReview.submitted_by_employee_id == manager_employee_id
     return list(
         db.scalars(
             select(BehaviourReview)
             .join(BehaviourReview.cycle)
             .options(*_loaded())
-            .where(
-                BehaviourReview.reviewer_type == ReviewerType.MANAGER,
-                ((BehaviourReview.submitted_at.is_(None)) & (BehaviourReviewCycle.employee_id.in_(team_ids)))
-                | (BehaviourReview.submitted_by_employee_id == manager_employee_id),
-            )
+            .where(BehaviourReview.reviewer_type == ReviewerType.MANAGER, (open_tasks | written) if enabled() else written)
             .order_by(BehaviourReviewCycle.due_at)
         )
     )

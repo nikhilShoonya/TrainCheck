@@ -5,21 +5,25 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import record_audit
 from app.core.clock import utcnow
-from app.core.enums import ImportStatus, ImportType, QuestionStatus
+from app.core.enums import AttendanceStatus, ImportStatus, ImportType, QuestionStatus
 from app.core.errors import ApiError
-from app.models import Competency, Department, Employee, Function, ImportJob, ImportJobRow, Question, QuestionRevision, Training
+from app.models import Competency, Department, Employee, Enrolment, Function, ImportJob, ImportJobRow, Question, QuestionRevision, Training, TrainingCompletion
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.imports.parsing import clip, has_formula
 from app.modules.question_bank.router import question_problem, revision_snapshot, set_content
-from app.modules.training.service import find_enrolment, record_completion
+from app.modules.training import service as training_service
 
 QUESTION_HEADERS = ["id", "training", "topic", "competency", "type", "question", "option_a", "option_b", "option_c", "option_d", "options_extra", "correct", "explanation", "difficulty", "marks", "level", "language", "active"]
 QUESTION_OPTIONAL_HEADERS = ["department", "function"]
 COMPLETION_HEADERS = ["employee", "training", "completion_date"]
-COMPLETION_OPTIONAL_HEADERS = ["source_event_id"]
+COMPLETION_OPTIONAL_HEADERS = ["attendance", "source_event_id"]
+# PENDING is not an attendance outcome, so a file cannot import it. Blank means Present.
+IMPORT_ATTENDANCE = {a.value for a in AttendanceStatus} - {AttendanceStatus.PENDING.value}
 TYPE_MAP = {"single": "MCQ_SINGLE", "multiple": "MCQ_MULTIPLE", "boolean": "TRUE_FALSE", "scenario": "SCENARIO"}
 DIFFICULTY_MAP = {"Easy": "EASY", "Medium": "MEDIUM", "Hard": "HARD"}
 
@@ -30,7 +34,7 @@ TEMPLATES = {
     ],
     ImportType.COMPLETIONS: [
         COMPLETION_HEADERS + COMPLETION_OPTIONAL_HEADERS,
-        ["E001", "T003", "2026-11-03", ""],
+        ["E001", "T003", "2026-11-03", "PRESENT", ""],
     ],
 }
 
@@ -53,7 +57,7 @@ def _error(field: str, message: str) -> dict[str, str]:
 
 # ---------- Validation ----------
 
-def _validate_question(v: dict[str, str], seen: set[str], db: Session) -> tuple[list[dict[str, str]], str, dict | None]:
+def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: dict | None = None) -> tuple[list[dict[str, str]], str, dict | None]:
     errors = [_error(k, "Required.") for k in ("id", "training", "topic", "competency", "type", "question", "option_a", "option_b", "correct", "difficulty", "marks", "level", "language", "active") if not v.get(k)]
     errors += [_error(k, "Use plain values, not formulas.") for k, value in v.items() if has_formula(value)]
     status = "INVALID" if errors else "VALID"
@@ -134,16 +138,38 @@ def _validate_question(v: dict[str, str], seen: set[str], db: Session) -> tuple[
     }
 
 
-def _validate_completion(v: dict[str, str], seen: set[str], db: Session) -> tuple[list[dict[str, str]], str, dict | None]:
+def completion_eligibility(db: Session, employee: Employee, training: Training, attendance: str) -> tuple[ApiError | None, bool]:
+    """The manual-completion rules applied to an import row. Returns (problem, needs_new_assignment).
+
+    A row may create the assignment only when manual assignment would also allow it: the training is
+    active, the employee is active and in its audience, and the assignment was never cancelled.
+    """
+    enrolment = training_service.find_enrolment(db, employee.id, training.id)
+    if enrolment is not None:
+        return training_service.completion_problem(enrolment, attendance), False
+    label = training_service.employee_label(employee)
+    if training_service.cancelled_enrolment(db, employee.id, training.id) is not None:
+        return ApiError(409, "ENROLMENT_CANCELLED", f"The assignment of {label} to {training.title} was cancelled. Assign the employee again in Employee Assignments before importing completion."), False
+    problem = training_service.new_assignment_problem(training, employee)
+    if problem:
+        return problem, False
+    return training_service.attendance_problem(attendance, label), True
+
+
+def _validate_completion(v: dict[str, str], seen: set[str], db: Session, context: dict) -> tuple[list[dict[str, str]], str, dict | None]:
     errors = [_error(k, "Required.") for k in COMPLETION_HEADERS if not v.get(k)]
     errors += [_error(k, "Use plain values, not formulas.") for k, value in v.items() if has_formula(value)]
 
-    employee_id = db.scalar(select(Employee.id).where(func.upper(Employee.employee_code) == v.get("employee", "").upper()))
-    if v.get("employee") and employee_id is None:
+    employee = db.scalar(select(Employee).where(func.upper(Employee.employee_code) == v.get("employee", "").upper())) if v.get("employee") else None
+    if v.get("employee") and employee is None:
         errors.append(_error("employee", "Unknown employee ID."))
-    training_id = db.scalar(select(Training.id).where(func.upper(Training.training_code) == v.get("training", "").upper()))
-    if v.get("training") and training_id is None:
+    training = db.scalar(select(Training).where(func.upper(Training.training_code) == v.get("training", "").upper())) if v.get("training") else None
+    if v.get("training") and training is None:
         errors.append(_error("training", "Use an existing training code."))
+
+    attendance = (v.get("attendance") or AttendanceStatus.PRESENT.value).strip().upper()
+    if attendance not in IMPORT_ATTENDANCE:
+        errors.append(_error("attendance", "Use Present, Partial, Absent or Excused, or leave it blank for Present."))
 
     completed: date | None = None
     if v.get("completion_date"):
@@ -156,14 +182,31 @@ def _validate_completion(v: dict[str, str], seen: set[str], db: Session) -> tupl
 
     if errors:
         return errors, "INVALID", None
-    key = f"{employee_id}|{training_id}"
-    enrolment = find_enrolment(db, employee_id, training_id)
+    key = f"{employee.id}|{training.id}"
+    enrolment = training_service.find_enrolment(db, employee.id, training.id)
     if key in seen or (enrolment is not None and enrolment.completion is not None):
         # Replaying a file must not create a second completion or obligation.
         seen.add(key)
         return [_error("employee", "Completion is already recorded. The row was skipped.")], "DUPLICATE", None
+    event = v.get("source_event_id") or None
+    if event and (event in context["events"] or db.scalar(select(TrainingCompletion.id).where(TrainingCompletion.source_event_id == event))):
+        return [_error("source_event_id", "This source event ID was already imported. The row was skipped.")], "DUPLICATE", None
     seen.add(key)
-    return [], "VALID", {"employee_id": str(employee_id), "training_id": str(training_id), "completion_date": completed.isoformat(), "source_event_id": v.get("source_event_id") or None}
+    if event:
+        context["events"].add(event)
+
+    problem, creates_assignment = completion_eligibility(db, employee, training, attendance)
+    if problem:
+        return [_error("record", problem.message)], "INVALID", None
+    notes = []
+    if creates_assignment:
+        notes.append(_error("assignment", "No assignment exists yet. One will be created, because the employee is active and in this training's audience."))
+    if training.id not in context["readiness"]:
+        context["readiness"][training.id] = training_service.assessment_readiness(db, training)
+    readiness = context["readiness"][training.id]
+    if not readiness.ready:
+        notes.append(_error("assessment", f"Completion will be recorded, but the assessment will not be scheduled. {readiness.message} {readiness.action}"))
+    return notes, "VALID", {"employee_id": str(employee.id), "training_id": str(training.id), "completion_date": completed.isoformat(), "source_event_id": event, "attendance": attendance}
 
 
 def create_job(db: Session, import_type: ImportType, file_name: str, rows: list[list[str]], user_id: uuid.UUID) -> ImportJob:
@@ -178,10 +221,11 @@ def create_job(db: Session, import_type: ImportType, file_name: str, rows: list[
     db.add(job)
     db.flush()
     seen: set[str] = set()
+    context: dict = {"events": set(), "readiness": {}}
     accepted = rejected = 0
     for number, row in enumerate(rows[1:], start=2):
         cells = _cells(row, headers)
-        errors, status, payload = validate(cells, seen, db)
+        errors, status, payload = validate(cells, seen, db, context)
         accepted += status == "VALID"
         rejected += status != "VALID"
         record = cells.get(label, "") or f"Row {number}"
@@ -227,22 +271,32 @@ def _commit_question(db: Session, payload: dict, user_id: uuid.UUID) -> None:
     db.add(QuestionRevision(question_id=question.id, version=1, content_snapshot=revision_snapshot(db, question), changed_by=user_id))
 
 
-def _commit_completion(db: Session, payload: dict, user_id: uuid.UUID, job_id: uuid.UUID) -> None:
-    employee_id, training_id = uuid.UUID(payload["employee_id"]), uuid.UUID(payload["training_id"])
-    enrolment = find_enrolment(db, employee_id, training_id)
-    if enrolment is None:
-        from app.models import Enrolment
-
-        enrolment = Enrolment(training_id=training_id, employee_id=employee_id, assigned_at=utcnow())
+def _commit_completion(db: Session, payload: dict, user_id: uuid.UUID, job_id: uuid.UUID) -> list[dict[str, str]]:
+    """Re-checks every rule at commit time, because records may have changed since the preview."""
+    employee = db.get(Employee, uuid.UUID(payload["employee_id"]))
+    training = db.get(Training, uuid.UUID(payload["training_id"]))
+    attendance = payload.get("attendance") or AttendanceStatus.PRESENT.value
+    problem, creates_assignment = completion_eligibility(db, employee, training, attendance)
+    if problem:
+        raise problem
+    notes = []
+    enrolment = training_service.find_enrolment(db, employee.id, training.id)
+    if creates_assignment:
+        enrolment = Enrolment(training_id=training.id, employee_id=employee.id, assigned_at=utcnow())
         db.add(enrolment)
         db.flush()
+        record_audit(db, user_id, "ENROLMENT_CREATED_BY_IMPORT", "enrolment", enrolment.id, after={"import_job": str(job_id), "employee": employee.employee_code, "training": training.training_code})
+        notes.append(_error("assignment", "Assignment created by this import."))
     calendar = load_calendar(db)
     completed_at = datetime.combine(date.fromisoformat(payload["completion_date"]), time.min, calendar.tz).astimezone(UTC)
-    record_completion(db, enrolment, completed_at, "IMPORT", user_id, source_event_id=payload.get("source_event_id"), import_job_id=job_id)
+    outcome = training_service.complete_enrolment(db, enrolment, completed_at, "IMPORT", user_id, source_event_id=payload.get("source_event_id"), import_job_id=job_id, attendance=attendance)
+    if outcome.scheduling["status"] == "NOT_SCHEDULED":
+        notes.append(_error("assessment", f"Assessment not scheduled. {outcome.scheduling['message']} {outcome.scheduling['action']}"))
+    return notes
 
 
 def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
-    """Re-validates duplicates at commit time. Invalid and duplicate rows are never applied."""
+    """Re-validates every row at commit time. Invalid and duplicate rows are never applied."""
     if job.status != ImportStatus.READY:
         raise ApiError(409, "IMPORT_ALREADY_PROCESSED", "This import has already been processed.")
     imported = 0
@@ -252,6 +306,7 @@ def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
             continue
         savepoint = db.begin_nested()
         try:
+            notes: list[dict[str, str]] = []
             if job.import_type == ImportType.QUESTIONS:
                 code = row.payload["question_code"]
                 if code in seen_codes or db.scalar(select(Question.id).where(Question.question_code == code)):
@@ -259,14 +314,20 @@ def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
                 seen_codes.add(code)
                 _commit_question(db, row.payload, user_id)
             else:
-                _commit_completion(db, row.payload, user_id, job.id)
+                notes = _commit_completion(db, row.payload, user_id, job.id)
             savepoint.commit()
             row.row_status = "IMPORTED"
+            row.errors = notes
             imported += 1
         except ApiError as exc:
             savepoint.rollback()
-            row.row_status = "DUPLICATE" if exc.status == 409 else "INVALID"
+            row.row_status = "DUPLICATE" if exc.status == 409 and exc.code in ("DUPLICATE", "COMPLETION_EXISTS") else "INVALID"
             row.errors = [_error("record", exc.message)]
+        except IntegrityError:
+            # A completion or source event ID recorded by a concurrent request or another import.
+            savepoint.rollback()
+            row.row_status = "DUPLICATE"
+            row.errors = [_error("record", "This completion or source event ID already exists. The row was skipped.")]
     job.accepted_rows = imported
     job.rejected_rows = job.total_rows - imported
     job.status = ImportStatus.COMPLETED if job.rejected_rows == 0 else ImportStatus.COMPLETED_WITH_ERRORS

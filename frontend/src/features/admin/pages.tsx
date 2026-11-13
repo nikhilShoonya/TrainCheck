@@ -201,6 +201,8 @@ function useCatalogue() {
 function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin | null; onClose: () => void; onSaved: () => void }) {
   const c = useCatalogue();
   const toast = useToast();
+  const { user } = useSession();
+  const behaviourOn = Boolean(user?.features?.behaviour);
   const [scope, setScope] = useState(training?.target_scope ?? "COMMON");
   const save = async (form: FormData) => {
     const body = {
@@ -216,11 +218,14 @@ function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin 
       refresher_text: form.get("refresher_text") || null,
       refresher_url: form.get("refresher_url") || null,
       pretest_enabled: form.has("pretest_enabled"),
-      behaviour_enabled: form.has("behaviour_enabled"),
-      followup_days: String(form.get("followup_days") ?? "")
-        .split(",")
-        .map((x) => Number(x.trim()))
-        .filter(Boolean),
+      // Level 3 settings are hidden while Behaviour is switched off; the stored values are kept unchanged.
+      behaviour_enabled: behaviourOn ? form.has("behaviour_enabled") : (training?.behaviour_enabled ?? false),
+      followup_days: behaviourOn
+        ? String(form.get("followup_days") ?? "")
+            .split(",")
+            .map((x) => Number(x.trim()))
+            .filter(Boolean)
+        : (training?.followup_days ?? []),
       item_minimum_sample: Number(form.get("item_minimum_sample")),
     };
     if (training) await api.patch(`/admin/trainings/${training.id}`, body);
@@ -260,15 +265,79 @@ function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin 
       <label className="checkline">
         <input type="checkbox" name="pretest_enabled" defaultChecked={training?.pretest_enabled} /> Offer an optional pre-test before completion
       </label>
-      <label className="checkline">
-        <input type="checkbox" name="behaviour_enabled" defaultChecked={training?.behaviour_enabled ?? true} /> Schedule behaviour follow-ups (Level 3)
-      </label>
+      {behaviourOn ? (
+        <label className="checkline">
+          <input type="checkbox" name="behaviour_enabled" defaultChecked={training?.behaviour_enabled ?? true} /> Schedule behaviour follow-ups (Level 3)
+        </label>
+      ) : null}
       <div className="form-grid">
-        <TextField label="Follow-up days (comma separated)" name="followup_days" defaultValue={(training?.followup_days ?? [30, 60, 90]).join(",")} />
+        {behaviourOn ? <TextField label="Follow-up days (comma separated)" name="followup_days" defaultValue={(training?.followup_days ?? [30, 60, 90]).join(",")} /> : null}
         <TextField label="Minimum responses for question flags" name="item_minimum_sample" type="number" min={1} max={1000} defaultValue={training?.item_minimum_sample ?? 10} />
       </div>
-      <div className="notice">New programmes start as drafts. Add questions and configure the assessment before activating.</div>
+      <div className="notice">New programmes start as drafts and cannot be assigned until they are active. Add questions and configure the assessment before activating.</div>
     </DialogForm>
+  );
+}
+
+interface ScheduleResult {
+  scheduled: { employee_code: string; employee_name: string }[];
+  reconfigured: { employee_code: string; employee_name: string }[];
+  still_blocked: { employee_code: string; employee_name: string; reason: string }[];
+}
+
+const people = (items: { employee_name: string; employee_code: string }[]) => items.map((p) => `${p.employee_name} (${p.employee_code})`).join(", ");
+
+/** Recovery after a configuration or question-pool fix. The server re-checks readiness. */
+async function schedulePending(trainingId: string): Promise<string> {
+  const r = await api.post<ScheduleResult>(`/admin/trainings/${trainingId}/schedule-assessments`);
+  const parts = [`${r.scheduled.length} assessment(s) scheduled`, `${r.reconfigured.length} moved to the current configuration`];
+  if (r.still_blocked.length) parts.push(`${r.still_blocked.length} still need action: ${r.still_blocked.map((b) => `${b.employee_name} (${b.reason})`).join("; ")}`);
+  return `${parts.join(". ")}.`;
+}
+
+/** Completions with no assessment, and assessments that can no longer start, for one training. */
+function AssessmentAttention({ training, onChanged }: { training: TrainingAdmin; onChanged: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  if (!training.pending_scheduling_count && !training.unavailable_count) return null;
+  const readiness = training.assessment_readiness;
+  const run = async () => {
+    setBusy(true);
+    try {
+      toast(await schedulePending(training.id));
+      onChanged();
+    } catch (e) {
+      toast((e as ApiError).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="notice danger">
+      <div>
+        {training.pending_scheduling_count ? (
+          <p>
+            <strong>{training.pending_scheduling_count} completion(s) have no assessment scheduled</strong>
+            {training.pending_scheduling?.length ? `: ${people(training.pending_scheduling)}` : ""}.
+          </p>
+        ) : null}
+        {training.unavailable_count ? (
+          <p>
+            <strong>{training.unavailable_count} due assessment(s) cannot start</strong> because the question pool no longer satisfies their configuration
+            {training.unavailable_assessments?.length ? `: ${people(training.unavailable_assessments)}` : ""}. These employees are not blocked meanwhile.
+          </p>
+        ) : null}
+        {readiness.ready ? (
+          <Btn tone="attention" disabled={busy} onClick={() => void run()}>
+            {busy ? "Scheduling…" : "Schedule pending assessments"}
+          </Btn>
+        ) : (
+          <p className="small">
+            {readiness.message} {readiness.action}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -321,7 +390,13 @@ function TrainingDetail({ id, onClose, onEdit }: { id: string; onClose: () => vo
               </div>
             </div>
             <p>Competencies: {t.competencies.map((c) => c.name).join(", ") || "None linked"}.</p>
-            {t.pool_problem ? <div className="notice danger">The assessment cannot run yet. {describePool(t.pool_problem, t.title)}</div> : <div className="notice">The question pool satisfies this assessment ({t.eligible_questions} eligible questions).</div>}
+            <p>
+              Audience: {SCOPE_LABEL[t.target_scope]}
+              {t.departments.length ? ` · Departments: ${t.departments.map((d) => d.name).join(", ")}` : ""}
+              {t.functions.length ? ` · Functions: ${t.functions.map((f) => f.name).join(", ")}` : ""}. Assigned {t.assigned_count}, completed {t.completed_count}.
+            </p>
+            {!t.config ? <div className="notice danger">{t.assessment_readiness.message} {t.assessment_readiness.action}</div> : t.pool_problem ? <div className="notice danger">The assessment cannot run yet. {describePool(t.pool_problem, t.title)}</div> : <div className="notice">The question pool satisfies this assessment ({t.eligible_questions} eligible questions).</div>}
+            <AssessmentAttention training={t} onChanged={() => void state.reload()} />
             <h3>Materials and recordings</h3>
             {t.materials?.length ? (
               <ul>
@@ -369,6 +444,7 @@ export function TrainingManagement() {
   const [form, setForm] = useState<{ training: TrainingAdmin | null } | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
   const [status, setStatus] = useState<TrainingAdmin | null>(null);
+  const [removing, setRemoving] = useState<TrainingAdmin | null>(null);
   const toast = useToast();
   return (
     <>
@@ -408,20 +484,27 @@ export function TrainingManagement() {
                   <small>{t.category}</small>
                 </div>,
                 t.trainer_name ?? "Not assigned",
-                SCOPE_LABEL[t.target_scope],
+                <div key="aud" data-sort={SCOPE_LABEL[t.target_scope]}>
+                  {SCOPE_LABEL[t.target_scope]}
+                  {t.departments.length || t.functions.length ? <small>{[...t.departments, ...t.functions].map((x) => x.name).join(", ")}</small> : null}
+                </div>,
                 <Badge key="s" status={t.status} />,
                 t.assigned_count,
                 `${t.completed_count} / ${t.assigned_count}`,
-                t.config ? (
-                  <div key="c">
-                    {t.config.question_count} questions · {t.config.duration_minutes} min
-                    <small>
-                      {t.config.pass_mark_percent}% pass · {t.config.max_attempts} attempts
+                <div key="c" data-sort={t.config_ready ? "1" : "0"}>
+                  {t.config ? `${t.config.question_count} questions · ${t.config.duration_minutes} min` : "Not configured"}
+                  <small>
+                    {t.config ? `${t.config.pass_mark_percent}% pass · ${t.config.max_attempts} attempts · ` : ""}
+                    {t.eligible_questions} eligible · {t.config_ready ? "Ready" : t.config ? "Needs questions" : "Needs configuration"}
+                  </small>
+                  {t.pending_scheduling_count || t.unavailable_count ? (
+                    <small className="form-error">
+                      {t.pending_scheduling_count ? `${t.pending_scheduling_count} not scheduled` : ""}
+                      {t.pending_scheduling_count && t.unavailable_count ? " · " : ""}
+                      {t.unavailable_count ? `${t.unavailable_count} cannot start` : ""}
                     </small>
-                  </div>
-                ) : (
-                  "Not configured"
-                ),
+                  ) : null}
+                </div>,
                 <div className="row wrap" key="a">
                   <Btn kind="text" onClick={() => setDetail(t.id)}>
                     Details
@@ -431,6 +514,9 @@ export function TrainingManagement() {
                   </Btn>
                   <Btn kind="text" tone={t.status === "ACTIVE" ? "danger" : "success"} onClick={() => setStatus(t)}>
                     {t.status === "ACTIVE" ? "Archive" : "Activate"}
+                  </Btn>
+                  <Btn kind="text" tone="danger" onClick={() => setRemoving(t)}>
+                    Delete
                   </Btn>
                 </div>,
               ])}
@@ -459,6 +545,20 @@ export function TrainingManagement() {
           onConfirm={async () => {
             await api.post(`/admin/trainings/${status.id}/status`, { status: status.status === "ACTIVE" ? "ARCHIVED" : "ACTIVE" });
             toast("Training status updated.");
+            void state.reload();
+          }}
+        />
+      ) : null}
+      {removing ? (
+        <ConfirmDialog
+          title="Delete training?"
+          danger
+          confirmLabel="Delete training"
+          body={<p>{removing.title}. This permanently removes the programme and its setup. Only a training that was never assigned or assessed can be deleted; otherwise archive it to keep its history.</p>}
+          onClose={() => setRemoving(null)}
+          onConfirm={async () => {
+            await api.del(`/admin/trainings/${removing.id}`);
+            toast("Training deleted.");
             void state.reload();
           }}
         />
@@ -799,9 +899,18 @@ interface EnrolmentRow {
   completion_source: string | null;
   due_at: string | null;
   assessment_state: string;
+  assessment_issue: { code: string; message: string; action: string | null } | null;
   outcome: string | null;
   retraining_flag: string;
   obligation_id: string | null;
+}
+
+interface SchedulingOutcome {
+  status: "SCHEDULED" | "NOT_SCHEDULED" | "ALREADY_SCHEDULED";
+  reason: string | null;
+  message: string;
+  action: string | null;
+  due_at: string | null;
 }
 
 function resultOf(e: EnrolmentRow): string {
@@ -809,44 +918,113 @@ function resultOf(e: EnrolmentRow): string {
   return e.outcome ?? "PENDING";
 }
 
-function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
+interface AssignmentResult {
+  created: number;
+  skipped_existing: number;
+  skipped_out_of_target: number;
+  skipped_inactive: number;
+  not_found: number;
+  results: { employee_id: string; employee_code: string | null; employee_name: string | null; status: string; reason: string | null }[];
+}
+
+const ASSIGN_STATUS: Record<string, [string, string]> = {
+  ASSIGNED: ["Assigned", "success"],
+  ALREADY_ASSIGNED: ["Already assigned", "info"],
+  OUT_OF_TARGET: ["Outside audience", "warning"],
+  INACTIVE: ["Inactive employee", "warning"],
+  NOT_FOUND: ["Not found", "danger"],
+};
+
+function AssignmentOutcome({ result, onClose }: { result: AssignmentResult; onClose: () => void }) {
+  const skipped = result.results.filter((r) => r.status !== "ASSIGNED");
+  return (
+    <Modal title="Assignment result" onClose={onClose}>
+      <Metrics
+        items={[
+          ["Assigned", result.created, "New assignments created"],
+          ["Already assigned", result.skipped_existing, "No duplicate created"],
+          ["Outside audience", result.skipped_out_of_target, "Department or function does not match"],
+          ["Inactive", result.skipped_inactive, "No new assignments for inactive employees"],
+        ]}
+      />
+      {skipped.length ? (
+        <DataTable
+          all
+          headers={["Employee", "Outcome", "Reason"]}
+          rows={skipped.map((r) => {
+            const [label, tone] = ASSIGN_STATUS[r.status] ?? [r.status, "info"];
+            return [
+              r.employee_name ? `${r.employee_name} · ${r.employee_code}` : r.employee_id,
+              <span key="s" className={`badge ${tone}`}>
+                {label}
+              </span>,
+              r.reason ?? "—",
+            ];
+          })}
+        />
+      ) : (
+        <p>Every selected employee was assigned.</p>
+      )}
+      <div className="dialog-actions">
+        <Btn kind="primary" onClick={onClose}>
+          Close
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (result: AssignmentResult) => void }) {
+  const trainings = useApi<TrainingAdmin[]>("/admin/trainings?status=ACTIVE");
   const batches = useApi<Batch[]>("/admin/batches");
-  const employees = useApi<{ id: string; full_name: string; employee_code: string; department: string | null; function: string | null }[]>("/admin/employees");
+  const employees = useApi<{ id: string; full_name: string; employee_code: string; department: string | null; function: string | null; employment_status: string }[]>("/admin/employees");
   const [trainingId, setTrainingId] = useState("");
   const [useTarget, setUseTarget] = useState(false);
-  const toast = useToast();
+  const [filter, setFilter] = useState("");
   const list = trainings.data ?? [];
   const selected = trainingId || list[0]?.id || "";
   const training = list.find((t) => t.id === selected);
+  const needle = filter.trim().toLowerCase();
+  // Inactive employees cannot receive new assignments, so they are not offered.
+  const active = (employees.data ?? []).filter((p) => p.employment_status !== "INACTIVE");
+  const shown = needle ? active.filter((p) => `${p.full_name} ${p.employee_code} ${p.department ?? ""} ${p.function ?? ""}`.toLowerCase().includes(needle)) : active;
   return (
     <DialogForm
       title="Assign employees"
       submitLabel="Assign selected employees"
       wide
+      submitBlockedReason={trainings.data && !list.length ? "No active training can take assignments. Activate a training in Training Management first." : null}
       onClose={onClose}
       onSubmit={async (form) => {
-        const result = await api.post<{ created: number; skipped_existing: number; skipped_out_of_target: number }>("/admin/enrolments", { training_id: selected, batch_id: form.get("batch_id") || null, employee_ids: form.getAll("employee_ids"), use_training_target: useTarget });
-        toast(`${result.created} assigned. ${result.skipped_existing} already assigned and ${result.skipped_out_of_target} outside this training's audience were skipped.`);
-        onSaved();
+        const result = await api.post<AssignmentResult>("/admin/enrolments", { training_id: selected, batch_id: form.get("batch_id") || null, employee_ids: form.getAll("employee_ids"), use_training_target: useTarget });
+        onSaved(result);
       }}
     >
-      <SelectField label="Training *" value={selected} onChange={(e) => setTrainingId(e.target.value)} options={list.map((t) => ({ value: t.id, label: t.title }))} />
+      <SelectField label="Training (active only) *" value={selected} onChange={(e) => setTrainingId(e.target.value)} options={list.map((t) => ({ value: t.id, label: t.title }))} />
       <SelectField label="Batch" name="batch_id" placeholder="No batch" options={(batches.data ?? []).filter((b) => b.training_id === selected).map((b) => ({ value: b.id, label: b.name }))} />
-      {training ? <p className="small">Audience: {SCOPE_LABEL[training.target_scope]}{training.departments.length ? ` · ${training.departments.map((d) => d.name).join(", ")}` : ""}{training.functions.length ? ` · ${training.functions.map((f) => f.name).join(", ")}` : ""}</p> : null}
+      {training ? (
+        <p className="small">
+          Audience: {SCOPE_LABEL[training.target_scope]}
+          {training.departments.length ? ` · ${training.departments.map((d) => d.name).join(", ")}` : ""}
+          {training.functions.length ? ` · ${training.functions.map((f) => f.name).join(", ")}` : ""}. Employees outside this audience are reported and skipped.
+        </p>
+      ) : null}
       <label className="checkline">
         <input type="checkbox" checked={useTarget} onChange={(e) => setUseTarget(e.target.checked)} /> Assign everyone in this training&apos;s audience
       </label>
       {useTarget ? null : (
         <fieldset>
           <legend>Select employees</legend>
+          <TextField label="Find by name, ID, department or function" name="employee_filter" type="search" value={filter} onChange={(e) => setFilter(e.target.value)} />
           <div className="checkbox-list">
-            {(employees.data ?? []).map((p) => (
+            {shown.map((p) => (
               <label key={p.id}>
                 <input type="checkbox" name="employee_ids" value={p.id} /> {p.full_name} · {p.employee_code}
+                {p.department || p.function ? <small> · {[p.department, p.function].filter(Boolean).join(" / ")}</small> : null}
               </label>
             ))}
           </div>
+          {employees.data && !shown.length ? <p className="small">No active employee matches.</p> : null}
         </fieldset>
       )}
       <p className="small">Existing assignments are skipped, so no one is enrolled twice. Record completion separately after attendance.</p>
@@ -856,8 +1034,10 @@ function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () =
 
 export function Assignments() {
   const [search, setSearch] = useState("");
+  const [stage, setStage] = useState("");
   const state = useApi<EnrolmentRow[]>(`/admin/enrolments${toQuery({ search })}`);
   const [assigning, setAssigning] = useState(false);
+  const [outcome, setOutcome] = useState<AssignmentResult | null>(null);
   const [cancel, setCancel] = useState<EnrolmentRow | null>(null);
   const toast = useToast();
   return (
@@ -865,7 +1045,7 @@ export function Assignments() {
       <PageTitle
         eyebrow={EYEBROW}
         title="Employee Assignments"
-        description="Training assignment and completion are independent records."
+        description="Training assignment and completion are independent records. Only active trainings and active employees in the audience can be assigned."
         action={
           <Btn kind="primary" onClick={() => setAssigning(true)}>
             <Icon name="plus" /> Assign Employees
@@ -877,16 +1057,29 @@ export function Assignments() {
           className="filters"
           onSubmit={(e) => {
             e.preventDefault();
-            setSearch(String(new FormData(e.currentTarget).get("search")));
+            const v = new FormData(e.currentTarget);
+            setSearch(String(v.get("search")));
+            setStage(String(v.get("stage") ?? ""));
           }}
         >
           <TextField label="Search" name="search" placeholder="Employee name or ID" />
+          <SelectField label="Stage" name="stage" placeholder="All assignments" options={[{ value: "pending", label: "Awaiting completion" }, { value: "completed", label: "Completed" }]} />
           <button className="btn secondary" type="submit">
             Apply filters
           </button>
         </form>
         <Loaded state={state}>
-          {(rows) => (
+          {(all) => {
+            const rows = stage === "pending" ? all.filter((e) => !e.completed_at) : stage === "completed" ? all.filter((e) => e.completed_at) : all;
+            return (
+            <>
+            <Metrics
+              items={[
+                ["Assigned", all.length, "Live assignments"],
+                ["Awaiting completion", all.filter((e) => !e.completed_at).length, "Completion not yet recorded"],
+                ["Completed", all.filter((e) => e.completed_at).length, "Completion recorded"],
+              ]}
+            />
             <DataTable
               headers={["Employee", "Training / Batch", "Assigned", "Completion", "Assessment", "Result", ""]}
               emptyTitle="No assignments match."
@@ -910,10 +1103,21 @@ export function Assignments() {
                 ),
               ])}
             />
-          )}
+            </>
+            );
+          }}
         </Loaded>
       </section>
-      {assigning ? <AssignDialog onClose={() => setAssigning(false)} onSaved={() => void state.reload()} /> : null}
+      {assigning ? (
+        <AssignDialog
+          onClose={() => setAssigning(false)}
+          onSaved={(result) => {
+            setOutcome(result);
+            void state.reload();
+          }}
+        />
+      ) : null}
+      {outcome ? <AssignmentOutcome result={outcome} onClose={() => setOutcome(null)} /> : null}
       {cancel ? (
         <ConfirmDialog
           title="Cancel this assignment?"
@@ -940,11 +1144,60 @@ export function Assignments() {
 const ATTENDANCE = ["PENDING", "PRESENT", "PARTIAL", "ABSENT", "EXCUSED"];
 const today = () => new Date().toISOString().slice(0, 10);
 
+/** Trainings whose completed employees have no usable assessment, with the fix and the people affected. */
+function SchedulingAttention({ rows, onChanged }: { rows: EnrolmentRow[]; onChanged: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState("");
+  const groups = new Map<string, { title: string; rows: EnrolmentRow[] }>();
+  for (const row of rows.filter((r) => r.assessment_issue)) {
+    const group = groups.get(row.training_id) ?? { title: row.training_title, rows: [] };
+    group.rows.push(row);
+    groups.set(row.training_id, group);
+  }
+  if (!groups.size) return null;
+  const run = async (trainingId: string) => {
+    setBusy(trainingId);
+    try {
+      toast(await schedulePending(trainingId));
+      onChanged();
+    } catch (e) {
+      toast((e as ApiError).message);
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <section className="panel">
+      <h2>Assessments needing attention</h2>
+      {[...groups.entries()].map(([trainingId, group]) => {
+        const first = group.rows[0].assessment_issue!;
+        return (
+          <div className="notice danger" key={trainingId}>
+            <div>
+              <p>
+                <strong>{group.title}</strong>: {group.rows.length} employee(s) affected: {group.rows.map((r) => `${r.employee_name} (${r.employee_code})`).join(", ")}.
+              </p>
+              <p className="small">
+                {first.message} {first.action}
+              </p>
+              <Btn tone="attention" disabled={Boolean(busy)} onClick={() => void run(trainingId)}>
+                {busy === trainingId ? "Scheduling…" : "Schedule pending assessments"}
+              </Btn>
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 export function Completion() {
   const state = useApi<EnrolmentRow[]>("/admin/enrolments");
+  const { user } = useSession();
   const [completing, setCompleting] = useState<EnrolmentRow | null>(null);
   const [waiving, setWaiving] = useState<EnrolmentRow | null>(null);
   const [cycle, setCycle] = useState<EnrolmentRow | null>(null);
+  const [lastOutcome, setLastOutcome] = useState<SchedulingOutcome | null>(null);
   const toast = useToast();
   const setAttendance = async (e: EnrolmentRow, status: string) => {
     try {
@@ -956,7 +1209,20 @@ export function Completion() {
   };
   return (
     <>
-      <PageTitle eyebrow={EYEBROW} title="Training Completion" description="Record attendance and completion. Completion schedules the assessment and the 30/60/90-day follow-ups." action={<BtnLink href="/lnd/imports" tone="data">Import Attendance</BtnLink>} />
+      <PageTitle
+        eyebrow={EYEBROW}
+        title="Training Completion"
+        description={`Record attendance and completion. Only Present attendance counts as completion. Completion schedules the assessment when the training's configuration and question pool are ready${user?.features?.behaviour ? ", and the 30/60/90-day follow-ups" : ""}.`}
+        action={<BtnLink href="/lnd/imports" tone="data">Import Attendance</BtnLink>}
+      />
+      {lastOutcome && lastOutcome.status === "NOT_SCHEDULED" ? (
+        <div className="notice danger" role="alert">
+          <div>
+            <strong>Assessment not scheduled.</strong> {lastOutcome.message} {lastOutcome.action}
+          </div>
+        </div>
+      ) : null}
+      {state.data ? <SchedulingAttention rows={state.data} onChanged={() => void state.reload()} /> : null}
       <section className="panel">
         <Loaded state={state}>
           {(rows) => (
@@ -978,7 +1244,10 @@ export function Completion() {
                 </select>,
                 e.completed_at ? `${day(e.completed_at)} (${e.completion_source === "IMPORT" ? "import" : "manual"})` : "Not recorded",
                 day(e.due_at, "Not scheduled"),
-                e.assessment_state,
+                <div key="s" data-sort={e.assessment_state}>
+                  {e.assessment_state}
+                  {e.assessment_issue ? <small className="form-error">{e.assessment_issue.code === "UNAVAILABLE" ? "Cannot start: question pool" : "No assessment scheduled"}</small> : null}
+                </div>,
                 resultOf(e),
                 <div className="row wrap" key="x">
                   {e.completed_at ? null : (
@@ -986,7 +1255,7 @@ export function Completion() {
                       Mark Completed
                     </Btn>
                   )}
-                  {["Due", "Scheduled", "Retake pending"].includes(e.assessment_state) && e.obligation_id ? (
+                  {["Due", "Scheduled", "Retake pending", "Unavailable"].includes(e.assessment_state) && e.obligation_id ? (
                     <Btn kind="text" onClick={() => setWaiving(e)}>
                       Waive
                     </Btn>
@@ -1008,16 +1277,25 @@ export function Completion() {
           submitLabel="Record completion"
           onClose={() => setCompleting(null)}
           onSubmit={async (form) => {
-            await api.post(`/admin/enrolments/${completing.id}/completion`, { completion_date: form.get("completion_date") });
-            toast("Completion recorded. The assessment has been scheduled.");
+            const done = await api.post<EnrolmentRow & { assessment_scheduling: SchedulingOutcome }>(`/admin/enrolments/${completing.id}/completion`, { completion_date: form.get("completion_date"), attendance_status: form.get("attendance_status") });
+            const scheduling = done.assessment_scheduling;
+            setLastOutcome(scheduling);
+            toast(scheduling.status === "SCHEDULED" ? `Completion recorded. ${scheduling.message}` : "Completion recorded, but the assessment was not scheduled. See the notice at the top of the page.");
             void state.reload();
           }}
         >
           <p>
             {completing.employee_name} · {completing.training_title}
           </p>
+          <SelectField
+            label="Attendance *"
+            name="attendance_status"
+            defaultValue={completing.attendance_status === "PENDING" ? "PRESENT" : completing.attendance_status}
+            options={ATTENDANCE.filter((a) => a !== "PENDING").map((a) => ({ value: a, label: a.charAt(0) + a.slice(1).toLowerCase() }))}
+          />
+          <p className="small">Absent and Excused employees cannot be marked complete. Partial counts only if your L&amp;D policy setting allows it.</p>
           <TextField label="Completion date *" name="completion_date" type="date" required defaultValue={today()} max={today()} />
-          <div className="notice">The due date uses this training&apos;s schedule and the working calendar. It is stored with the record, so later calendar changes do not move it.</div>
+          <div className="notice">The due date uses this training&apos;s schedule and the working calendar. It is stored with the record, so later calendar changes do not move it. If the training has no valid assessment configuration, completion is still recorded and you are told which assessments were not scheduled.</div>
         </DialogForm>
       ) : null}
       {waiving ? (
@@ -1317,6 +1595,18 @@ interface ImportJob {
   rejected_rows: number;
   created_at: string;
   rows?: { row: number; record: string; status: string; errors: { field: string; message: string }[] }[];
+  assessments_not_scheduled?: number;
+  assignments_created?: number;
+}
+
+/** What accepted completion rows will do (preview) or did (after import). Rule failures are listed per row below. */
+function importNotes(job: ImportJob): string {
+  if (job.import_type !== "COMPLETIONS") return "";
+  const done = job.status !== "READY";
+  const parts = [];
+  if (job.assignments_created) parts.push(`${rows(job.assignments_created, "row")} ${done ? "created" : "will create"} an assignment for an eligible employee`);
+  if (job.assessments_not_scheduled) parts.push(`${rows(job.assessments_not_scheduled, "row")} ${done ? "had" : "will have"} completion recorded without a scheduled assessment, because the training's assessment is not ready. Fix the configuration, then use Schedule pending assessments in Training Management`);
+  return parts.length ? ` ${parts.join(". ")}.` : "";
 }
 
 const rows = (n: number, noun = "row") => `${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -1478,6 +1768,7 @@ export function ImportCentre() {
           <div id="import-preview">
             <div className="notice" id="import-summary" tabIndex={-1}>
               {job.status === "READY" ? `${job.file_name} validated. ${job.accepted_rows} valid, ${job.rejected_rows} rejected or duplicate. Nothing has been imported yet.` : `Import finished. ${rows(job.accepted_rows)} imported, ${rows(job.rejected_rows)} rejected or skipped as duplicates.`}
+              {importNotes(job)}
             </div>
             <DataTable
               headers={["Row", "Record", "Status", "Problem"]}
@@ -1513,10 +1804,25 @@ export function ImportCentre() {
         <Loaded state={recent}>
           {(rows) => (
             <DataTable
-              headers={["File", "Type", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)"]}
+              headers={["File", "Type", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)", ""]}
               emptyTitle="No imports yet."
               emptyHint="Validate a file above to begin."
-              rows={rows.map((j) => [j.file_name, j.import_type === "QUESTIONS" ? "Question bank" : "Completions", j.status.replaceAll("_", " ").toLowerCase(), j.total_rows, j.accepted_rows, j.rejected_rows, dateTime(j.created_at)])}
+              rows={rows.map((j) => [
+                j.file_name,
+                j.import_type === "QUESTIONS" ? "Question bank" : "Completions",
+                j.status.replaceAll("_", " ").toLowerCase(),
+                j.total_rows,
+                j.accepted_rows,
+                j.rejected_rows,
+                dateTime(j.created_at),
+                <Btn key="v" kind="text" onClick={() => void api.get<ImportJob>(`/admin/imports/${j.id}`).then((full) => {
+                  setKind(full.import_type);
+                  setJob(full);
+                  setError("");
+                }).catch((e: ApiError) => toast(e.message))}>
+                  View
+                </Btn>,
+              ])}
             />
           )}
         </Loaded>

@@ -7,7 +7,7 @@ import { Icon } from "@/components/icons";
 import { Btn, Empty } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
-import { HINDI, NAV, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
+import { HINDI, navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
 import { api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import type { RoleCode, User } from "@/lib/types";
@@ -31,13 +31,14 @@ function Portrait({ user }: { user: User }) {
 
 function SearchDialog({ query, onClose, role }: { query: string; onClose: () => void; role: RoleCode }) {
   const results = useApi<{ type: string; title: string; subtitle: string | null; employee_id?: string }[]>(`/search?q=${encodeURIComponent(query)}`);
-  const pages = NAV[role].filter(([, label]) => label.toLowerCase().includes(query.toLowerCase()));
+  const { user } = useSession();
+  const pages = navFor(role, user?.features).filter(([, label]) => label.toLowerCase().includes(query.toLowerCase()));
   const router = useRouter();
   const go = (href: string) => {
     onClose();
     router.push(href);
   };
-  const trainingsHref = role === "EMPLOYEE" ? "/employee/trainings" : role === "MANAGER" ? "/manager/team-trainings" : role === "LD_ADMIN" ? "/lnd/trainings" : "/hr/scorecards";
+  const trainingsHref = role === "EMPLOYEE" ? "/employee/trainings" : role === "MANAGER" ? "/manager/assessments" : role === "LD_ADMIN" ? "/lnd/trainings" : "/hr/scorecards";
   return (
     <Modal title="Search results" onClose={onClose}>
       <p>Results for “{query}” in your authorised workspace.</p>
@@ -119,7 +120,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (!user) return null;
   const role = user.primary_role;
-  const items = NAV[role];
+  const items = navFor(role, user.features);
   const label = (text: string) => (language === "Hindi" ? (HINDI[text] ?? text) : text);
   const [praiseTitle, praiseLines] = SIDEBAR_COPY[role];
   const activeHref = [...items].sort((a, b) => b[0].length - a[0].length).find(([href]) => pathname === href || pathname.startsWith(`${href}/`))?.[0];

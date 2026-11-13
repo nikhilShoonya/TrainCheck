@@ -28,6 +28,7 @@ from app.core.enums import (
     SubmissionReason,
 )
 from app.core.errors import ApiError, conflict, not_found, validation
+from app.core.responses import display_percent
 from app.models import (
     AssessmentAttempt,
     AssessmentConfig,
@@ -239,23 +240,26 @@ def start_attempt(db: Session, obligation: AssessmentObligation, acknowledged: b
             raise conflict("ASSESSMENT_NOT_DUE", "This assessment is not open yet.")
         if obligation.attempts and obligation.refresher_acknowledged_at is None:
             raise conflict("REFRESHER_REQUIRED", "Review and acknowledge the refresher material before your retake.")
+    elif obligation.status != ObligationStatus.DUE:
+        raise conflict("ASSESSMENT_NOT_DUE", "This pre-test is not available.")
+
+    config = obligation.config
+    problem = pool_problem(db, config)
+    if problem:
+        # Never silently run a shorter or differently weighted assessment. An unavailable post-test
+        # does not block the gate, and L&D is alerted when the employee's access is checked.
+        raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", "This assessment cannot start yet because its question pool is incomplete. L&D has been notified, and you can keep using TrainCheck until it is ready.", problem)
+
+    if obligation.assessment_type == AssessmentType.POST_TEST:
         queue = _head_of_queue(db, obligation.employee_id, now)
         if queue and queue != obligation.id:
             raise conflict("ASSESSMENT_NOT_NEXT", "Complete your earlier assessment first.")
-    elif obligation.status != ObligationStatus.DUE:
-        raise conflict("ASSESSMENT_NOT_DUE", "This pre-test is not available.")
 
     if not acknowledged:
         raise validation("Confirm that you have read and understood the instructions.")
 
-    config = obligation.config
     if counted_attempts(obligation) >= config.max_attempts:
         raise conflict("MAX_ATTEMPTS_REACHED", "All attempts for this assessment have been used.")
-
-    problem = pool_problem(db, config)
-    if problem:
-        # Never silently run a shorter or differently weighted assessment.
-        raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", "This assessment cannot start yet. L&D has been asked to correct its question pool.", problem)
 
     questions_keys = answer_keys(db, [q.id for q in eligible_questions(db, config.training_id)])
     chosen = _select_questions(db, config, questions_keys, rng)
@@ -477,12 +481,15 @@ def _apply_outcome(db: Session, attempt: AssessmentAttempt, passed: bool, now: d
         obligation.completed_at = now
         obligation.outcome = attempt.result_status
         return
+    title = obligation.training.title
+    score = f"{display_percent(attempt.score_percent)}% (pass mark {display_percent(Decimal(attempt.config_snapshot['pass_mark_percent']))}%)"
     if passed:
         obligation.status = ObligationStatus.COMPLETED
         obligation.completed_at = now
         obligation.outcome = ResultStatus.PASSED
         if obligation.retraining_flag == RetrainingFlag.NEEDS_RETRAINING:
             obligation.retraining_flag = RetrainingFlag.RESOLVED
+        notify_employee(db, attempt.employee_id, "ASSESSMENT_PASSED", f"Passed: {title}", f"You scored {score}.", f"/results/{attempt.id}", f"passed:{obligation.id}", now)
         return
     max_attempts = int(attempt.config_snapshot["max_attempts"])
     if counted_attempts(obligation) >= max_attempts:
@@ -499,6 +506,18 @@ def _apply_outcome(db: Session, attempt: AssessmentAttempt, passed: bool, now: d
         obligation.outcome = ResultStatus.NOT_PASSED
         obligation.refresher_acknowledged_at = None
         obligation.retake_eligible_at = calendar.start_of_day(next_day)
+        used = counted_attempts(obligation)
+        notify_employee(
+            db,
+            attempt.employee_id,
+            "ASSESSMENT_NOT_PASSED",
+            f"Not passed: {title}",
+            f"You scored {score}. You have used {used} of {max_attempts} attempts. Review and acknowledge the refresher material; "
+            "your retake opens at your next sign-in after that, or from the next working day.",
+            f"/results/{attempt.id}",
+            f"not-passed:{attempt.id}",
+            now,
+        )
 
 
 def _notify_final_failure(db: Session, attempt: AssessmentAttempt, obligation: AssessmentObligation, now: datetime) -> None:

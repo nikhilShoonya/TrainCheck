@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 os.environ["APP_ENV"] = "test"
 os.environ["SCHEDULER_ENABLED"] = "false"
 os.environ["RATE_LIMIT_ENABLED"] = "false"  # test_rate_limit.py switches it on for its own tests.
+os.environ["BEHAVIOUR_ENABLED"] = "false"  # The approved scope; Level 3 tests switch it on with `behaviour_on`.
+os.environ["COMPLETION_ALLOWS_PARTIAL_ATTENDANCE"] = "false"
 
 from app.core import clock  # noqa: E402
 from app.core import db as database
@@ -86,6 +88,12 @@ def clean_tables() -> Iterator[None]:
         connection.execute(text(f"TRUNCATE {tables} CASCADE"))
     yield
     clock.freeze(None)
+
+
+@pytest.fixture
+def behaviour_on(monkeypatch) -> None:
+    """Restores the legacy Level 3 workflows for the tests that cover them. Off by default (out of scope)."""
+    monkeypatch.setattr(get_settings(), "behaviour_enabled", True)
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_gate_clear, team_employee_ids
+from app.core.deps import CurrentUser, require_admin, require_gate_clear, require_withdrawn, team_employee_ids
 from app.core.enums import AssessmentType, ImportStatus, RoleCode, TrainingStatus
 from app.core.responses import iso, ok
 from app.models import AuditLog, Employee, ImportJob, Training, UserAccount
@@ -15,8 +15,9 @@ from app.modules.reports.data import departments_summary, load_rows, monthly_tre
 router = APIRouter(tags=["Administration"])
 
 
+# The Audit Logs reader is withdrawn from L&D Admin. Audit events are still recorded by app.core.audit.
 @router.get("/admin/audit-logs")
-def audit_logs(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db), action: str = Query(default="", max_length=80), limit: int = Query(default=200, le=500)) -> dict:
+def audit_logs(_: CurrentUser = Depends(require_withdrawn), db: Session = Depends(get_db), action: str = Query(default="", max_length=80), limit: int = Query(default=200, le=500)) -> dict:
     query = select(AuditLog).options(selectinload(AuditLog.actor).selectinload(UserAccount.employee)).order_by(AuditLog.created_at.desc()).limit(limit)
     if action:
         query = query.where(AuditLog.action.ilike(f"%{action}%"))

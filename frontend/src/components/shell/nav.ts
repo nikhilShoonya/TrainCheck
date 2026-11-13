@@ -8,28 +8,21 @@ export const NAV: Record<RoleCode, NavItem[]> = {
     ["/employee", "Dashboard", "home"],
     ["/employee/trainings", "My Trainings", "book"],
     ["/employee/assessments", "Assessments", "clipboard"],
-    ["/employee/history", "Assessment History", "file"],
     ["/employee/refresher", "Refresher Materials", "refresh"],
     ["/employee/behaviour", "Self-Assessment (L3)", "users"],
-    ["/employee/behaviour-history", "Behaviour History", "clock"],
-    ["/employee/certificates", "Certificates", "shield"],
   ],
   MANAGER: [
     ["/manager", "Dashboard", "home"],
     ["/manager/team", "My Team", "users"],
-    ["/manager/team-trainings", "Team Training Status", "clipboard"],
     ["/manager/assessments", "Assessment Performance", "file"],
     ["/manager/reviews", "Pending Behaviour Reviews", "clock"],
     ["/manager/questionnaires", "Behaviour Questionnaires", "chat"],
     ["/manager/scorecards", "Team Scorecards", "award"],
-    ["/manager/reports", "Team Reports", "chart"],
-    ["/manager/certificates", "Certificates", "shield"],
   ],
   LD_ADMIN: [
     ["/lnd", "Dashboard", "home"],
     ["/lnd/trainings", "Training Management", "book"],
     ["/lnd/organisation", "Departments & Functions", "briefcase"],
-    ["/lnd/batches", "Batches & Sessions", "calendar"],
     ["/lnd/assignments", "Employee Assignments", "users"],
     ["/lnd/completion", "Training Completion", "check"],
     ["/lnd/questions", "Question Bank", "file"],
@@ -39,7 +32,6 @@ export const NAV: Record<RoleCode, NavItem[]> = {
     ["/lnd/scorecards", "Learning & Behaviour Scorecards", "award"],
     ["/lnd/reports", "Reports & Analytics", "chart"],
     ["/notifications", "Notifications", "bell"],
-    ["/lnd/audit", "Audit Logs", "shield"],
   ],
   HR_READ_ONLY: [
     ["/hr", "Organisation Overview", "home"],
@@ -53,6 +45,15 @@ export const NAV: Record<RoleCode, NavItem[]> = {
     ["/hr/reports", "Reports & Exports", "file"],
   ],
 };
+
+/* Level 3 Behaviour task and configuration pages. Hidden while the server reports Behaviour switched off
+   (it is outside the approved scope); their history stays reachable by URL and read-only. */
+const BEHAVIOUR_PATHS = new Set(["/employee/behaviour", "/manager/reviews", "/manager/questionnaires", "/lnd/behaviour-templates", "/hr/behaviour", "/hr/managers"]);
+
+/** The navigation for a role, without workflows the server has switched off. */
+export function navFor(role: RoleCode, features?: { behaviour: boolean }): NavItem[] {
+  return features?.behaviour ? NAV[role] : NAV[role].filter(([href]) => !BEHAVIOUR_PATHS.has(href));
+}
 
 export const ROLE_LABEL: Record<RoleCode, string> = {
   EMPLOYEE: "Employee",
@@ -75,8 +76,13 @@ const PREFIX: [string, RoleCode][] = [
   ["/employee", "EMPLOYEE"],
 ];
 
+/* Pages withdrawn from the L&D Admin interface. Their routes stay in the codebase but no role opens them,
+   and the backend refuses the matching APIs (batch/session creation, the audit log reader). */
+const WITHDRAWN_PATHS = ["/lnd/batches", "/lnd/audit"];
+
 /** Whether the workspace is shown. Managers, L&D and HR also have employee records, so /employee stays open to them. */
 export function canOpen(path: string, roles: RoleCode[]): boolean {
+  if (WITHDRAWN_PATHS.some((p) => path === p || path.startsWith(`${p}/`))) return false;
   const match = PREFIX.find(([prefix]) => path === prefix || path.startsWith(`${prefix}/`));
   return !match || roles.includes(match[1]);
 }
@@ -92,18 +98,13 @@ export const HINDI: Record<string, string> = {
   Dashboard: "डैशबोर्ड",
   "My Trainings": "मेरे प्रशिक्षण",
   Assessments: "आकलन",
-  "Assessment History": "आकलन इतिहास",
   "Refresher Materials": "पुनश्चर्या सामग्री",
   "Self-Assessment (L3)": "स्व-मूल्यांकन (L3)",
-  "Behaviour History": "व्यवहार इतिहास",
-  Certificates: "प्रमाणपत्र",
   "My Team": "मेरी टीम",
-  "Team Training Status": "टीम प्रशिक्षण स्थिति",
   "Assessment Performance": "आकलन प्रदर्शन",
   "Pending Behaviour Reviews": "लंबित व्यवहार समीक्षा",
   "Behaviour Questionnaires": "व्यवहार प्रश्नावली",
   "Team Scorecards": "टीम स्कोरकार्ड",
-  "Team Reports": "टीम रिपोर्ट",
   "Training Management": "प्रशिक्षण प्रबंधन",
   "Departments & Functions": "विभाग और कार्य",
   "Batches & Sessions": "बैच और सत्र",

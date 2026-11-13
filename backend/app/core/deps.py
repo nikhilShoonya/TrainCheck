@@ -121,6 +121,13 @@ require_reader = require_roles(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY)  # Orga
 require_report_user = require_roles(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY, RoleCode.MANAGER)
 
 
+def require_withdrawn(user: CurrentUser = Depends(require_admin)) -> CurrentUser:
+    """Routes withdrawn from the L&D Admin interface (Batches & Sessions writes, the Audit Logs reader).
+    Built on require_admin so every other role is refused exactly as before; L&D Admin is now refused too.
+    Records, tables and audit recording (app.core.audit) are untouched."""
+    raise forbidden("This feature is no longer available.")
+
+
 def team_employee_ids(db: Session, manager_employee_id: uuid.UUID) -> list[uuid.UUID]:
     """A manager's current team, always resolved here from effective-dated records."""
     today = utcnow().date()

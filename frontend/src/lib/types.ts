@@ -16,6 +16,23 @@ export interface User {
   grade: string | null;
   roles: RoleCode[];
   primary_role: RoleCode;
+  /** Switched-off workflows the interface should hide. The server enforces them regardless. */
+  features?: { behaviour: boolean };
+}
+
+/** Why an assessment could not be scheduled or started, with what L&D should do next. */
+export interface AssessmentReadiness {
+  ready: boolean;
+  reason: string | null;
+  message: string;
+  action: string | null;
+}
+
+export interface AffectedEmployee {
+  employee_code: string;
+  employee_name: string;
+  completed_at?: string | null;
+  due_at?: string | null;
 }
 
 export interface QueueItem {
@@ -331,4 +348,9 @@ export interface TrainingAdmin {
   question_pool?: PoolReport;
   eligible_questions: number;
   config_ready: boolean;
+  assessment_readiness: AssessmentReadiness;
+  pending_scheduling_count: number;
+  unavailable_count: number;
+  pending_scheduling?: AffectedEmployee[];
+  unavailable_assessments?: AffectedEmployee[];
 }

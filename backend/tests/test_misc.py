@@ -22,6 +22,7 @@ from app.models import (
     Question,
     QuestionAnswerKey,
     QuestionRevision,
+    Training,
     WorkingCalendar,
 )
 from app.modules.assessment.scheduling import CalendarView, calculate_due_at
@@ -154,7 +155,11 @@ def test_common_department_function_and_combined_targeting(world, db, client_for
     def create(code, scope, departments=(), functions=()):
         response = admin.post("/admin/trainings", json={"training_code": code, "title": f"Training {code}", "target_scope": scope, "department_ids": list(departments), "function_ids": list(functions)})
         assert response.status_code == 200, response.text
-        return response.json()["data"]["id"]
+        training_id = response.json()["data"]["id"]
+        # Created as a draft, which cannot take assignments (Phase 1). Targeting is what is under test here.
+        db.get(Training, training_id).status = "ACTIVE"
+        db.commit()
+        return training_id
 
     assert admin.post("/admin/trainings", json={"title": "No target", "target_scope": "DEPARTMENT"}).status_code == 400
 
@@ -175,7 +180,8 @@ def test_assignment_never_duplicates_and_respects_target(world, db, client_for):
     body = {"training_id": str(training.id), "employee_ids": [str(world.employee.id), str(world.teammate.id)]}
     assert admin.post("/admin/enrolments", json=body).json()["data"]["created"] == 2
     again = admin.post("/admin/enrolments", json=body).json()["data"]
-    assert again == {"created": 0, "skipped_existing": 2, "skipped_out_of_target": 0}
+    assert (again["created"], again["skipped_existing"], again["skipped_out_of_target"]) == (0, 2, 0)
+    assert {r["status"] for r in again["results"]} == {"ALREADY_ASSIGNED"}
     assert db.scalar(select(func.count()).select_from(Enrolment)) == 2
 
 
@@ -214,16 +220,44 @@ def test_activation_needs_ready_pool(world, db, client_for):  # BR §20.4
     assert config.status_code == 422 and config.json()["error"]["details"]["shortfall"] == 99
 
 
+def test_unused_training_can_be_deleted(world, client_for, db):
+    admin = client_for(world.admin)
+    created = admin.post("/admin/trainings", json={"title": "Never used", "training_code": "DEL1"}).json()["data"]
+    assert admin.post(f"/admin/trainings/{created['id']}/materials", json={"kind": "LINK", "title": "Deck", "url": "https://example.com/d"}).status_code == 200
+    assert client_for(world.hr).delete(f"/admin/trainings/{created['id']}").status_code == 403
+    assert client_for(world.employee).delete(f"/admin/trainings/{created['id']}").status_code == 403
+    response = admin.delete(f"/admin/trainings/{created['id']}")
+    assert response.status_code == 200, response.text
+    assert admin.get(f"/admin/trainings/{created['id']}").status_code == 404
+    log = db.scalar(select(AuditLog).where(AuditLog.action == "TRAINING_DELETED"))
+    assert log.before_summary["code"] == "DEL1" and log.target_id == created["id"]
+    assert admin.delete(f"/admin/trainings/{created['id']}").status_code == 404
+
+
+def test_training_with_history_cannot_be_deleted(world, client_for, db):
+    training = world.training()  # Has a batch.
+    world.complete(world.employee, training)  # Assignment, completion and assessment.
+    response = client_for(world.admin).delete(f"/admin/trainings/{training.id}")
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "TRAINING_IN_USE" and "Archive it instead" in error["message"]
+    assert {"assignments", "assessments", "batches"} <= set(error["details"]["in_use"])
+    db.expire_all()
+    assert db.get(Training, training.id) is not None
+    assert db.scalar(select(func.count()).select_from(Enrolment).where(Enrolment.training_id == training.id)) == 1
+
+
 def test_materials_batches_sessions_and_trainers(world, client_for):
     admin = client_for(world.admin)
     training = world.training()
     assert admin.post(f"/admin/trainings/{training.id}/materials", json={"title": "Deck", "url": "http://not-secure.example"}).status_code == 400
     material = admin.post(f"/admin/trainings/{training.id}/materials", json={"kind": "RECORDING", "title": "Recording", "url": "https://example.com/r"})
     assert material.status_code == 200, material.text
-    batch = admin.post("/admin/batches", json={"training_id": str(training.id), "name": "Batch 2", "start_date": "2026-11-10", "end_date": "2026-11-11"}).json()["data"]
-    assert admin.post("/admin/batches", json={"training_id": str(training.id), "name": "Bad", "start_date": "2026-11-10", "end_date": "2026-11-01"}).status_code == 400
-    with_session = admin.post(f"/admin/batches/{batch['id']}/sessions", json={"title": "Day 1", "session_date": "2026-11-10"}).json()["data"]
-    assert with_session["sessions"][0]["title"] == "Day 1"
+    # Batches & Sessions is withdrawn from L&D Admin: existing batches stay listed, creating them is refused.
+    batches = admin.get(f"/admin/batches?training_id={training.id}").json()["data"]
+    assert [b["batch_code"] for b in batches] == ["B1"]
+    assert admin.post("/admin/batches", json={"training_id": str(training.id), "name": "Batch 2", "start_date": "2026-11-10", "end_date": "2026-11-11"}).status_code == 403
+    assert admin.post(f"/admin/batches/{batches[0]['id']}/sessions", json={"title": "Day 1", "session_date": "2026-11-10"}).status_code == 403
     assert admin.post("/admin/trainers", json={"name": "New Trainer"}).status_code == 200
     assert admin.post("/admin/functions", json={"code": "RISK", "name": "Risk"}).status_code == 200
     assert admin.post("/admin/functions", json={"code": "RISK", "name": "Risk again"}).status_code == 409
@@ -441,7 +475,8 @@ def test_employee_cannot_import(world, client_for):
 def test_pending_escalation_after_two_and_five_working_days(world, db):  # BR §16.2
     world.complete(world.employee, world.training(), NOW)
     pending_assessment_reminders(db, NOW)
-    types = lambda: [n.type for n in db.scalars(select(Notification))]  # noqa: E731
+    # Completion also sends ASSESSMENT_SCHEDULED; this test is about reminders and escalation only.
+    types = lambda: [n.type for n in db.scalars(select(Notification)) if n.type != "ASSESSMENT_SCHEDULED"]  # noqa: E731
     assert types() == ["ASSESSMENT_DUE"]
     pending_assessment_reminders(db, NOW + timedelta(days=2))
     assert types().count("ASSESSMENT_ESCALATION") == 1  # The manager, at two working days.
@@ -458,8 +493,8 @@ def test_policy_changes_are_audited_with_before_and_after(world, db, client_for)
     log = db.scalar(select(AuditLog).where(AuditLog.action == "ASSESSMENT_CONFIG_CHANGED"))
     assert log.before_summary["pass_mark_percent"] == 70.0 and log.after_summary["pass_mark_percent"] == 80.0
     assert log.request_id and log.actor_user_id
-    logs = admin.get("/admin/audit-logs?action=ASSESSMENT_CONFIG").json()["data"]
-    assert logs[0]["actor"] == "Person A1"
+    # The Audit Logs reader is withdrawn from every role; the record above is still written.
+    assert admin.get("/admin/audit-logs?action=ASSESSMENT_CONFIG").status_code == 403
     assert client_for(world.hr).get("/admin/audit-logs").status_code == 403
 
 

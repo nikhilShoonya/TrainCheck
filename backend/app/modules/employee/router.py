@@ -116,26 +116,6 @@ def refresher_materials(user: CurrentUser = Depends(require_gate_clear), db: Ses
     return ok(result)
 
 
-@router.get("/certificates")
-def certificates(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    result = []
-    for r in _rows(db, user):
-        passed = next((a for a in r.post_attempts if a.result_status == ResultStatus.PASSED), None)
-        if passed:
-            result.append({"enrolment_id": str(r.enrolment.id), "training": r.enrolment.training.title, "employee": user.employee.full_name, "passed_on": iso(passed.submitted_at), "score": display_percent(passed.score_percent)})
-    return ok(result)
-
-
-@router.get("/history")
-def history(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    now = utcnow()
-    out = []
-    for r in _rows(db, user):
-        attempts = [{"attempt_id": str(a.id), "number": a.attempt_number, "score": display_percent(a.score_percent), "result": a.result_status, "submitted_at": iso(a.submitted_at), "reason": a.submission_reason} for a in r.post_attempts]
-        out.append({**training_card(r, now), "attempt_history": attempts})
-    return ok(out)
-
-
 @router.get("/scorecard")
 def personal_scorecard(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     """The employee's own Learning and Behaviour evidence for each training."""

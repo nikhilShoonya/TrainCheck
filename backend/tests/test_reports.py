@@ -88,16 +88,17 @@ def test_filters_apply_consistently(world, db, client_for):  # TC-REP-001, PRD-R
     assert rows_as_dicts(admin.get(f"/reports/compliance?location_id={world.location.id}").json()["data"])
 
 
-def test_export_matches_screen_scope_and_filters(world, db, client_for):  # TC-REP-003, SEC-014
-    fixture_data(world, db, client_for)
+def test_managers_keep_only_the_team_scorecard_export(world, db, client_for):  # Team Reports removed; SEC-014
+    training = fixture_data(world, db, client_for)
     manager = client_for(world.manager)
-    screen = manager.get("/reports/pass-fail").json()["data"]
-    assert {row[1] for row in screen["rows"]} == {"E1", "E2"}
-    export = manager.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "XLSX"}).json()["data"]
-    content = manager.get(f"/reports/exports/{export['id']}/download").content
+    assert manager.get("/reports/pass-fail").status_code == 403
+    assert manager.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "XLSX"}).status_code == 403
+    assert [c["code"] for c in manager.get("/reports/catalogue").json()["data"]] == ["scorecard"]
+    export = manager.post("/reports/exports", json={"report_code": "scorecard", "export_format": "XLSX", "filters": {"training_id": str(training.id)}})
+    assert export.status_code == 200, export.text
+    content = manager.get(f"/reports/exports/{export.json()['data']['id']}/download").content
     values = [str(c.value) for row in load_workbook(io.BytesIO(content)).active.iter_rows() for c in row]
-    assert "E1" in values and "E2" in values and "E3" not in values
-    assert any("Team of" in v for v in values)  # The file states its scope.
+    assert any("Team of" in v for v in values)  # The Team Scorecards export keeps the team scope.
 
 
 def test_export_permissions(world, db, client_for):  # TC-REP-005, SEC-009
@@ -105,9 +106,9 @@ def test_export_permissions(world, db, client_for):  # TC-REP-005, SEC-009
     employee = client_for(world.employee)
     assert employee.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV"}).status_code == 403
     assert employee.get("/reports/pass-fail").status_code == 403
-    own = employee.post("/reports/exports", json={"report_code": "employee-history", "export_format": "CSV"})
-    assert own.status_code == 200
-    assert b"Person E2" not in employee.get(f"/reports/exports/{own.json()['data']['id']}/download").content
+    assert employee.post("/reports/exports", json={"report_code": "employee-history", "export_format": "CSV"}).status_code == 403
+    assert employee.get("/reports/employee-history").status_code == 403  # Assessment History was removed.
+    assert employee.get("/reports/catalogue").json()["data"] == []
 
     hr = client_for(world.hr)
     private = hr.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV"}).json()["data"]
@@ -206,7 +207,8 @@ def test_scheduled_report_delivery_and_history(world, db, client_for):  # PRD-RE
     from app.modules.reports.router import run_due_schedules
 
     fixture_data(world, db, client_for)
-    client = client_for(world.manager)
+    assert client_for(world.manager).post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).status_code == 403
+    client = client_for(world.hr)
     created = client.post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).json()["data"]
     assert run_due_schedules(db, NOW) == 0
 
@@ -215,14 +217,14 @@ def test_scheduled_report_delivery_and_history(world, db, client_for):  # PRD-RE
     assert run_due_schedules(db, later) == 0  # Running again does not deliver twice.
 
     clock.freeze(NOW + timedelta(days=8))
-    client = client_for(world.manager)
+    client = client_for(world.hr)
     schedule = next(s for s in client.get("/reports/schedules").json()["data"] if s["id"] == created["id"])
     assert schedule["deliveries"][0]["status"] == "DELIVERED"
     notes = client.get("/me/notifications").json()["data"]
     assert any(n["type"] == "REPORT_READY" for n in notes)
     export_id = schedule["deliveries"][0]["export_id"]
     content = client.get(f"/reports/exports/{export_id}/download").content
-    assert b"E3" not in content  # The delivered file keeps the owner's scope.
+    assert b"E1" in content and b"Organisation" in content  # The delivered file keeps the owner's scope.
 
 
 def test_only_report_users_can_schedule(world, client_for):
@@ -245,12 +247,11 @@ def test_all_role_dashboards_load_with_data(world, db, client_for):
     assert team["summary"]["employees"] == 2
     own = client_for(world.employee).get("/me/dashboard").json()["data"]
     assert own["overall_score"] == 90.0
-    assert client_for(world.employee).get("/me/certificates").json()["data"][0]["score"] == 90.0
-    assert client_for(world.teammate).get("/me/certificates").json()["data"] == []
+    assert client_for(world.employee).get("/me/certificates").status_code == 404  # Certificates were removed from the product.
     assert client_for(world.teammate).get("/me/refresher-materials").json()["data"][0]["refresher_text"]
 
 
-def test_analytics_and_manager_evaluation(world, db, client_for):  # Phase 3
+def test_analytics_and_manager_evaluation(world, db, client_for, behaviour_on):  # Legacy Level 3 trend; needs Behaviour on.
     fixture_data(world, db, client_for)
     hr = client_for(world.hr)
     data = hr.get("/reports/analytics").json()["data"]
@@ -266,12 +267,9 @@ def test_analytics_and_manager_evaluation(world, db, client_for):  # Phase 3
     assert team_only["summary"]["employees"] == 1
 
 
-def test_own_history_export_contains_only_own_record_for_any_role(world, db, client_for):
-    training = fixture_data(world, db, client_for)
-    own = world.complete(world.manager, training, NOW - timedelta(days=4))
-    manager = client_for(world.manager)
-    take(db, manager, own.id, 9)
-    export = manager.post("/reports/exports", json={"report_code": "employee-history", "export_format": "CSV", "own_record": True}).json()["data"]
-    content = manager.get(f"/reports/exports/{export['id']}/download").content
-    assert b"Person M1" in content and b"Person E1" not in content
-    assert manager.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV", "own_record": True}).status_code == 403
+def test_personal_history_export_and_page_api_are_retired(world, db, client_for):  # Assessment History removed
+    fixture_data(world, db, client_for)
+    for person in (world.employee, world.manager, world.hr, world.admin):
+        client = client_for(person)
+        assert client.post("/reports/exports", json={"report_code": "employee-history", "export_format": "CSV", "own_record": True}).status_code == 403
+    assert client_for(world.employee).get("/me/history").status_code == 404

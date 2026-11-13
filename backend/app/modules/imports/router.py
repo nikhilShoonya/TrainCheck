@@ -39,6 +39,10 @@ def job_view(job: ImportJob, with_rows: bool = True) -> dict:
     }
     if with_rows:
         data["rows"] = [{"row": r.row_number, "record": r.record_label, "status": r.row_status, "errors": r.errors} for r in job.rows]
+        # Notes on accepted rows. Before commit they say what will happen; after commit, what did.
+        accepted = [r for r in job.rows if r.row_status in ("VALID", "IMPORTED")]
+        data["assessments_not_scheduled"] = sum(1 for r in accepted if any(e["field"] == "assessment" for e in r.errors))
+        data["assignments_created"] = sum(1 for r in accepted if any(e["field"] == "assignment" for e in r.errors))
     return data
 
 

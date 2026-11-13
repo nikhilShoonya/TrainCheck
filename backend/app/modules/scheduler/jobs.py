@@ -10,10 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.clock import utcnow
+from app.core.config import get_settings
 from app.core.db import session_factory
 from app.core.deps import current_manager_id
 from app.core.enums import AssessmentType, AttemptStatus, ObligationStatus, ReviewerType
 from app.models import AssessmentAttempt, AssessmentObligation, BehaviourReview, BehaviourReviewCycle
+from app.modules.assessment.gate import alert_unavailable, obligation_startable
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.assessment.service import finalise_attempt
 from app.modules.behaviour.service import overdue_working_days
@@ -48,10 +50,18 @@ def pending_assessment_reminders(db: Session, now: datetime | None = None) -> in
             AssessmentObligation.due_at <= now,
         )
     ).all()
+    startable_cache: dict = {}
+    unavailable = [o for o in obligations if not obligation_startable(db, o, startable_cache)]
+    if unavailable:
+        # Asking an employee to sign in for an assessment that cannot start would be misleading. Alert L&D instead.
+        alert_unavailable(db, unavailable, now)
     for o in obligations:
+        if o in unavailable:
+            continue
         title = o.training.title
-        notify_employee(db, o.employee_id, "ASSESSMENT_DUE", f"Assessment due: {title}", "Sign in to complete your mandatory assessment.", "/access/assessment-required", f"due:{o.id}:{today.isoformat()}", now)
         waited = calendar.working_days_between(calendar.local_date(o.due_at), today)
+        heading = f"Assessment overdue: {title}" if waited >= 1 else f"Assessment due: {title}"
+        notify_employee(db, o.employee_id, "ASSESSMENT_DUE", heading, "Sign in to complete your mandatory assessment.", "/access/assessment-required", f"due:{o.id}:{today.isoformat()}", now)
         if waited >= MANAGER_ESCALATION_WORKING_DAYS:
             manager = current_manager_id(db, o.employee_id)
             if manager:
@@ -64,7 +74,10 @@ def pending_assessment_reminders(db: Session, now: datetime | None = None) -> in
 
 
 def behaviour_reminders(db: Session, now: datetime | None = None) -> int:
-    """Tells reviewers when a follow-up is due and again when it is overdue. Each notice is sent once."""
+    """Tells reviewers when a follow-up is due and again when it is overdue. Each notice is sent once.
+    Sends nothing while Level 3 is switched off (it is outside the approved scope)."""
+    if not get_settings().behaviour_enabled:
+        return 0
     now = now or utcnow()
     sent = 0
     reviews = db.scalars(
@@ -113,7 +126,8 @@ def build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(_run, "interval", minutes=1, args=[finalise_expired, "finalise_expired"], id="finalise_expired", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "cron", minute=30, args=[pending_assessment_reminders, "pending_assessment_reminders"], id="pending_assessment_reminders", max_instances=1, coalesce=True)
-    scheduler.add_job(_run, "cron", minute=45, args=[behaviour_reminders, "behaviour_reminders"], id="behaviour_reminders", max_instances=1, coalesce=True)
+    if get_settings().behaviour_enabled:
+        scheduler.add_job(_run, "cron", minute=45, args=[behaviour_reminders, "behaviour_reminders"], id="behaviour_reminders", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "cron", minute=0, args=[run_due_schedules, "run_due_schedules"], id="run_due_schedules", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "interval", minutes=5, args=[prune_rate_limits, "prune_rate_limits"], id="prune_rate_limits", max_instances=1, coalesce=True)
     return scheduler

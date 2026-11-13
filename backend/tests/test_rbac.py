@@ -2,12 +2,12 @@
 from datetime import timedelta
 
 from fastapi.routing import APIRoute
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core import clock
 from app.core.deps import require_admin
 from app.main import app
-from app.models import ManagerAssignment
+from app.models import AuditLog, ManagerAssignment, TrainingBatch
 from tests.conftest import NOW, start, take
 
 ADMIN_READ_FOR_HR = [
@@ -65,10 +65,10 @@ def test_manager_filters_cannot_widen_scope(world, client_for):  # SEC-014
     world.complete(world.employee, training)
     world.complete(world.outsider, training)
     client = client_for(world.manager)
-    url = f"/reports/pass-fail?manager_id={world.other_manager.id}"
-    assert client.get(url).json()["data"]["rows"] == []
-    url = f"/reports/compliance?department_id={world.departments['CX'].id}"
-    assert client.get(url).json()["data"]["rows"] == []
+    url = f"/reports/analytics?manager_id={world.other_manager.id}"
+    assert client.get(url).json()["data"]["summary"]["employees"] == 0
+    url = f"/reports/analytics?department_id={world.departments['CX'].id}"
+    assert client.get(url).json()["data"]["summary"]["employees"] == 0
 
 
 def test_reassignment_ends_former_manager_access(world, client_for, db):  # TC-RBAC-009
@@ -135,6 +135,24 @@ def test_every_mutating_admin_route_is_ld_only():
             if require_admin not in dependency_calls(route):
                 missing.append((route.path, sorted(route.methods)))
     assert missing == []
+
+
+def test_batches_sessions_and_audit_logs_are_withdrawn_from_ld_admin(world, client_for, db):
+    """Batches & Sessions writes and the Audit Logs reader are refused for every role, L&D Admin included.
+    Batch records stay readable for assignments, and audit events keep being recorded."""
+    training = world.training()
+    batch_id = client_for(world.admin).get(f"/admin/batches?training_id={training.id}").json()["data"][0]["id"]
+    for person in (world.admin, world.hr, world.manager, world.employee):
+        client = client_for(person)
+        assert client.post("/admin/batches", json={"training_id": str(training.id), "name": "New batch"}).status_code == 403
+        assert client.post(f"/admin/batches/{batch_id}/sessions", json={"title": "Day 1", "session_date": "2026-11-10"}).status_code == 403
+        assert client.get("/admin/audit-logs").status_code == 403
+    assert client_for(world.hr).get("/admin/batches").status_code == 200  # HR read scope unchanged.
+    assert db.scalar(select(func.count()).select_from(TrainingBatch)) >= 1  # Nothing deleted.
+
+    admin = client_for(world.admin)
+    assert admin.post("/admin/trainings", json={"title": "Still audited", "training_code": "AUD1"}).status_code == 200
+    assert db.scalar(select(AuditLog).where(AuditLog.action == "TRAINING_CREATED")) is not None
 
 
 def test_answer_keys_are_only_for_ld(world, client_for, db):  # Security §3

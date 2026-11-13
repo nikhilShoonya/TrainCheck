@@ -45,11 +45,12 @@ def filters_dep(
 
 
 def resolve_scope(db: Session, user: CurrentUser, code: ReportCode) -> list[uuid.UUID] | None:
-    """Employees reach only their own history. Managers get their team. L&D and HR get the organisation."""
-    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY, RoleCode.MANAGER):
+    """L&D and HR get the organisation. Managers keep only the Team Scorecard export, scoped to their team
+    (the Team Reports page was removed). Employees have no report access (Assessment History was removed)."""
+    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
         return employee_scope(db, user)
-    if code == ReportCode.EMPLOYEE_HISTORY:
-        return [user.employee_id]
+    if user.has_role(RoleCode.MANAGER) and code == ReportCode.SCORECARD:
+        return employee_scope(db, user)
     raise forbidden()
 
 
@@ -84,7 +85,10 @@ def report_view(report: Report, filters: ReportFilters) -> dict:
 def catalogue(user: CurrentUser = Depends(require_gate_clear)) -> dict:
     from app.modules.reports.catalogue import TITLES
 
-    codes = list(ReportCode) if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY, RoleCode.MANAGER) else [ReportCode.EMPLOYEE_HISTORY]
+    if user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
+        codes = list(ReportCode)
+    else:
+        codes = [ReportCode.SCORECARD] if user.has_role(RoleCode.MANAGER) else []
     return ok([{"code": c.value, "title": TITLES[c][0], "description": TITLES[c][1]} for c in codes])
 
 
@@ -205,7 +209,7 @@ class ExportIn(BaseModel):
     report_code: ReportCode
     export_format: ExportFormat
     filters: dict[str, str] = {}
-    own_record: bool = False  # Limits Employee Training History to the signed-in person, whatever their role.
+    own_record: bool = False  # Retired with Assessment History: True is refused (403).
 
 
 def run_export(db: Session, user: CurrentUser, code: ReportCode, fmt: ExportFormat, filters: ReportFilters, own_record: bool = False) -> ReportExport:
@@ -242,8 +246,8 @@ def create_export(body: ExportIn, user: CurrentUser = Depends(require_gate_clear
         from app.core.errors import validation
 
         raise validation("A report filter is not valid.") from exc
-    if body.own_record and body.report_code != ReportCode.EMPLOYEE_HISTORY:
-        raise forbidden()
+    if body.own_record:  # The personal history export belonged to the removed Assessment History page.
+        raise forbidden("Personal history exports are no longer available.")
     record = run_export(db, user, body.report_code, body.export_format, filters, body.own_record)
     db.commit()
     return ok(export_view(record))
@@ -261,8 +265,7 @@ def download_export(export_id: uuid.UUID, user: CurrentUser = Depends(require_ga
     record = db.get(ReportExport, export_id)
     if record is None or record.owner_user_id != user.id or record.artifact is None:
         raise not_found()
-    if record.report_code != ReportCode.EMPLOYEE_HISTORY:
-        resolve_scope(db, user, ReportCode(record.report_code))
+    resolve_scope(db, user, ReportCode(record.report_code))  # Old files follow today's permissions; records are kept.
     artifact = record.artifact
     return Response(exports.read_file(artifact), media_type=artifact.content_type, headers={"Content-Disposition": f'attachment; filename="{artifact.file_name}"', "Cache-Control": "no-store"})
 
@@ -306,6 +309,8 @@ def list_schedules(user: CurrentUser = Depends(require_report_user), db: Session
 @router.post("/reports/schedules")
 def create_schedule(body: ScheduleIn, user: CurrentUser = Depends(require_report_user), db: Session = Depends(get_db)) -> dict:
     """The owner is the only recipient, so a schedule can never send a report beyond the owner's scope."""
+    if not user.has_role(RoleCode.LD_ADMIN, RoleCode.HR_READ_ONLY):
+        raise forbidden()  # Scheduled delivery belonged to the removed manager Team Reports page.
     filters = ReportFilters.from_stored(body.filters)
     schedule = ReportSchedule(owner_user_id=user.id, report_code=body.report_code, export_format=body.export_format, filters=filters.stored(), cadence=body.cadence, next_run_at=next_run(body.cadence, utcnow()))
     db.add(schedule)

@@ -1,19 +1,15 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
 import { Icon } from "@/components/icons";
 import { Badge, Btn, BtnLink, DataTable, Empty, Loaded, Loading, PageTitle, useToast } from "@/components/ui";
-import { Modal } from "@/components/ui/dialog";
 import { ReviewFormPage, ReviewTable } from "@/features/behaviour/ReviewForm";
-import { Certificate } from "@/features/common/Certificate";
 import { ScoreTrend, type ScorePoint } from "@/features/dashboard/charts";
 import { EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, Panel, RecentRow, ScoreTag, TrainingProgress, ViewAll, Welcome } from "@/features/dashboard/widgets";
-import { ExportButtons } from "@/features/reports/ReportView";
 import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import type { BehaviourMeans, ReviewSummary, Summary, TrainingCard } from "@/lib/types";
-import { dateTime, day, firstName, formatNumber, percent } from "@/lib/utils";
+import { day, firstName, percent } from "@/lib/utils";
 
 const EYEBROW = "EMPLOYEE";
 
@@ -275,59 +271,6 @@ export function MyAssessments() {
   );
 }
 
-export function MyHistory() {
-  const state = useApi<TrainingCard[]>("/me/history");
-  const [detail, setDetail] = useState<TrainingCard | null>(null);
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="Assessment History" description="Your complete record. First and best scores are preserved separately." action={<div className="row wrap"><ExportButtons code="employee-history" filters={{}} ownRecord /></div>} />
-      <Loaded state={state}>
-        {(cards) =>
-          cards.length ? (
-            <>
-              {cards.map((c) => (
-                <article className="training-row" key={c.enrolment_id}>
-                  <div className="course-icon">
-                    <Icon name="book" />
-                  </div>
-                  <div className="grow">
-                    <span className="eyebrow">{c.category}</span>
-                    <h3>{c.title}</h3>
-                    <p>{c.attempts ? `First: ${c.first_score}% · Best: ${c.best_score}% · ${c.attempts} attempt(s)` : "No submitted assessment yet"}</p>
-                    <Badge status={c.result} />
-                  </div>
-                  <div className="row wrap">
-                    {c.latest_attempt_id ? (
-                      <>
-                        <BtnLink href={`/results/${c.latest_attempt_id}`}>View result</BtnLink>
-                        <Btn kind="text" onClick={() => setDetail(c)}>
-                          Attempt history
-                        </Btn>
-                      </>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
-              {detail ? (
-                <Modal title={`${detail.title} · attempts`} onClose={() => setDetail(null)}>
-                  <DataTable
-                    all
-                    headers={["Attempt", "Score", "Result", "Submitted (UTC)"]}
-                    rows={(detail.attempt_history ?? []).map((a) => [a.number, `${formatNumber(a.score)}%`, a.result, dateTime(a.submitted_at)])}
-                  />
-                  <p className="small">Earlier attempts are kept. A later attempt never replaces them.</p>
-                </Modal>
-              ) : null}
-            </>
-          ) : (
-            <Empty title="No training history yet." hint="Your record starts when training is assigned." />
-          )
-        }
-      </Loaded>
-    </>
-  );
-}
-
 export function MyRefresher() {
   const state = useApi<TrainingCard[]>("/me/refresher-materials");
   const toast = useToast();
@@ -405,58 +348,9 @@ export function MyBehaviour() {
   );
 }
 
-export function MyBehaviourHistory() {
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="Behaviour History" description="Self-assessments you have already submitted." />
-      <Reviews submitted />
-    </>
-  );
-}
-
 export function MyReview() {
   const { reviewId } = useParams<{ reviewId: string }>();
   return <ReviewFormPage reviewId={reviewId} kind="SELF" />;
-}
-
-export function MyCertificates() {
-  const state = useApi<{ enrolment_id: string; training: string; employee: string; passed_on: string; score: number }[]>("/me/certificates");
-  const [open, setOpen] = useState<{ training: string; employee: string; passed_on: string } | null>(null);
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="My Certificates" description="Preview and print certificates for your passed assessments." />
-      <div className="notice">These use a sample certificate design. Official Finvasia certificate and brand approval is still pending.</div>
-      <section className="panel">
-        <Loaded state={state}>
-          {(rows) => (
-            <DataTable
-              headers={["Training", "Employee", "Passed on", ""]}
-              emptyTitle="No certificates yet."
-              emptyHint="A certificate becomes available when you pass an assessment."
-              rows={rows.map((r) => [
-                r.training,
-                r.employee,
-                day(r.passed_on),
-                <Btn key="c" tone="data" onClick={() => setOpen(r)}>
-                  Preview / Save PDF
-                </Btn>,
-              ])}
-            />
-          )}
-        </Loaded>
-      </section>
-      {open ? (
-        <Modal title="Certificate of Assessment" onClose={() => setOpen(null)} wide>
-          <Certificate name={open.employee} course={open.training} submitted={open.passed_on} />
-          <div className="dialog-actions">
-            <Btn kind="primary" onClick={() => window.print()}>
-              Print / Save PDF
-            </Btn>
-          </div>
-        </Modal>
-      ) : null}
-    </>
-  );
 }
 
 export function MyScorecard() {

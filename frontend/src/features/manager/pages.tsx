@@ -3,13 +3,10 @@
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, type FormEvent } from "react";
 import { Icon } from "@/components/icons";
-import { Badge, Btn, BtnLink, DataTable, Empty, Loaded, Metrics, PageTitle, Person, SelectField, TextField } from "@/components/ui";
-import { Modal } from "@/components/ui/dialog";
+import { Badge, Btn, BtnLink, DataTable, Loaded, Metrics, PageTitle, Person, SelectField, TextField } from "@/components/ui";
 import { ReviewFormPage, ReviewTable } from "@/features/behaviour/ReviewForm";
-import { Certificate } from "@/features/common/Certificate";
 import { MonthlyTrend } from "@/features/dashboard/charts";
 import { ActionItem, EvidenceHelp, EvidenceTiles, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, TrainingProgress, ViewAll, Welcome } from "@/features/dashboard/widgets";
-import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
 import { toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
@@ -32,11 +29,9 @@ interface Dashboard {
 export function ManagerDashboard() {
   const { user } = useSession();
   const state = useApi<Dashboard>("/manager/dashboard");
-  const router = useRouter();
   return (
     <Loaded state={state}>
       {(d) => {
-        const unique = [...new Map(d.team_status.map((r) => [r.employee_id, r])).values()].slice(0, 4);
         return (
           <div className="reference-dashboard image-role-dashboard manager-image-dashboard">
             <Welcome heading={<GoodMorning name={firstName(user?.full_name ?? "")} />} description="Here’s your team’s training and performance summary." />
@@ -65,23 +60,6 @@ export function ManagerDashboard() {
                 <ActionItem icon="clipboard" heading={`${d.reviews_due} Behaviour Reviews Pending`} description="Complete L3 observations for your team." href="/manager/reviews" label="Review" />
                 <ActionItem icon="users" heading={`${d.summary.not_passed_employees} Employees Not Passed`} description="Support with refresher and retake guidance." href="/manager/assessments?result=NOT_PASSED" label="Take Action" tone="attention" />
                 <ActionItem icon="calendar" heading="Assessments Due This Week" description={`${d.assessments_due_this_week} team assessment(s) due by the end of the next 7 days.`} href="/manager/assessments" label="Follow Up" tone="attention" />
-              </Panel>
-              <Panel title="Team Training Status" action={<ViewAll href="/manager/team-trainings" />} className="team-status-panel">
-                <DataTable
-                  all
-                  headers={["Employee", "Training", "Score", "Attempts", "Status", "Action"]}
-                  emptyTitle="No team training yet."
-                  rows={unique.map((r) => [
-                    <Person key="p" name={r.employee_name} />,
-                    r.training_title,
-                    r.latest_score === null ? "Not collected" : <ScoreTag key="s" value={r.latest_score} />,
-                    r.attempts,
-                    r.result,
-                    <Btn key="v" kind="text" onClick={() => router.push(`/manager/team/${r.employee_id}`)}>
-                      View <Icon name="eye" />
-                    </Btn>,
-                  ])}
-                />
               </Panel>
             </div>
             <div className="manager-bottom-grid">
@@ -141,7 +119,7 @@ function AssessmentsInner() {
   };
   return (
     <>
-      <PageTitle eyebrow={EYEBROW} title="Assessment Performance" description="Only employees in your current authorised reporting team appear here." action={<BtnLink href="/manager/reports" tone="data">Export Team Report</BtnLink>} />
+      <PageTitle eyebrow={EYEBROW} title="Assessment Performance" description="Only employees in your current authorised reporting team appear here." />
       <section className="panel">
         <form className="filters" onSubmit={submit}>
           <TextField label="Search" name="search" placeholder="Name, employee ID or training" defaultValue={filters.search} />
@@ -190,26 +168,6 @@ export function MyTeam() {
                   View Details
                 </Btn>,
               ])}
-            />
-          )}
-        </Loaded>
-      </section>
-    </>
-  );
-}
-
-export function TeamTrainings() {
-  const state = useApi<(Summary & { training_id: string; title: string })[]>("/manager/team-trainings");
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="Team Training Status" description="Programmes assigned to your authorised team." />
-      <section className="panel">
-        <Loaded state={state}>
-          {(rows) => (
-            <DataTable
-              headers={["Training", "Team Assignments", "Completed Training", "Assessed", "Pass Rate", "Needs Re-training"]}
-              emptyTitle="No team training yet."
-              rows={rows.map((t) => [t.title, t.assignments, t.completed, t.assessed, <ScoreTag key="s" value={t.pass_rate} />, t.needs_retraining_employees])}
             />
           )}
         </Loaded>
@@ -307,54 +265,4 @@ export function TeamMember() {
 
 export function ManagerScorecards() {
   return <ScorecardPage eyebrow={EYEBROW} description="Only your team’s learning and behaviour evidence." />;
-}
-
-export function ManagerReports() {
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="Team Reports" description="Every report and export is limited to your current team." />
-      <ReportsHub />
-    </>
-  );
-}
-
-export function TeamCertificates() {
-  const state = useApi<{ enrolment_id: string; training: string; employee: string; passed_on: string }[]>("/manager/certificates");
-  const [open, setOpen] = useState<{ training: string; employee: string; passed_on: string } | null>(null);
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="Team Certificates" description="Certificates for passed records in your current team. Sample design; official approval is pending." />
-      <section className="panel">
-        <Loaded state={state}>
-          {(rows) =>
-            rows.length ? (
-              <DataTable
-                headers={["Employee", "Training", "Passed On", ""]}
-                rows={rows.map((r) => [
-                  r.employee,
-                  r.training,
-                  day(r.passed_on),
-                  <Btn key="c" tone="data" onClick={() => setOpen(r)}>
-                    Preview
-                  </Btn>,
-                ])}
-              />
-            ) : (
-              <Empty title="No certificates yet." hint="They appear when team members pass an assessment." />
-            )
-          }
-        </Loaded>
-      </section>
-      {open ? (
-        <Modal title="Certificate of Assessment" onClose={() => setOpen(null)} wide>
-          <Certificate name={open.employee} course={open.training} submitted={open.passed_on} />
-          <div className="dialog-actions">
-            <Btn kind="primary" onClick={() => window.print()}>
-              Print / Save PDF
-            </Btn>
-          </div>
-        </Modal>
-      ) : null}
-    </>
-  );
 }

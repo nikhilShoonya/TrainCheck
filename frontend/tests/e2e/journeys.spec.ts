@@ -128,17 +128,15 @@ test("manager sees only the team and the API refuses another team", async ({ pag
   await expect(page.getByRole("heading", { name: "You do not have access to this page" })).toBeVisible();
 });
 
-test("manager submits a behaviour observation and sees the self-rating afterwards", async ({ page }) => {
+test("Level 3 behaviour tasks are switched off: no navigation and no open observation tasks", async ({ page }) => {
+  // Phase 1: Behaviour is outside the approved scope (BEHAVIOUR_ENABLED=false). History stays readable by URL.
   await signIn(page, ACCOUNTS.manager);
+  await expect(page.locator(".sidebar")).not.toContainText("Pending Behaviour Reviews");
+  await expect(page.locator(".sidebar")).not.toContainText("Behaviour Questionnaires");
   await page.goto("/manager/reviews");
-  await page.getByRole("link", { name: "Complete review" }).first().click();
-  await expect(page.getByRole("heading", { name: /Observation:/ })).toBeVisible();
-  for (const group of await page.locator(".rating-scale").all()) await group.locator("label").nth(3).click();
-  for (const box of await page.locator('textarea[name^="example-"]').all()) await box.fill("Observed the documented steps on a routine synthetic case.");
-  await page.getByRole("button", { name: "Submit review" }).click();
-  await page.waitForURL(/\/manager\/reviews$/);
-  await page.goto("/manager/questionnaires");
-  await expect(page.getByRole("link", { name: "View review" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Complete review" })).toHaveCount(0);
+  const tasks = await page.evaluate(async () => (await (await fetch("/api/v1/manager/behaviour-reviews")).json()).data as { submitted_at: string | null }[]);
+  expect(tasks.every((t) => t.submitted_at)).toBe(true);
 });
 
 test("L&D manages training, imports questions and sees the two-section scorecard", async ({ page }) => {
@@ -168,8 +166,21 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await expect(page.getByRole("heading", { name: "Section 2 · Behaviour" })).toBeVisible();
   await expect(page.getByText(/Section 3|Reaction|Business Results/)).toHaveCount(0);
 
-  await page.goto("/lnd/audit");
-  await expect(page.getByRole("cell", { name: "TRAINING_CREATED" }).first()).toBeVisible();
+  // Batches & Sessions and Audit Logs are withdrawn from L&D Admin: not in the sidebar, refused by URL and by the API.
+  await expect(page.locator(".sidebar")).not.toContainText("Batches & Sessions");
+  await expect(page.locator(".sidebar")).not.toContainText("Audit Logs");
+  for (const path of ["/lnd/batches", "/lnd/audit"]) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { name: "You do not have access to this page" })).toBeVisible();
+  }
+  const statuses = await page.evaluate(async () => {
+    const csrf = document.cookie.match(/tc_csrf=([^;]*)/)?.[1] ?? "";
+    const audit = await fetch("/api/v1/admin/audit-logs");
+    const batch = await fetch("/api/v1/admin/batches", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": decodeURIComponent(csrf) }, body: JSON.stringify({ training_id: "00000000-0000-0000-0000-000000000000", name: "Nope" }) });
+    const list = await fetch("/api/v1/admin/batches");
+    return [audit.status, batch.status, list.status];
+  });
+  expect(statuses).toEqual([403, 403, 200]); // The batch list stays readable for Employee Assignments.
 });
 
 test("HR reads and exports but has no write controls or write access", async ({ page }) => {
@@ -202,9 +213,9 @@ test("the assessment and login work at phone size", async ({ browser }) => {
 });
 
 const PAGES: Record<string, string[]> = {
-  clear: ["/employee", "/employee/trainings", "/employee/assessments", "/employee/history", "/employee/refresher", "/employee/behaviour", "/employee/behaviour-history", "/employee/certificates", "/employee/scorecard", "/notifications", "/profile"],
-  manager: ["/manager", "/manager/team", "/manager/team-trainings", "/manager/assessments", "/manager/reviews", "/manager/questionnaires", "/manager/scorecards", "/manager/reports", "/manager/certificates"],
-  admin: ["/lnd", "/lnd/trainings", "/lnd/organisation", "/lnd/batches", "/lnd/assignments", "/lnd/completion", "/lnd/questions", "/lnd/imports", "/lnd/assessment-config", "/lnd/behaviour-templates", "/lnd/scorecards", "/lnd/reports", "/lnd/audit", "/notifications"],
+  clear: ["/employee", "/employee/trainings", "/employee/assessments", "/employee/refresher", "/employee/behaviour", "/employee/scorecard", "/notifications", "/profile"],
+  manager: ["/manager", "/manager/team", "/manager/assessments", "/manager/reviews", "/manager/questionnaires", "/manager/scorecards"],
+  admin: ["/lnd", "/lnd/trainings", "/lnd/organisation", "/lnd/assignments", "/lnd/completion", "/lnd/questions", "/lnd/imports", "/lnd/assessment-config", "/lnd/behaviour-templates", "/lnd/scorecards", "/lnd/reports", "/notifications"],
   hr: ["/hr", "/hr/learning", "/hr/departments", "/hr/pass-fail", "/hr/learning-gain", "/hr/behaviour", "/hr/managers", "/hr/scorecards", "/hr/reports"],
 };
 

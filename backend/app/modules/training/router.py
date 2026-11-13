@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_reader
+from app.core.deps import CurrentUser, require_admin, require_reader, require_withdrawn
 from app.core.enums import (
     AssessmentType,
     AttendanceStatus,
@@ -29,8 +29,11 @@ from app.core.errors import ApiError, conflict, not_found, validation
 from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.models import (
+    AssessmentAttempt,
     AssessmentConfig,
     AssessmentObligation,
+    BehaviourReviewCycle,
+    BehaviourTemplate,
     Competency,
     Department,
     Employee,
@@ -41,6 +44,7 @@ from app.models import (
     TrainingMaterial,
     TrainingSession,
 )
+from app.modules.assessment.gate import obligation_startable
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.assessment.service import active_config, next_config_version, pool_message, pool_problem, pool_report
 from app.modules.notifications.service import notify_employee
@@ -130,6 +134,7 @@ class AttendanceIn(Strict):
 
 class CompletionIn(Strict):
     completion_date: date
+    attendance_status: AttendanceStatus | None = None  # Omitted: the recorded attendance is used (Pending counts as Present).
 
 
 class ReasonIn(Strict):
@@ -187,9 +192,16 @@ def config_pool(db: Session, training_id: uuid.UUID, config: AssessmentConfig | 
 
 
 def training_view(db: Session, t: Training, detail: bool = False) -> dict:
-    enrolments = db.scalars(select(Enrolment).options(selectinload(Enrolment.completion)).where(Enrolment.training_id == t.id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)).all()
+    enrolments = db.scalars(
+        select(Enrolment)
+        .options(selectinload(Enrolment.completion), selectinload(Enrolment.obligations), selectinload(Enrolment.employee))
+        .where(Enrolment.training_id == t.id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
+    ).all()
     post = active_config(db, t.id, AssessmentType.POST_TEST)
     pool = config_pool(db, t.id, post)
+    readiness = service.readiness_from(t, post, pool if post else None)
+    pending = [e for e in enrolments if e.completion and not any(o.assessment_type == AssessmentType.POST_TEST for o in e.obligations)]
+    unavailable = service.unavailable_for_training(db, t.id)
     data = {
         "id": str(t.id),
         "training_code": t.training_code,
@@ -216,8 +228,13 @@ def training_view(db: Session, t: Training, detail: bool = False) -> dict:
         "config": config_view(post),
         "eligible_questions": pool["eligible"],
         "config_ready": bool(pool["ready"]),
+        "assessment_readiness": readiness.view(),
+        "pending_scheduling_count": len(pending),
+        "unavailable_count": len(unavailable),
     }
     if detail:
+        data["pending_scheduling"] = [{"employee_code": e.employee.employee_code, "employee_name": e.employee.full_name, "completed_at": iso(e.completion.completed_at)} for e in pending]
+        data["unavailable_assessments"] = [{"employee_code": o.employee.employee_code, "employee_name": o.employee.full_name, "due_at": iso(o.due_at)} for o in unavailable]
         data["materials"] = [{"id": str(m.id), "kind": m.kind, "title": m.title, "url": m.url} for m in t.materials]
         data["pre_test_config"] = config_view(active_config(db, t.id, AssessmentType.PRE_TEST))
         data["question_pool"] = pool
@@ -284,12 +301,32 @@ def get_training(training_id: uuid.UUID, _: CurrentUser = Depends(require_reader
     return ok(training_view(db, _training(db, training_id), detail=True))
 
 
+def _training_audit(t: Training) -> dict:
+    return {
+        "title": t.title,
+        "category": t.category,
+        "trainer_id": str(t.trainer_id) if t.trainer_id else None,
+        "owner_employee_id": str(t.owner_employee_id) if t.owner_employee_id else None,
+        "target_scope": t.target_scope,
+        "departments": sorted(d.code for d in t.departments),
+        "functions": sorted(f.code for f in t.functions),
+        "pretest_enabled": t.pretest_enabled,
+        "refresher_url": t.refresher_url,
+        "refresher_text_changed": None,
+        "behaviour_enabled": t.behaviour_enabled,
+        "followup_days": t.followup_days,
+    }
+
+
 @router.patch("/trainings/{training_id}")
 def update_training(training_id: uuid.UUID, body: TrainingIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     training = _training(db, training_id)
-    before = {"title": training.title, "target_scope": training.target_scope, "followup_days": training.followup_days}
+    before = _training_audit(training)
+    old_refresher = training.refresher_text
     _apply_training(db, training, body)
-    record_audit(db, user.id, "TRAINING_UPDATED", "training", training.id, before=before, after={"title": training.title, "target_scope": training.target_scope, "followup_days": training.followup_days})
+    after = _training_audit(training)
+    after["refresher_text_changed"] = old_refresher != training.refresher_text
+    record_audit(db, user.id, "TRAINING_UPDATED", "training", training.id, before=before, after=after)
     db.commit()
     return ok(training_view(db, training, detail=True))
 
@@ -306,6 +343,41 @@ def set_training_status(training_id: uuid.UUID, body: StatusIn, user: CurrentUse
     record_audit(db, user.id, "TRAINING_STATUS_CHANGED", "training", training.id, before={"status": before}, after={"status": body.status})
     db.commit()
     return ok(training_view(db, training, detail=True))
+
+
+# Records that make a training part of the learning history. While any exists, the training can only be archived.
+_TRAINING_USAGE = (
+    (Enrolment, "assignments"),
+    (AssessmentObligation, "assessments"),
+    (AssessmentAttempt, "assessment attempts"),
+    (TrainingBatch, "batches"),
+    (BehaviourTemplate, "behaviour questionnaires"),
+    (BehaviourReviewCycle, "behaviour reviews"),
+)
+
+
+@router.delete("/trainings/{training_id}")
+def delete_training(training_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Deletes a training that was never used. Anything with learning history is archived instead, so no
+    assignment, assessment, batch or behaviour evidence is ever removed."""
+    training = _training(db, training_id)
+    used = [label for model, label in _TRAINING_USAGE if db.scalar(select(model.id).where(model.training_id == training.id).limit(1)) is not None]
+    if used:
+        raise conflict(
+            "TRAINING_IN_USE",
+            f"{training.title} cannot be deleted because it has {', '.join(used)}. Archive it instead; its history is preserved.",
+            {"in_use": used},
+        )
+    snapshot = {"code": training.training_code, "title": training.title, "status": training.status, "category": training.category}
+    # Unused assessment configurations belong to the training's setup (nothing references them without obligations).
+    for config in db.scalars(select(AssessmentConfig).where(AssessmentConfig.training_id == training.id)):
+        db.delete(config)
+    db.flush()
+    # Department, function and competency links, materials and question tags are removed with it; questions stay.
+    db.delete(training)
+    record_audit(db, user.id, "TRAINING_DELETED", "training", training_id, before=snapshot)
+    db.commit()
+    return ok({"deleted": True})
 
 
 @router.post("/trainings/{training_id}/materials")
@@ -394,6 +466,8 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
 
 
 # ---------- Batches and sessions ----------
+# Creating batches and sessions is withdrawn from L&D Admin (require_withdrawn). The list stays readable:
+# Employee Assignments uses it to attach existing batches, and HR keeps its read access.
 
 def batch_view(db: Session, batch: TrainingBatch) -> dict:
     assigned = db.scalars(select(Enrolment.id).where(Enrolment.batch_id == batch.id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)).all()
@@ -422,7 +496,7 @@ def list_batches(_: CurrentUser = Depends(require_reader), db: Session = Depends
 
 
 @router.post("/batches")
-def create_batch(body: BatchIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+def create_batch(body: BatchIn, user: CurrentUser = Depends(require_withdrawn), db: Session = Depends(get_db)) -> dict:
     training = _training(db, body.training_id)
     if body.start_date and body.end_date and body.end_date < body.start_date:
         raise validation("The end date cannot be before the start date.")
@@ -439,7 +513,7 @@ def create_batch(body: BatchIn, user: CurrentUser = Depends(require_admin), db: 
 
 
 @router.post("/batches/{batch_id}/sessions")
-def add_session(batch_id: uuid.UUID, body: SessionIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+def add_session(batch_id: uuid.UUID, body: SessionIn, user: CurrentUser = Depends(require_withdrawn), db: Session = Depends(get_db)) -> dict:
     batch = db.get(TrainingBatch, batch_id)
     if batch is None:
         raise not_found()
@@ -452,7 +526,7 @@ def add_session(batch_id: uuid.UUID, body: SessionIn, user: CurrentUser = Depend
 
 # ---------- Enrolment and completion ----------
 
-def assessment_state(obligations: list[AssessmentObligation], now: datetime) -> str:
+def assessment_state(obligations: list[AssessmentObligation], now: datetime, unavailable: bool = False) -> str:
     post = sorted((o for o in obligations if o.assessment_type == AssessmentType.POST_TEST), key=lambda o: o.cycle_number)
     if not post:
         return "Not scheduled"
@@ -461,6 +535,8 @@ def assessment_state(obligations: list[AssessmentObligation], now: datetime) -> 
         return "Waived"
     if current.status == ObligationStatus.COMPLETED:
         return "Submitted"
+    if unavailable:
+        return "Unavailable"
     if current.status == ObligationStatus.RETAKE_PENDING:
         return "Retake pending"
     if current.status == ObligationStatus.IN_PROGRESS:
@@ -470,9 +546,34 @@ def assessment_state(obligations: list[AssessmentObligation], now: datetime) -> 
     return "Due"
 
 
-def enrolment_view(e: Enrolment, now: datetime) -> dict:
+class IssueFinder:
+    """Explains, per enrolment, why an assessment is missing or cannot start. Caches per training and config."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.readiness: dict[uuid.UUID, service.Readiness] = {}
+        self.startable: dict = {}
+
+    def ready(self, training: Training) -> service.Readiness:
+        if training.id not in self.readiness:
+            self.readiness[training.id] = service.assessment_readiness(self.db, training)
+        return self.readiness[training.id]
+
+    def issue(self, e: Enrolment, current: AssessmentObligation | None) -> dict | None:
+        if e.completion is not None and current is None:
+            readiness = self.ready(e.training)
+            if readiness.ready:
+                return {"code": "NOT_SCHEDULED", "message": "Completion is recorded but the assessment was not scheduled. The training can run an assessment now.", "action": "Open the training in Training Management and select Schedule pending assessments."}
+            return {"code": "NOT_SCHEDULED", "message": f"Completion is recorded but the assessment was not scheduled. {readiness.message}", "action": readiness.action}
+        if current is not None and current.status in service.OPEN_OBLIGATION_STATUSES and not obligation_startable(self.db, current, self.startable):
+            return {"code": "UNAVAILABLE", "message": "The question pool no longer satisfies this assessment's configuration, so it cannot start and does not block the employee.", "action": f"Add or reactivate questions, or update the configuration, {service.SCHEDULE_ACTION}"}
+        return None
+
+
+def enrolment_view(e: Enrolment, now: datetime, issues: IssueFinder | None = None) -> dict:
     post = sorted((o for o in e.obligations if o.assessment_type == AssessmentType.POST_TEST), key=lambda o: o.cycle_number)
     current = post[-1] if post else None
+    issue = issues.issue(e, current) if issues else None
     return {
         "id": str(e.id),
         "employee_id": str(e.employee_id),
@@ -488,7 +589,8 @@ def enrolment_view(e: Enrolment, now: datetime) -> dict:
         "completed_at": iso(e.completion.completed_at) if e.completion else None,
         "completion_source": e.completion.completion_source if e.completion else None,
         "due_at": iso(current.due_at) if current else None,
-        "assessment_state": assessment_state(e.obligations, now),
+        "assessment_state": assessment_state(e.obligations, now, bool(issue and issue["code"] == "UNAVAILABLE")),
+        "assessment_issue": issue,
         "outcome": current.outcome if current else None,
         "retraining_flag": current.retraining_flag if current else "NOT_REQUIRED",
         "obligation_id": str(current.id) if current else None,
@@ -527,25 +629,33 @@ def list_enrolments(
     if completed is not None:
         rows = [e for e in rows if bool(e.completion) == completed]
     now = utcnow()
-    return ok([enrolment_view(e, now) for e in rows])
+    issues = IssueFinder(db)
+    return ok([enrolment_view(e, now, issues) for e in rows])
 
 
 @router.post("/enrolments", dependencies=[expensive("bulk")])
 def assign(body: AssignIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Individual and bulk assignment share one set of rules; every employee gets an outcome and a reason."""
     training = _training(db, body.training_id)
     batch = None
     if body.batch_id:
         batch = db.get(TrainingBatch, body.batch_id)
         if batch is None or batch.training_id != training.id:
             raise validation("Choose a batch belonging to the selected training.")
+    missing: list[uuid.UUID] = []
     if body.use_training_target:
         employees = service.targeted_employees(db, training)
     else:
         if not body.employee_ids:
             raise validation("Select at least one employee.")
         employees = list(db.scalars(select(Employee).where(Employee.id.in_(body.employee_ids))))
-    result = service.assign_employees(db, training, batch, employees)
-    record_audit(db, user.id, "EMPLOYEES_ASSIGNED", "training", training.id, after=result)
+        found = {e.id for e in employees}
+        missing = [i for i in body.employee_ids if i not in found]
+    result = service.assign_employees(db, training, batch, employees, missing_ids=missing)
+    summary = {k: v for k, v in result.items() if k != "results"}
+    summary["assigned"] = [r["employee_code"] for r in result["results"] if r["status"] == "ASSIGNED"]
+    summary["batch"] = batch.name if batch else None
+    record_audit(db, user.id, "EMPLOYEES_ASSIGNED", "training", training.id, after=summary)
     db.commit()
     return ok(result)
 
@@ -559,26 +669,56 @@ def _enrolment(db: Session, enrolment_id: uuid.UUID) -> Enrolment:
 
 @router.patch("/enrolments/{enrolment_id}/attendance")
 def set_attendance(enrolment_id: uuid.UUID, body: AttendanceIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Once completion is recorded, attendance must stay a status that counts as completion."""
     enrolment = _enrolment(db, enrolment_id)
+    label = service.employee_label(enrolment.employee)
+    if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
+        raise conflict("ENROLMENT_CANCELLED", f"The assignment of {label} was cancelled, so attendance cannot be changed.")
+    allowed = service.completable_attendance()
+    if enrolment.completion is not None and body.attendance_status not in allowed:
+        raise conflict(
+            "ATTENDANCE_LOCKED",
+            f"Completion is already recorded for {label}, so attendance cannot become {body.attendance_status.lower()}. "
+            f"It must stay {' or '.join(a.title() for a in sorted(allowed))}. Completion records are never deleted; contact the system owner if it was recorded in error.",
+        )
     before = enrolment.attendance_status
     enrolment.attendance_status = body.attendance_status
-    record_audit(db, user.id, "ATTENDANCE_RECORDED", "enrolment", enrolment.id, before={"status": before}, after={"status": body.attendance_status})
+    record_audit(db, user.id, "ATTENDANCE_RECORDED", "enrolment", enrolment.id, before={"status": before}, after={"status": body.attendance_status, "employee": enrolment.employee.employee_code, "training": enrolment.training.training_code})
     db.commit()
-    return ok(enrolment_view(enrolment, utcnow()))
+    return ok(enrolment_view(enrolment, utcnow(), IssueFinder(db)))
 
 
 @router.post("/enrolments/{enrolment_id}/completion")
 def mark_completed(enrolment_id: uuid.UUID, body: CompletionIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Records completion and reports, truthfully, whether the assessment was scheduled."""
     enrolment = _enrolment(db, enrolment_id)
     calendar = load_calendar(db)
     moment = datetime.combine(body.completion_date, time.min, calendar.tz)
     if body.completion_date == calendar.local_date(utcnow()):
         moment = utcnow()
-    service.record_completion(db, enrolment, moment.astimezone(UTC), "MANUAL", user.id)
-    record_audit(db, user.id, "COMPLETION_RECORDED", "enrolment", enrolment.id, after={"date": body.completion_date.isoformat()})
+    outcome = service.complete_enrolment(db, enrolment, moment.astimezone(UTC), "MANUAL", user.id, attendance=body.attendance_status)
+    scheduling = service.scheduling_view(outcome.scheduling)
+    record_audit(
+        db,
+        user.id,
+        "COMPLETION_RECORDED",
+        "enrolment",
+        enrolment.id,
+        after={"date": body.completion_date.isoformat(), "attendance": enrolment.attendance_status, "employee": enrolment.employee.employee_code, "training": enrolment.training.training_code, "assessment": scheduling["status"], "assessment_reason": scheduling["reason"]},
+    )
     db.commit()
     db.refresh(enrolment)
-    return ok(enrolment_view(enrolment, utcnow()))
+    return ok({**enrolment_view(enrolment, utcnow(), IssueFinder(db)), "assessment_scheduling": scheduling})
+
+
+@router.post("/trainings/{training_id}/schedule-assessments")
+def schedule_assessments(training_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Recovery after a configuration or question-pool fix: schedules missing post-tests and moves
+    stuck obligations onto the current valid configuration."""
+    training = _training(db, training_id)
+    result = service.schedule_pending_assessments(db, training, user.id)
+    db.commit()
+    return ok(result)
 
 
 @router.post("/enrolments/{enrolment_id}/cancel")
@@ -624,9 +764,11 @@ def start_retraining_cycle(obligation_id: uuid.UUID, body: ReasonIn, user: Curre
     obligation = _obligation(db, obligation_id)
     if obligation.retraining_flag != RetrainingFlag.NEEDS_RETRAINING:
         raise conflict("NOT_FLAGGED", "This record is not flagged Needs Re-training.")
-    config = active_config(db, obligation.training_id, AssessmentType.POST_TEST)
-    if config is None:
-        raise conflict("NOT_CONFIGURED", "This training has no active assessment configuration.")
+    readiness = service.assessment_readiness(db, obligation.training)
+    if not readiness.ready:
+        # Never open a cycle the employee could not start.
+        raise ApiError(422, readiness.reason or "NOT_READY", f"A new cycle cannot open yet. {readiness.message} {readiness.action}", readiness.view())
+    config = readiness.config
     now = utcnow()
     obligation.retraining_flag = RetrainingFlag.RESOLVED
     new_cycle = AssessmentObligation(

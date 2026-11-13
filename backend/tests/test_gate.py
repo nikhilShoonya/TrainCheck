@@ -78,7 +78,7 @@ def test_login_returns_gate_details(world, client_for):  # TC-GATE-001
 def test_protected_apis_are_blocked_while_gate_active(world, client_for):  # TC-GATE-002, -003, SEC-004
     world.complete(world.employee, world.training())
     client = client_for(world.employee)
-    for path in ("/me/dashboard", "/me/trainings", "/me/history", "/me/notifications", "/me/behaviour-reviews", "/search?q=a", "/reports/catalogue", "/reports/exports"):
+    for path in ("/me/dashboard", "/me/trainings", "/me/notifications", "/me/behaviour-reviews", "/search?q=a", "/reports/catalogue", "/reports/exports"):
         response = client.get(path)
         assert response.status_code == 403, path
         assert response.json()["error"]["code"] == "ASSESSMENT_REQUIRED"

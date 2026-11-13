@@ -1,12 +1,17 @@
 """Level 3 Behaviour. TC-KIR-005 to -007, TC-L3-*."""
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import func, select
 
 from app.core import clock
 from app.models import BehaviourReview, BehaviourReviewCycle, BehaviourTemplate, Notification
 from app.modules.scheduler.jobs import behaviour_reminders
 from tests.conftest import NOW
+
+# Level 3 is outside the approved scope and off by default. These tests keep the legacy code honest
+# while it remains in the codebase; test_phase1.py covers the switched-off behaviour.
+pytestmark = pytest.mark.usefixtures("behaviour_on")
 
 
 def cleared_training(world, employee, db, days_ago=40):

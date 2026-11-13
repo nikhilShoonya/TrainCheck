@@ -67,6 +67,8 @@ def user_payload(user: CurrentUser, db: Session) -> dict:
         "grade": e.grade,
         "roles": sorted(user.roles),
         "primary_role": user.primary_role,
+        # Lets the interface hide switched-off workflows. The server still enforces them.
+        "features": {"behaviour": get_settings().behaviour_enabled},
     }
 
 

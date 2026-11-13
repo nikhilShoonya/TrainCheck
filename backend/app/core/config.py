@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     default_timezone: str = "Asia/Kolkata"
     scheduler_enabled: bool = True
 
+    # Scope controls. Level 3 Behaviour is outside the approved scope: when off, no follow-up cycles,
+    # behaviour tasks, reminders or submissions are created, and existing records stay readable.
+    behaviour_enabled: bool = False
+    # Business decision pending: may PARTIAL attendance count as training completion? Off until approved.
+    completion_allows_partial_attendance: bool = False
+
     # Rate limiting (see app/core/ratelimit.py). Limits are requests per minute per identity.
     rate_limit_enabled: bool = True
     rate_limit_store: str = "memory"  # "memory" for one backend instance, "database" for several

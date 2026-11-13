@@ -8,7 +8,6 @@ import "@/styles/prototype/reference.css";
 import "@/styles/prototype/role-dashboards.css";
 import "@/styles/prototype/green-theme.css";
 import "@/styles/prototype/layout-fixes.css";
-import "@/styles/prototype/certificate.css";
 import "@/styles/prototype/button-tones.css";
 import "@/styles/prototype/secure-exam.css";
 import "@/styles/traincheck.css";

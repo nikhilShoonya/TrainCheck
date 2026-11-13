@@ -13,7 +13,6 @@
 .tc-dialog-overlay{position:fixed;inset:0;z-index:60;background:#0b152c66}
 .tc-dialog{position:fixed;z-index:61;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border:1px solid var(--border);border-radius:12px;padding:0;width:min(640px,calc(100% - 32px));max-height:90vh;overflow:auto;color:var(--text);box-shadow:0 20px 80px #17263c33}
 .tc-dialog-wide{width:min(860px,calc(100% - 32px))}
-.tc-dialog:has(.tc-certificate){width:min(1000px,calc(100% - 32px))}
 @media print{
   body>*:not([data-radix-portal]):not(.tc-dialog){display:none}
   .tc-dialog-overlay{display:none}
@@ -44,3 +43,6 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .tc-chart-tooltip{display:grid;gap:3px;background:#fff;border:1px solid #dce3e8;border-radius:7px;padding:8px 10px;font-size:13px;color:#0b152c;box-shadow:0 6px 20px #17263c1f}
 .tc-chart-tooltip i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
 .tc-audit-json{background:#f1f5f6;border-radius:7px;padding:10px;overflow:auto;font-size:13px;white-space:pre-wrap}
+
+/* The manager dashboard's Team Training Status panel was removed; the remaining panel spans the row. */
+.manager-secondary-grid:has(> :only-child){grid-template-columns:1fr}

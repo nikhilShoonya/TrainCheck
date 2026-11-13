@@ -28,7 +28,11 @@ def notify_employee(db: Session, employee_id: uuid.UUID, kind: str, title: str, 
 
 def notify_roles(db: Session, roles: Iterable[str], kind: str, title: str, message: str, link: str | None, dedupe_key: str | None, now: datetime | None = None) -> None:
     accounts = db.scalars(
-        select(UserRole.user_account_id).join(Role, Role.id == UserRole.role_id).where(Role.code.in_(list(roles))).distinct()
+        select(UserRole.user_account_id)
+        .join(Role, Role.id == UserRole.role_id)
+        .join(UserAccount, UserAccount.id == UserRole.user_account_id)
+        .where(Role.code.in_(list(roles)), UserAccount.account_status == "ACTIVE")  # Disabled accounts cannot act on an alert.
+        .distinct()
     )
     for account_id in accounts:
         notify_account(db, account_id, kind, title, message, link, dedupe_key, now)

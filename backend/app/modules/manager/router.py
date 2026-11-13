@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_manager, team_employee_ids
-from app.core.enums import ResultStatus, ReviewerType
+from app.core.enums import ReviewerType
 from app.core.errors import not_found
 from app.core.responses import display_percent, iso, ok
 from app.models import Employee
@@ -173,13 +173,3 @@ def team_member(employee_id: uuid.UUID, user: CurrentUser = Depends(require_mana
             "follow_ups": sorted(follow_ups.values(), key=lambda f: (f["training"], f["period_days"])),
         }
     )
-
-
-@router.get("/certificates")
-def team_certificates(user: CurrentUser = Depends(require_manager), db: Session = Depends(get_db)) -> dict:
-    out = []
-    for r in _team_rows(db, user):
-        passed = next((a for a in r.post_attempts if a.result_status == ResultStatus.PASSED), None)
-        if passed:
-            out.append({"enrolment_id": str(r.enrolment.id), "training": r.enrolment.training.title, "employee": r.enrolment.employee.full_name, "passed_on": iso(passed.submitted_at), "score": display_percent(passed.score_percent)})
-    return ok(out)
