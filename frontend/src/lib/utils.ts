@@ -11,7 +11,21 @@ export const formatNumber = (value: number) => value.toFixed(1).replace(/\.0$/, 
 
 export const orMissing = (value: number | string | null | undefined, missing = "Not collected") => (value === null || value === undefined || value === "" ? missing : String(value));
 
-export const day = (iso: string | null | undefined, missing = "Not recorded") => (iso ? iso.slice(0, 10) : missing);
+/** The organisation's timezone. Dates are shown and chosen in it, never as the UTC date of a timestamp
+    (which is the previous day for India from 00:00 to 05:30). Matches the backend's working calendar. */
+export const ORG_TIMEZONE = process.env.NEXT_PUBLIC_ORG_TIMEZONE || "Asia/Kolkata";
+const orgDate = new Intl.DateTimeFormat("en-CA", { timeZone: ORG_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" });
+
+/** YYYY-MM-DD in the organisation timezone. A plain date (no time) is returned as it is. */
+export const day = (iso: string | null | undefined, missing = "Not recorded") => {
+  if (!iso) return missing;
+  if (iso.length <= 10) return iso;
+  const moment = new Date(iso);
+  return Number.isNaN(moment.getTime()) ? iso.slice(0, 10) : orgDate.format(moment);
+};
+
+/** Today's date in the organisation timezone, for date inputs (defaults, min and max). */
+export const todayInOrg = () => orgDate.format(new Date());
 
 export const dateTime = (iso: string | null | undefined, missing = "—") => (iso ? `${iso.slice(0, 16).replace("T", " ")} UTC` : missing);
 

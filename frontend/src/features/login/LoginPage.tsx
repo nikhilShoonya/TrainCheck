@@ -9,7 +9,7 @@ import { Modal } from "@/components/ui/dialog";
 import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
 import type { AccessState, RoleCode, User } from "@/lib/types";
-import { HOME } from "@/components/shell/nav";
+import { landingPath } from "@/components/shell/nav";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "";
@@ -123,9 +123,8 @@ export function LoginPage() {
       }
       // The sign-in response already holds identity and the gate decision, so the workspace starts from it
       // (no second /auth/me and /me/access-state round). Nothing protected can show before this point.
-      const blocked = result.access_state.access_status === "ASSESSMENT_REQUIRED";
       adopt(result.user, result.access_state);
-      router.replace(blocked ? "/access/assessment-required" : HOME[result.user.primary_role]);
+      router.replace(landingPath(result.user, result.access_state));
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Sign-in failed. Please try again.");
       setBusy(false);

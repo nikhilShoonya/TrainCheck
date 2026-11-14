@@ -111,8 +111,12 @@ async def upload(
     return ok(job_view(job, db=db))
 
 
-def _job(db: Session, job_id: uuid.UUID) -> ImportJob:
-    job = db.scalar(select(ImportJob).options(selectinload(ImportJob.rows)).where(ImportJob.id == job_id))
+def _job(db: Session, job_id: uuid.UUID, lock: bool = False) -> ImportJob:
+    """`lock=True` holds the job row until the request commits, so two commits, edits or deletes of the same
+    import run one after the other and the second sees the first one's result."""
+    if lock and db.execute(select(ImportJob.id).where(ImportJob.id == job_id).with_for_update()).first() is None:
+        raise not_found()
+    job = db.scalar(select(ImportJob).options(selectinload(ImportJob.rows)).where(ImportJob.id == job_id).execution_options(populate_existing=True))
     if job is None:
         raise not_found()
     return job
@@ -125,7 +129,7 @@ def get_job(job_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Sess
 
 @router.post("/{job_id}/commit", dependencies=[expensive("import")])
 def commit(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    job = _job(db, job_id)
+    job = _job(db, job_id, lock=True)
     service.commit_job(db, job, user.id)
     record_audit(db, user.id, "IMPORT_COMMITTED", "import_job", job.id, after={"imported": job.accepted_rows, "rejected": job.rejected_rows, "training": job.training.training_code if job.training else None})
     db.commit()
@@ -135,7 +139,7 @@ def commit(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Se
 
 @router.post("/{job_id}/cancel")
 def cancel(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    job = _job(db, job_id)
+    job = _job(db, job_id, lock=True)
     if job.status != ImportStatus.READY:
         raise conflict("IMPORT_ALREADY_PROCESSED", "This import has already been processed.")
     job.status = ImportStatus.CANCELLED
@@ -153,7 +157,7 @@ async def replace(
     db: Session = Depends(get_db),
 ) -> dict:
     """Edits an import that was never applied: a corrected file (and training) is validated into the same entry."""
-    job = _job(db, job_id)
+    job = _job(db, job_id, lock=True)
     if job.status not in service.UNAPPLIED_STATUSES:
         raise conflict("IMPORT_ALREADY_PROCESSED", "This import has already been imported and can no longer be edited.")
     training = service.selected_training(db, training_id)
@@ -170,7 +174,7 @@ async def replace(
 
 @router.delete("/{job_id}")
 def delete(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    job = _job(db, job_id)
+    job = _job(db, job_id, lock=True)
     if job.status not in service.UNAPPLIED_STATUSES:
         raise conflict("IMPORT_ALREADY_PROCESSED", "A completed import is kept as the record of what it added and cannot be deleted.")
     record_audit(db, user.id, "IMPORT_DELETED", "import_job", job.id, before={"file": job.file_name, "type": job.import_type, "status": job.status, "rows": job.total_rows})

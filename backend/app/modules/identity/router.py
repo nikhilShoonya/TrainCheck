@@ -45,6 +45,15 @@ def _rate_key(email: str, ip: str | None) -> str:
     return hashlib.sha256(f"{email}|{ip}".encode()).hexdigest()
 
 
+def _account_key(email: str) -> str:
+    """One bucket per account across every address, so guessing from many addresses is limited too."""
+    return hashlib.sha256(f"{email}|*".encode()).hexdigest()
+
+
+# Failures from all addresses together that lock an account for the window (per address: LOGIN_MAX_FAILURES).
+ACCOUNT_FAILURE_FACTOR = 4
+
+
 def _set_cookies(response: Response, token: str, csrf: str) -> None:
     settings = get_settings()
     lifetime = settings.session_absolute_hours * 3600
@@ -81,8 +90,15 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     key = _rate_key(email, ip)
     window_start = now - timedelta(minutes=settings.login_window_minutes)
 
-    failures = db.scalar(select(func.count()).select_from(AuthAttempt).where(AuthAttempt.key_hash == key, AuthAttempt.attempted_at >= window_start))
-    if failures and failures >= settings.login_max_failures:
+    account_key = _account_key(email)
+    counts = dict(
+        db.execute(
+            select(AuthAttempt.key_hash, func.count())
+            .where(AuthAttempt.key_hash.in_([key, account_key]), AuthAttempt.attempted_at >= window_start)
+            .group_by(AuthAttempt.key_hash)
+        ).all()
+    )
+    if counts.get(key, 0) >= settings.login_max_failures or counts.get(account_key, 0) >= settings.login_max_failures * ACCOUNT_FAILURE_FACTOR:
         raise ApiError(429, "RATE_LIMITED", "Too many sign-in attempts. Please wait a few minutes and try again.")
 
     account = db.scalar(select(UserAccount).where(UserAccount.login_email == email))
@@ -94,7 +110,7 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
         and account.employee.employment_status != EmploymentStatus.INACTIVE
     )
     if not usable:
-        db.add(AuthAttempt(key_hash=key, attempted_at=now))
+        db.add_all([AuthAttempt(key_hash=key, attempted_at=now), AuthAttempt(key_hash=account_key, attempted_at=now)])
         record_audit(db, account.id if account else None, "LOGIN_FAILED", "user_account", account.id if account else None, ip_address=ip)
         db.commit()
         raise ApiError(401, "INVALID_CREDENTIALS", "The email or password is incorrect.")

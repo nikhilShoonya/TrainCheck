@@ -76,23 +76,38 @@ export function ExamView({ initial }: { initial: AttemptView }) {
 
   /* ---------- Saving, with retry after an interruption ---------- */
 
-  const flush = useCallback(async () => {
-    for (const [questionId, selected] of [...unsaved.current]) {
+  // One save at a time, always the latest choice. Overlapping requests for the same question could reach
+  // the server in either order and leave an older answer stored (and scored) while the screen shows the
+  // newer one, so a second call only joins the loop that is already running.
+  const flushing = useRef<Promise<void> | null>(null);
+  const flush = useCallback((): Promise<void> => {
+    if (flushing.current) return flushing.current;
+    const run = (async () => {
       try {
-        await api.put(`/attempts/${attempt.attempt_id}/questions/${questionId}/answer`, { selected_option_ids: selected });
-        if (unsaved.current.get(questionId) === selected) unsaved.current.delete(questionId);
-      } catch (error) {
-        const failure = error as ApiError;
-        if (failure.status === 0) {
-          setSaveState("waiting");
-          return;
+        while (unsaved.current.size) {
+          const [questionId, selected] = unsaved.current.entries().next().value as [string, string[]];
+          try {
+            await api.put(`/attempts/${attempt.attempt_id}/questions/${questionId}/answer`, { selected_option_ids: selected });
+            // A newer choice made while this one was sending stays queued and is sent next.
+            if (unsaved.current.get(questionId) === selected) unsaved.current.delete(questionId);
+          } catch (error) {
+            const failure = error as ApiError;
+            if (failure.status === 0) {
+              setSaveState("waiting"); // Only a real connection failure says "not saved yet".
+              return;
+            }
+            if (unsaved.current.get(questionId) === selected) unsaved.current.delete(questionId);
+            handleApiError(failure);
+            if (failure.status === 400) toast(failure.message);
+          }
         }
-        unsaved.current.delete(questionId);
-        handleApiError(failure);
-        if (failure.status === 400) toast(failure.message);
+        setSaveState("saved");
+      } finally {
+        flushing.current = null;
       }
-    }
-    setSaveState(unsaved.current.size ? "waiting" : "saved");
+    })();
+    flushing.current = run;
+    return run;
   }, [attempt.attempt_id, handleApiError, toast]);
 
   const saveAnswer = (questionId: string, selected: string[]) => {
@@ -271,7 +286,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
         <div className="exam-title">
           <span className="exam-mode">
             <Icon name={attempt.monitored ? "lock" : "file"} />
-            {attempt.monitored ? "Secure assessment mode" : "Pre-test · baseline"}
+            {attempt.monitored ? (attempt.assessment_type === "PRE_TEST" ? "Secure pre-test mode" : "Secure assessment mode") : "Pre-test · baseline"}
           </span>
           <strong>{attempt.training_title}</strong>
         </div>

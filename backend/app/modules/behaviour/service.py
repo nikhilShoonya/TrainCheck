@@ -1,4 +1,4 @@
-"""Level 3 Behaviour: templates, 30/60/90-day cycles and self-assessment."""
+"""Level 3 Behaviour: templates, the 30-day follow-up cycle and self-assessment."""
 import uuid
 from datetime import datetime, timedelta
 
@@ -18,6 +18,9 @@ from app.models import (
 )
 from app.modules.assessment.scheduling import load_calendar
 
+# The one behaviour follow-up: a self-assessment 30 days after training completion. There are no 60- or
+# 90-day follow-ups; a training either has this follow-up (behaviour_enabled) or none.
+FOLLOWUP_DAYS = 30
 MIN_EXAMPLE_LENGTH = 10
 MAX_TEXT_LENGTH = 1500
 
@@ -37,7 +40,7 @@ def resolve_template(db: Session, training_id: uuid.UUID, function_id: uuid.UUID
 
 
 def create_cycles(db: Session, enrolment: Enrolment, completed_at: datetime) -> int:
-    """Creates follow-ups from the completion date. Interval days are calendar days (provisional)."""
+    """Creates the 30-day follow-up from the completion date (calendar days, provisional)."""
     training = enrolment.training
     if not training.behaviour_enabled:
         return 0
@@ -45,7 +48,7 @@ def create_cycles(db: Session, enrolment: Enrolment, completed_at: datetime) -> 
     if template is None:
         return 0  # The scorecard shows "Not configured". Nothing is invented.
     created = 0
-    for days in sorted(set(training.followup_days or [])):
+    for days in [FOLLOWUP_DAYS] if training.followup_days else []:
         cycle = BehaviourReviewCycle(
             enrolment_id=enrolment.id,
             employee_id=enrolment.employee_id,

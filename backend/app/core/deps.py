@@ -63,21 +63,25 @@ def require_session(request: Request, db: Session = Depends(get_db)) -> CurrentU
     unauthenticated = ApiError(401, "UNAUTHENTICATED", "Please sign in again.")
     if not token:
         raise unauthenticated
-    session = db.scalar(select(UserSession).where(UserSession.session_token_hash == hash_token(token)))
+    # Session, account, employee and roles in one round trip: every request pays this cost.
+    row = db.execute(
+        select(UserSession, UserAccount)
+        .join(UserAccount, UserAccount.id == UserSession.user_account_id)
+        .options(joinedload(UserAccount.employee), joinedload(UserAccount.role_links).joinedload(UserRole.role))
+        .where(UserSession.session_token_hash == hash_token(token))
+    ).unique().first()
     now = utcnow()
     settings = get_settings()
-    if session is None or session.revoked_at is not None or session.expires_at <= now:
+    if row is None:
+        raise unauthenticated
+    session, account = row
+    if session.revoked_at is not None or session.expires_at <= now:
         raise unauthenticated
     if session.last_seen_at + timedelta(minutes=settings.session_idle_minutes) <= now:
         session.revoked_at = now
         db.commit()
         raise unauthenticated
 
-    account = db.scalar(
-        select(UserAccount)
-        .options(joinedload(UserAccount.employee), joinedload(UserAccount.role_links).joinedload(UserRole.role))
-        .where(UserAccount.id == session.user_account_id)
-    )
     if (
         account is None
         or account.account_status != AccountStatus.ACTIVE
@@ -96,10 +100,13 @@ def require_session(request: Request, db: Session = Depends(get_db)) -> CurrentU
 
 
 def require_gate_clear(user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> CurrentUser:
-    from app.modules.assessment.gate import blocking_obligations  # Imported here to avoid an import cycle.
+    from app.modules.assessment.gate import blocking_obligations, feedback_due  # Imported here to avoid an import cycle.
 
     if blocking_obligations(db, user.employee_id):
         raise ApiError(403, "ASSESSMENT_REQUIRED", "Complete your pending assessment before opening this page.")
+    owed = feedback_due(db, user.employee_id)
+    if owed:
+        raise ApiError(403, "FEEDBACK_REQUIRED", "Share your feedback on your last assessment before opening this page.", owed)
     return user
 
 

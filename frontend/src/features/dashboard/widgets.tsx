@@ -70,12 +70,13 @@ export function ImageMetrics({ cards }: { cards: [string, string, ReactNode, str
 }
 
 /** Two kinds of evidence, kept apart. There is no combined score. */
-export function EvidenceTiles({ learning, assessed, behaviour }: { learning: number | null; assessed: number; behaviour: BehaviourMeans | null }) {
+/** `behaviourEnabled` false: Level 3 is switched off on the server, so only Learning evidence is shown. */
+export function EvidenceTiles({ learning, assessed, behaviour, behaviourEnabled = true }: { learning: number | null; assessed: number; behaviour: BehaviourMeans | null; behaviourEnabled?: boolean }) {
   const manager = behaviour?.manager_mean ?? null;
   const self = behaviour?.self_mean ?? null;
   const value = manager ?? self;
   return (
-    <div className="level-tiles two-level">
+    <div className={`level-tiles ${behaviourEnabled ? "two-level" : "one-level"}`}>
       <div className="level-tile learning">
         <Icon name="cap" />
         <h3>L2 Learning</h3>
@@ -91,6 +92,7 @@ export function EvidenceTiles({ learning, assessed, behaviour }: { learning: num
         </strong>
         <span>{learning === null ? "Not collected" : `${assessed} latest results`}</span>
       </div>
+      {behaviourEnabled ? (
       <div className="level-tile behaviour">
         <Icon name="users" />
         <h3>L3 Behaviour</h3>
@@ -106,6 +108,7 @@ export function EvidenceTiles({ learning, assessed, behaviour }: { learning: num
         </strong>
         <span>{value === null ? "Not collected" : manager !== null ? "Manager observations" : "Self-assessments"}</span>
       </div>
+      ) : null}
     </div>
   );
 }

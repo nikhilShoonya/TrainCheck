@@ -5,9 +5,8 @@ Revises: a7c4e19b3d52
 
 Additive only: one nullable column. Existing configurations keep NULL and their current schedule mode.
 """
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = 'c3f81d2a6b90'
 down_revision = 'a7c4e19b3d52'

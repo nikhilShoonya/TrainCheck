@@ -81,6 +81,11 @@ export function ResultPage() {
               <small>%</small>
             </strong>
           </div>
+          {r.submission_reason === "VIOLATION_LIMIT" ? (
+            <p className="notice left">Submitted automatically after {r.violations.length} security violations. Your saved answers were scored.</p>
+          ) : r.submission_reason === "TIME_EXPIRED" ? (
+            <p className="notice left">Time expired. Your saved answers were submitted automatically.</p>
+          ) : null}
           <p>This score is a baseline, not a post-training pass. Training completion will create a separate post-training assessment.</p>
           <Btn kind="wide" onClick={proceed}>
             Return to my workspace <Icon name="arrow" />

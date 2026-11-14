@@ -145,12 +145,12 @@ def employee_history(db: Session, rows: list[Row]) -> Report:
         batch = r.enrolment.batch.name if r.enrolment.batch else "Unassigned"
         if r.pre_attempt:
             a = r.pre_attempt
-            report.rows.append([e.full_name, e.employee_code, t.title, batch, "Pre-test", 1, _percent(a.score_percent), a.result_status, a.submitted_at.strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
+            report.rows.append([e.full_name, e.employee_code, t.title, batch, "Pre-test", 1, _percent(a.score_percent), "Baseline (not pass/fail)", a.submitted_at.strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
         if not r.post_attempts:
             report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", "Not submitted", MISSING, r.result, "Not submitted", ""])
         for a in r.post_attempts:
             report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", a.attempt_number, _percent(a.score_percent), a.result_status, a.submitted_at.strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
-    report.definitions = ["Every submitted attempt is listed. Earlier attempts are never deleted or replaced."]
+    report.definitions = ["Every submitted attempt is listed. Earlier attempts are never deleted or replaced.", "A pre-test is a baseline taken before training. It has no pass or fail."]
     return report
 
 

@@ -1,4 +1,8 @@
-"""Employee assessment APIs. Everything here is on the gate-exempt allowlist except the pre-test start."""
+"""Employee assessment APIs. Everything here is on the gate-exempt allowlist except the pre-test routes.
+
+Pre-tests and post-training assessments run in the same secure environment: system check, full screen
+(when the configuration requires it), acknowledged instructions and browser-level monitoring with violations.
+"""
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -75,8 +79,8 @@ def attempt_view(db: Session, attempt: AssessmentAttempt) -> dict:
         "remaining_seconds": max(0, int((attempt.expires_at - now).total_seconds())),
         "violation_count": attempt.violation_count,
         "violation_limit": snapshot["violation_limit"],
-        "require_fullscreen": snapshot["require_fullscreen"] and attempt.assessment_type == AssessmentType.POST_TEST,
-        "monitored": attempt.assessment_type == AssessmentType.POST_TEST,
+        "require_fullscreen": bool(snapshot["require_fullscreen"]),
+        "monitored": True,  # Pre-tests are monitored like post-training assessments.
         "questions": [attempt_question_view(q) for q in questions],
     }
 
@@ -190,7 +194,7 @@ def get_obligation(obligation_id: uuid.UUID, user: CurrentUser = Depends(require
     item["status"] = obligation.status
     item["active_attempt_id"] = str(active.id) if active else None
     item["violation_limit"] = obligation.config.violation_limit
-    item["require_fullscreen"] = obligation.config.require_fullscreen and obligation.assessment_type == AssessmentType.POST_TEST
+    item["require_fullscreen"] = obligation.config.require_fullscreen
     item["refresher"] = {"text": obligation.training.refresher_text, "url": obligation.training.refresher_url}
     item["total_marks_hint"] = None
     return ok(item)
@@ -206,11 +210,42 @@ def start_attempt(obligation_id: uuid.UUID, body: StartAttemptIn, user: CurrentU
     return ok(attempt_view(db, attempt))
 
 
+def _own_enrolment(db: Session, enrolment_id: uuid.UUID, employee_id: uuid.UUID) -> Enrolment:
+    enrolment = db.get(Enrolment, enrolment_id)
+    if enrolment is None or enrolment.employee_id != employee_id:
+        raise not_found()
+    return enrolment
+
+
+@router.get("/me/pre-tests/{enrolment_id}")
+def get_pre_test(enrolment_id: uuid.UUID, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
+    """The pre-test's rules, shown before it starts (system check, full screen, instructions), and any attempt
+    already running so a refresh or second tab resumes it."""
+    enrolment = _own_enrolment(db, enrolment_id, user.employee_id)
+    training = enrolment.training
+    config = service.active_config(db, enrolment.training_id, AssessmentType.PRE_TEST)
+    obligation = db.scalar(select(AssessmentObligation).where(AssessmentObligation.enrolment_id == enrolment.id, AssessmentObligation.assessment_type == AssessmentType.PRE_TEST))
+    active = next((a for a in obligation.attempts if a.status == AttemptStatus.IN_PROGRESS), None) if obligation else None
+    taken = obligation is not None and obligation.status == ObligationStatus.COMPLETED
+    available = bool(training.pretest_enabled and config is not None and not taken and (enrolment.completion is None or active is not None))
+    return ok(
+        {
+            "enrolment_id": str(enrolment.id),
+            "training_title": training.title,
+            "training_description": training.description,
+            "available": available,
+            "question_count": config.question_count if config else None,
+            "duration_seconds": config.duration_seconds if config else None,
+            "violation_limit": config.violation_limit if config else None,
+            "require_fullscreen": config.require_fullscreen if config else True,
+            "active_attempt_id": str(active.id) if active else None,
+        }
+    )
+
+
 @router.post("/me/pre-tests/{enrolment_id}/attempts")
 def start_pre_test(enrolment_id: uuid.UUID, body: StartAttemptIn, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    enrolment = db.get(Enrolment, enrolment_id)
-    if enrolment is None or enrolment.employee_id != user.employee_id:
-        raise not_found()
+    enrolment = _own_enrolment(db, enrolment_id, user.employee_id)
     if enrolment.completion is not None or not enrolment.training.pretest_enabled:
         raise conflict("PRE_TEST_UNAVAILABLE", "The pre-test can only be taken before training completion, when it is enabled.")
     config = service.active_config(db, enrolment.training_id, AssessmentType.PRE_TEST)

@@ -52,10 +52,12 @@ export interface QueueItem {
 }
 
 export interface AccessState {
-  access_status: "DASHBOARD_ALLOWED" | "ASSESSMENT_REQUIRED";
+  access_status: "DASHBOARD_ALLOWED" | "ASSESSMENT_REQUIRED" | "FEEDBACK_REQUIRED";
   pending_count: number;
   next_action: string;
   queue: QueueItem[];
+  /** The assessment whose required feedback is still owed (FEEDBACK_REQUIRED only). */
+  feedback_due?: { attempt_id: string; obligation_id: string } | null;
 }
 
 export interface Summary {
@@ -69,6 +71,8 @@ export interface Summary {
   not_passed_employees: number;
   needs_retraining_employees: number;
   pending_assessment: number;
+  /** Completed training whose post-test has no result yet (unfinished training is not counted). */
+  awaiting_assessment?: number;
   in_progress: number;
   pass_rate: number | null;
   completion_rate: number | null;

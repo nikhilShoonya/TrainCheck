@@ -76,18 +76,26 @@ export function ProfilePage() {
   const { user } = useSession();
   const toast = useToast();
   const [error, setError] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState(false);
   if (!user) return null;
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = event.currentTarget;
     const values = new FormData(form);
     setError(null);
+    if (values.get("next") !== values.get("confirm")) {
+      setError(new ApiError(400, "VALIDATION_ERROR", "The new password and its confirmation do not match."));
+      return;
+    }
+    setBusy(true);
     try {
       await api.post("/auth/change-password", { current_password: values.get("current"), new_password: values.get("next") });
       toast("Password changed. Your other sessions were signed out.");
       form.reset();
     } catch (e) {
       setError(e as ApiError);
+    } finally {
+      setBusy(false);
     }
   };
   const facts: [string, string | null][] = [
@@ -115,14 +123,16 @@ export function ProfilePage() {
           <strong>Roles:</strong> {user.roles.map((r) => ROLE_LABEL[r]).join(", ")}
         </p>
       </section>
-      <form className="panel" onSubmit={(e) => void submit(e)}>
+      {/* Any edit clears the previous answer, so an old message never describes a new attempt. */}
+      <form className="panel" onSubmit={(e) => void submit(e)} onInput={() => error && setError(null)}>
         <h2>Change password</h2>
         <TextField label="Current password" name="current" type="password" required autoComplete="current-password" />
         <TextField label="New password" name="next" type="password" required minLength={10} autoComplete="new-password" />
+        <TextField label="Confirm new password" name="confirm" type="password" required minLength={10} autoComplete="new-password" />
         <p className="small">Use at least 10 characters with upper-case and lower-case letters and a number.</p>
         {error ? <ErrorPanel error={error} /> : null}
-        <button className="btn primary" type="submit">
-          Change password
+        <button className="btn primary" type="submit" disabled={busy}>
+          {busy ? "Changing…" : "Change password"}
         </button>
       </form>
     </>

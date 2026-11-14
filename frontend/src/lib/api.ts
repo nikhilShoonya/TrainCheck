@@ -27,11 +27,19 @@ export function onApiMutation(listener: MutationListener): void {
   mutationListeners.push(listener);
 }
 
+/** A deliberate full page load, not client navigation: in-memory data from the old session is dropped and
+    the session and gate decision are read again from the server. Router navigation would keep both. */
+export function reloadAt(path: string): void {
+  window.location.href = path;
+}
+
 function handleAccessCodes(error: ApiError): void {
   if (typeof window === "undefined") return;
   const { pathname } = window.location;
-  if (error.code === "UNAUTHENTICATED" && pathname !== "/login") window.location.assign("/login");
-  if (error.code === "ASSESSMENT_REQUIRED" && !pathname.startsWith("/access/")) window.location.assign("/access/assessment-required");
+  if (error.code === "UNAUTHENTICATED" && pathname !== "/login") reloadAt("/login");
+  if (error.code === "ASSESSMENT_REQUIRED" && !pathname.startsWith("/access/")) reloadAt("/access/assessment-required");
+  const owed = (error.details as { attempt_id?: string } | undefined)?.attempt_id;
+  if (error.code === "FEEDBACK_REQUIRED" && owed && !pathname.startsWith("/results/")) reloadAt(`/results/${owed}`);
 }
 
 async function send<T>(method: string, path: string, body?: unknown, form?: FormData): Promise<T> {

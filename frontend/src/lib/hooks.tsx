@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, api } from "./api";
+import { ApiError, api, reloadAt } from "./api";
 import { apiQuery, clearApiCache } from "./query";
 import type { AccessState, User } from "./types";
 
@@ -53,6 +53,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const mine = ++generation.current;
     // A signed-in browser has the readable CSRF cookie, so identity and gate state load together.
     const signedIn = typeof document !== "undefined" && document.cookie.includes("tc_csrf=");
+    if (!signedIn) {
+      // Both session cookies are set and removed together, so without the readable one there is no session:
+      // asking the server would only produce a 401 (and a console error) on every visit to the sign-in page.
+      clearApiCache();
+      setUser(null);
+      setAccess(null);
+      setError(null);
+      setReady(true);
+      return;
+    }
     const load = async () => {
       const [me, state] = signedIn
         ? await Promise.all([api.get<{ user: User }>("/auth/me"), api.get<AccessState>("/me/access-state")])
@@ -109,7 +119,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       await api.post("/auth/logout");
     } finally {
       clearApiCache();
-      window.location.assign("/login");
+      reloadAt("/login"); // A full load, so nothing from the signed-in session stays in memory.
     }
   }, []);
 

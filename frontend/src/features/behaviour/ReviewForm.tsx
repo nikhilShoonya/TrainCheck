@@ -134,7 +134,7 @@ export function ReviewTable({ rows, base, showEmployee, emptyTitle }: { rows: Re
     <DataTable
       headers={[...(showEmployee ? ["Employee"] : []), "Training", "Cycle", "Due", "Status", ""]}
       emptyTitle={emptyTitle}
-      emptyHint="Follow-ups appear 30, 60 and 90 days after training completion."
+      emptyHint="The follow-up appears 30 days after training completion."
       rows={rows.map((r) => [
         ...(showEmployee ? [r.employee_name] : []),
         r.training_title,

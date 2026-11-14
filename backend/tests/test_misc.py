@@ -65,7 +65,8 @@ def _take_pre(db, client, enrolment_id, correct):
     response = client.post(f"/me/pre-tests/{enrolment_id}/attempts", json={"instructions_acknowledged": True})
     assert response.status_code == 200, response.text
     attempt = response.json()["data"]
-    assert attempt["monitored"] is False and attempt["require_fullscreen"] is False
+    # Pre-tests run in the same secure environment as post-training assessments.
+    assert attempt["monitored"] is True and attempt["require_fullscreen"] is True
     answer_with_score(db, client, attempt, correct)
     return submit(client, attempt["attempt_id"])
 

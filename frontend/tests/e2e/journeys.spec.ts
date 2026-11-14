@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ACCOUNTS, answerAll, signIn, startSecureAssessment, submitAssessment } from "./helpers";
+import { ACCOUNTS, answerAll, giveFeedback, signIn, startSecureAssessment, startSecurePreTest, submitAssessment } from "./helpers";
 
 /* The order matters: the first test uses up the employee's first assessment in the seeded data. */
 
@@ -8,7 +8,7 @@ test("no-pending employee reaches the dashboard with two-level evidence only", a
   await expect(page).toHaveURL(/\/employee$/);
   await expect(page.getByRole("heading", { name: /Good Morning, Isha/ })).toBeVisible();
   await expect(page.getByText("L2 Learning")).toBeVisible();
-  await expect(page.getByText("L3 Behaviour")).toBeVisible();
+  await expect(page.getByText("L3 Behaviour")).toHaveCount(0); // Level 3 is switched off (outside the approved scope).
   for (const removed of ["L1 Reaction", "L4 Results", "Feedback (L1)", "Results (L4)", "ROI"]) await expect(page.getByText(removed, { exact: false })).toHaveCount(0);
 });
 
@@ -59,10 +59,11 @@ test("gate blocks direct URLs and APIs, then the secure flow produces a server r
   await submitAssessment(page);
   await expect(page.locator(".score-circle")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Topic performance" })).toBeVisible();
-  await expect(page.getByText(/Reaction|feedback/i)).toHaveCount(0);
+  await expect(page.getByText(/Reaction/i)).toHaveCount(0);
+  await giveFeedback(page); // Required once per assessment before continuing.
 
   // TC-GATE-005: the next assessment in the queue still blocks the workspace.
-  await page.getByRole("button", { name: /Continue/ }).click();
+  await page.getByRole("button", { name: /Continue to next assessment/ }).click();
   await page.waitForURL(/\/access\/assessment-required/);
   await expect(page.getByRole("heading", { name: "Customer Handling" })).toBeVisible();
 });
@@ -103,12 +104,35 @@ test("leaving full screen is a violation, and offline is not", async ({ page, co
   await page.evaluate(() => document.exitFullscreen());
   await page.waitForURL(/\/results\//);
   await expect(page.locator(".result-details")).toContainText("after 3 security violations");
+  await giveFeedback(page);
 
   // The gate is now clear, so the workspace opens instead of returning to a stale gate.
   await page.getByRole("button", { name: /Continue to my workspace/ }).click();
   await page.waitForURL(/\/employee$/);
   await expect(page.locator(".sidebar")).toBeVisible();
   await expect(page.getByRole("heading", { name: /Good Morning, Aarav/ })).toBeVisible();
+});
+
+test("after his assessments the employee takes the two new pre-tests, each offered once", async ({ page }) => {
+  // Runs after the two gate tests above: Aarav's due assessments are done, so the workspace opens.
+  await signIn(page, ACCOUNTS.employee);
+  await expect(page).toHaveURL(/\/employee$/);
+  for (const training of ["Data Privacy & Protection", "Workplace Conduct & Ethics"]) {
+    await page.goto("/employee/trainings");
+    const card = page.locator("article").filter({ hasText: training });
+    await card.getByRole("link", { name: "Take Pre-test" }).click();
+    await expect(page.getByRole("heading", { name: "Optional pre-test" })).toBeVisible();
+    await startSecurePreTest(page);
+    expect(await page.evaluate(() => Boolean(document.fullscreenElement))).toBe(true);
+    await answerAll(page);
+    await submitAssessment(page);
+    await expect(page.getByRole("heading", { name: "Pre-test complete" })).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0); // No feedback form after a pre-test.
+  }
+  await page.goto("/employee/trainings");
+  for (const training of ["Data Privacy & Protection", "Workplace Conduct & Ethics"]) {
+    await expect(page.locator("article").filter({ hasText: training }).getByRole("link", { name: "Take Pre-test" })).toHaveCount(0); // Offered once.
+  }
 });
 
 for (const account of ["manager", "hr"] as const) {

@@ -5,9 +5,8 @@ Revises: d5a2e7c91f04
 
 Additive only: one new table, one row per assessment obligation.
 """
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = 'f2b6d8a4c1e9'
 down_revision = 'd5a2e7c91f04'

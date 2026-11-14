@@ -124,6 +124,16 @@ def promote_due_retakes(db: Session, employee_id: uuid.UUID, now: datetime) -> N
             obligation.due_at = now
 
 
+def finished_attempts(obligation: AssessmentObligation) -> int:
+    """Attempts that produced a result. An attempt still running is not a previous attempt."""
+    return sum(1 for a in obligation.attempts if a.status not in (AttemptStatus.CANCELLED, AttemptStatus.IN_PROGRESS))
+
+
+def refresher_required(obligation: AssessmentObligation) -> bool:
+    """A refresher is owed only before a retake: after a finished attempt, and not while one is running."""
+    return obligation.status != ObligationStatus.IN_PROGRESS and finished_attempts(obligation) > 0 and obligation.refresher_acknowledged_at is None
+
+
 def queue_item(obligation: AssessmentObligation, position: int) -> dict:
     config = obligation.config
     return {
@@ -138,25 +148,55 @@ def queue_item(obligation: AssessmentObligation, position: int) -> dict:
         "attempts_used": sum(1 for a in obligation.attempts if a.status != AttemptStatus.CANCELLED),
         "due_at": iso(obligation.due_at),
         "in_progress": obligation.status == ObligationStatus.IN_PROGRESS,
-        "refresher_required": bool(obligation.attempts) and obligation.refresher_acknowledged_at is None,
+        "refresher_required": refresher_required(obligation),
         "queue_order": position,
     }
 
 
+def feedback_due(db: Session, employee_id: uuid.UUID) -> dict | None:
+    """The oldest post-training assessment whose feedback is still owed (asked once per assessment).
+
+    Feedback is required, so an owed form closes the workspace exactly like a due assessment does; it is
+    collected on that assessment's result page. Due assessments come first (see access_state).
+    """
+    from app.models import AssessmentFeedback
+
+    owed = db.execute(
+        select(AssessmentAttempt.id, AssessmentAttempt.obligation_id)
+        .join(AssessmentObligation, AssessmentObligation.id == AssessmentAttempt.obligation_id)
+        .where(
+            AssessmentAttempt.employee_id == employee_id,
+            AssessmentAttempt.assessment_type == AssessmentType.POST_TEST,
+            AssessmentAttempt.result_status.is_not(None),
+            ~select(AssessmentFeedback.id).where(AssessmentFeedback.obligation_id == AssessmentAttempt.obligation_id).exists(),
+        )
+        .order_by(AssessmentAttempt.submitted_at.desc())
+        .limit(1)
+    ).first()
+    return {"attempt_id": str(owed.id), "obligation_id": str(owed.obligation_id)} if owed else None
+
+
 def access_state(db: Session, employee_id: uuid.UUID) -> dict:
     now = utcnow()
-    queue = blocking_obligations(db, employee_id, now)
-    unavailable = unavailable_obligations(db, employee_id, now)
+    finalise_expired_attempts(db, employee_id, now)
+    due = due_post_tests(db, employee_id, now)  # Read once; split into startable and unavailable below.
+    cache: dict = {}
+    queue = [o for o in due if obligation_startable(db, o, cache)]
+    unavailable = [o for o in due if not obligation_startable(db, o, cache)]
     if unavailable:
         alert_unavailable(db, unavailable, now)
+    feedback = None if queue else feedback_due(db, employee_id)
     db.commit()  # Persist any timeout finalised above and any alert.
     held = [{"obligation_id": str(o.id), "training_title": o.training.title, "reason": "QUESTION_POOL_INSUFFICIENT"} for o in unavailable]
-    if not queue:
-        return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held}
-    return {
-        "access_status": "ASSESSMENT_REQUIRED",
-        "pending_count": len(queue),
-        "next_action": "COMPLETE_ASSESSMENT",
-        "queue": [queue_item(o, i + 1) for i, o in enumerate(queue)],
-        "unavailable": held,
-    }
+    if queue:
+        return {
+            "access_status": "ASSESSMENT_REQUIRED",
+            "pending_count": len(queue),
+            "next_action": "COMPLETE_ASSESSMENT",
+            "queue": [queue_item(o, i + 1) for i, o in enumerate(queue)],
+            "unavailable": held,
+            "feedback_due": None,
+        }
+    if feedback:
+        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback}
+    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None}

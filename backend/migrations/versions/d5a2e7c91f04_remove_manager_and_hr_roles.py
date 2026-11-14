@@ -13,9 +13,8 @@ Downgrade recreates the two role rows only. Which accounts held them is not rest
 """
 import uuid
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = 'd5a2e7c91f04'
 down_revision = 'c3f81d2a6b90'

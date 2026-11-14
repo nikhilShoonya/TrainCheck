@@ -80,18 +80,30 @@ def test_set_role_grants_access(world, db, client_for):
 
 
 def test_seed_loads_every_demo_scenario(db):
-    """The synthetic data set required by the roadmap: three trainings, 30 questions, ten employees and known states."""
+    """The synthetic data set: five trainings, 50 questions, the demo employees and their known states."""
     from app.core.clock import utcnow
     from app.models import AssessmentAttempt, Question, Training
     from app.modules.assessment.gate import blocking_obligations
     from app.seed import seed
 
     seed(db, utcnow())
-    assert len(db.scalars(select(Training)).all()) == 3
-    assert len(db.scalars(select(Question)).all()) == 30
+    assert len(db.scalars(select(Training)).all()) == 5
+    assert len(db.scalars(select(Question)).all()) == 50
     code = lambda c: db.scalar(select(Employee).where(Employee.employee_code == c))  # noqa: E731
     assert len(blocking_obligations(db, code("E001").id)) == 2
     assert blocking_obligations(db, code("E002").id) == []
+    # Every employee has the two newest trainings (T004, T005) assigned and their optional pre-tests open.
+    from app.core.enums import AssessmentType
+    from app.models import Enrolment
+    from app.modules.assessment.service import active_config
+
+    for employee in db.scalars(select(Employee)):
+        open_pre_tests = sorted(
+            e.training.training_code
+            for e in db.scalars(select(Enrolment).where(Enrolment.employee_id == employee.id))
+            if e.completion is None and e.training.training_code in ("T004", "T005") and active_config(db, e.training_id, AssessmentType.PRE_TEST) and not e.obligations
+        )
+        assert open_pre_tests == ["T004", "T005"], employee.employee_code
     outcomes = {a.result_status for a in db.scalars(select(AssessmentAttempt))}
     assert outcomes == {"PASSED", "NOT_PASSED"}
     flagged = db.scalars(select(AssessmentAttempt).where(AssessmentAttempt.employee_id == code("E004").id)).all()

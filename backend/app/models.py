@@ -227,7 +227,7 @@ class Training(Base, Timestamped):
     refresher_url: Mapped[str | None] = mapped_column(String(500))
     pretest_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     behaviour_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    followup_days: Mapped[list[int]] = mapped_column(JSON, default=lambda: [30, 60, 90])
+    followup_days: Mapped[list[int]] = mapped_column(JSON, default=lambda: [30])  # Only a 30-day follow-up exists.
     item_minimum_sample: Mapped[int] = mapped_column(Integer, default=10)
     owner: Mapped[Employee | None] = relationship()
     trainer: Mapped[Trainer | None] = relationship()

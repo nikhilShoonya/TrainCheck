@@ -36,6 +36,8 @@ COMPETENCIES = [
     ("Process accuracy and discipline", "Completes operational steps correctly and on time."),
     ("KYC procedure adherence", "Follows each verification step and keeps a traceable record."),
     ("Security practices", "Protects accounts and data and reports suspicious activity."),
+    ("Data protection practices", "Collects, uses and shares personal data only as approved, and keeps it secure."),
+    ("Professional conduct and ethics", "Acts with integrity, treats people fairly and raises concerns through the right channel."),
 ]
 
 TRAININGS = [
@@ -62,6 +64,23 @@ TRAININGS = [
         "description": "Recognise threats and protect customer and company information.",
         "pretest": True,
         "competencies": ["Security practices", "Recognises and escalates exceptions"],
+    },
+    # Assigned to every employee with completion not recorded, so each has two pre-tests to take (seed.py).
+    {
+        "code": "T004",
+        "title": "Data Privacy & Protection",
+        "category": "Data protection",
+        "description": "Handle personal data lawfully and securely, from collection to deletion.",
+        "pretest": True,
+        "competencies": ["Data protection practices", "Recognises and escalates exceptions"],
+    },
+    {
+        "code": "T005",
+        "title": "Workplace Conduct & Ethics",
+        "category": "Conduct",
+        "description": "Act with integrity, avoid conflicts of interest and speak up through the right channels.",
+        "pretest": True,
+        "competencies": ["Professional conduct and ethics", "Recognises and escalates exceptions"],
     },
 ]
 
@@ -105,10 +124,34 @@ QUESTION_BANKS = {
         ("Data safety", "You suspect that work data was exposed. What should you do?", "Report promptly using the incident process", "Delete all evidence", "Wait indefinitely", "Discuss details publicly"),
         ("Access", "Why are individual accounts useful?", "They support appropriate access and accountability", "They allow passwords to be shared", "They remove the need for permissions", "They guarantee no mistakes"),
     ],
+    "T004": [
+        ("Collection", "A form asks customers for more personal details than the task needs. What should you do?", "Collect only the details needed for the stated purpose", "Collect everything in case it is useful later", "Ask for the customer's passwords too", "Copy details from another customer"),
+        ("Sharing", "A colleague from another team asks for a customer's phone number for a personal reason. What is appropriate?", "Decline and share data only for an approved business need", "Send it by personal message", "Post it in a group chat", "Give it if they promise to delete it"),
+        ("Storage", "Where should files with customer personal data be kept?", "In approved, access-controlled work systems", "On a personal laptop", "In a public cloud folder", "In email drafts"),
+        ("Rights", "A customer asks what personal data we hold about them. What should you do?", "Follow the approved process for data access requests", "Refuse without explanation", "Send the full database", "Ignore the request"),
+        ("Breaches", "You emailed personal data to the wrong recipient. What next?", "Report it immediately through the incident process", "Hope nobody notices", "Delete your sent folder", "Ask the recipient to keep it"),
+        ("Retention", "When is personal data no longer kept?", "When the approved retention period ends, it is deleted securely", "Never; keep it forever", "When storage runs out", "Whenever an employee decides"),
+        ("Sharing", "Which is the safest way to send a document with personal data to an approved partner?", "Use the approved secure transfer channel", "Use a personal email account", "Upload it to a public link", "Print and post it unsealed"),
+        ("Collection", "Why should customers be told how their data is used?", "So processing is transparent and fair", "So they stop asking questions", "It is never needed", "Only when they complain"),
+        ("Breaches", "Personal data must be reported promptly if it may have been exposed.", "True", "False"),
+        ("Storage", "A printed customer list is left on a shared printer. What should you do?", "Collect it and handle it under the clean-desk and disposal rules", "Leave it for its owner", "Use it as scrap paper", "Pin it on the notice board"),
+    ],
+    "T005": [
+        ("Integrity", "A supplier offers you an expensive gift during a contract review. What should you do?", "Decline or declare it under the gifts policy", "Accept it quietly", "Ask for a larger gift", "Share it with your team without declaring it"),
+        ("Conflicts of interest", "A relative applies to a vendor contract you are evaluating. What is appropriate?", "Declare the conflict and step back from the decision", "Score them higher", "Say nothing", "Ask them to change their name"),
+        ("Respect", "A colleague is repeatedly excluded and mocked in meetings. What should you do?", "Raise it through the approved reporting channel", "Join in", "Ignore it", "Share it on social media"),
+        ("Speaking up", "You suspect a policy breach but are unsure. What is the right step?", "Raise the concern through the speak-up channel", "Wait until you are certain", "Investigate alone and confront people", "Tell customers"),
+        ("Integrity", "Which is an example of honest reporting?", "Recording results accurately, including mistakes", "Rounding figures to meet a target", "Leaving out problems", "Changing dates to avoid follow-up"),
+        ("Respect", "How should disagreements with colleagues be handled?", "Professionally, focusing on facts and solutions", "By shouting", "By excluding them", "By complaining publicly"),
+        ("Conflicts of interest", "Why should conflicts of interest be declared?", "So decisions stay fair and can be trusted", "To get a promotion", "It is optional", "To delay work"),
+        ("Speaking up", "What protection applies when you raise a concern in good faith?", "You are protected from retaliation under the policy", "You may be disciplined", "You must stay anonymous", "Nothing protects you"),
+        ("Integrity", "A manager asks you to backdate a record to meet an audit deadline. What should you do?", "Decline and raise the request through the proper channel", "Backdate it as asked", "Delete the record", "Ask a colleague to do it"),
+        ("Respect", "Which behaviour supports an inclusive workplace?", "Listening to different views and treating everyone fairly", "Making jokes about colleagues", "Sharing private information", "Ignoring new team members"),
+    ],
 }
 
 # Question position (1-based) whose type is not plain single choice. Same variety as the prototype.
-SPECIAL_TYPES = {("T001", 9): "TRUE_FALSE", ("T002", 9): "MCQ_MULTIPLE", ("T003", 9): "SCENARIO"}
+SPECIAL_TYPES = {("T001", 9): "TRUE_FALSE", ("T002", 9): "MCQ_MULTIPLE", ("T003", 9): "SCENARIO", ("T004", 9): "TRUE_FALSE", ("T005", 9): "SCENARIO"}
 
 # name, training code or None, function code or None, [(competency, prompt)]
 BEHAVIOUR_TEMPLATES = [

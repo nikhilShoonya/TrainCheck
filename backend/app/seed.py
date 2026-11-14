@@ -262,6 +262,10 @@ def _pre_test(db: Session, enrolment: Enrolment, score: int, at: datetime, rng: 
     _take(db, obligation, score, at, rng)
 
 
+# Trainings assigned to every employee for their optional pre-test (see the end of _scenarios).
+NEW_PRE_TEST_TRAININGS = ("T004", "T005")
+
+
 def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
     e, t = org["employees"], catalogue["trainings"]
     rng = random.Random(20261105)
@@ -277,7 +281,6 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
     record_completion(db, done, now - timedelta(days=65), "MANUAL", None)
     _take(db, _post(db, done), 90, now - timedelta(days=64), rng)
     _review(db, done, 30, "SELF", 3, e["E002"], now - timedelta(days=34))
-    _review(db, done, 60, "SELF", 4, e["E002"], now - timedelta(days=4))
     second = _enrol(db, e["E002"], t["T002"], old)
     record_completion(db, second, now - timedelta(days=20), "MANUAL", None)
     _take(db, _post(db, second), 80, now - timedelta(days=19), rng)
@@ -322,6 +325,12 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
 
     # E010: assigned only; completion not yet recorded.
     _enrol(db, e["E010"], t["T002"], now - timedelta(days=3))
+
+    # Every employee: the two newest trainings are assigned with completion not yet recorded, so each has two
+    # optional pre-tests on My Trainings once nothing else (a due assessment, owed feedback) comes first.
+    for employee in e.values():
+        for code in NEW_PRE_TEST_TRAININGS:
+            _enrol(db, employee, t[code], now - timedelta(days=1))
     db.flush()
 
 

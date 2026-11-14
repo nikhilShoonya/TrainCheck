@@ -1,10 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import { FocusShell } from "@/components/shell/AppShell";
-import { HOME } from "@/components/shell/nav";
+import { landingPath } from "@/components/shell/nav";
 import { Btn, ErrorPanel, Loading, Metrics } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
@@ -14,8 +14,27 @@ import { ExamView } from "./ExamView";
 import { enterFullscreen, isFullscreen, runSystemCheck, systemCheckPassed, type Check } from "./monitor";
 
 const STEPS = ["System check", "Full screen", "Instructions", "Assessment"];
+const DETAIL_RETRY_DELAYS_MS = [700, 2000, 4000];
+const minutesLabel = (seconds: number) => {
+  const m = Math.round(seconds / 60);
+  return `${m} minute${m === 1 ? "" : "s"}`;
+};
 const STATUS: Record<Check["status"], [string, string]> = { pass: ["Ready", "check"], fail: ["Action needed", "x"], warn: ["Advisory", "alert"], info: ["Not applicable", "help"] };
 const CHECK_ICONS: Record<string, string> = { browser: "globe", javascript: "code", internet: "wifi", application: "monitor", storage: "storage", fullscreen: "maximize", screen: "monitor", compatibility: "shield" };
+
+/** Retries a load quietly after a momentary database or network hiccup (status 0 or 5xx). */
+async function withRetry<T>(load: () => Promise<T>, alive: () => boolean): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await load();
+    } catch (e) {
+      const failure = e as ApiError;
+      const transient = failure.status === 0 || failure.status >= 500;
+      if (!transient || attempt >= DETAIL_RETRY_DELAYS_MS.length || !alive()) throw failure;
+      await new Promise((resolve) => setTimeout(resolve, DETAIL_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
 
 function Stage({ step, children }: { step: number; children: React.ReactNode }) {
   return (
@@ -38,65 +57,55 @@ function Stage({ step, children }: { step: number; children: React.ReactNode }) 
   );
 }
 
-type Item = AccessState["queue"][number];
-type Screen = "gate" | "check" | "fullscreen" | "instructions" | "resume" | "exam";
+/* ---------- The secure start, shared by post-training assessments and pre-tests ---------- */
 
-interface Detail extends Item {
-  active_attempt_id: string | null;
-  violation_limit: number;
+type SecureScreen = "check" | "fullscreen" | "instructions" | "resume" | "exam";
+
+interface SecureRules {
   require_fullscreen: boolean;
-  refresher: { text: string | null; url: string | null };
+  violation_limit: number;
 }
 
-export function GateFlow() {
-  const router = useRouter();
-  const { user, ready, access, refresh } = useSession();
-  const [screen, setScreen] = useState<Screen>("gate");
-  const [detail, setDetail] = useState<Detail | null>(null);
-  const [attempt, setAttempt] = useState<AttemptView | null>(null);
+interface SecureStartProps {
+  /** "assessment" or "pre-test": used in headings and rules. */
+  noun: string;
+  trainingTitle: string;
+  facts: [string, string, string | number][];
+  /** Null while the rules are loading: Continue waits, so the full-screen step can never be skipped. */
+  rules: SecureRules | null;
+  /** An attempt already running (refresh, second tab): resumed in full screen instead of starting again. */
+  running: AttemptView | null;
+  start: () => Promise<AttemptView>;
+  onStartFailed: (error: ApiError) => void;
+}
+
+/** System check → full screen (when required) → acknowledged instructions → the monitored exam. */
+function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStartFailed }: SecureStartProps) {
+  const [screen, setScreen] = useState<SecureScreen>(running ? "resume" : "check");
+  const [attempt, setAttempt] = useState<AttemptView | null>(running);
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [fullscreenError, setFullscreenError] = useState("");
-  const [error, setError] = useState<ApiError | null>(null);
-  const item = access?.queue[0];
+  const requireFullscreen = rules?.require_fullscreen ?? true; // Assumed until the rules are known.
+  const limit = rules?.violation_limit ?? 3;
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
 
   useEffect(() => {
-    if (!ready) return;
-    if (!user) router.replace("/login");
-    else if (access && access.access_status !== "ASSESSMENT_REQUIRED") router.replace(HOME[user.primary_role]);
-  }, [ready, user, access, router]);
-
-  useEffect(() => {
-    if (!item) return;
-    let current = true;
-    api
-      .get<Detail>(`/me/assessment-obligations/${item.obligation_id}`)
-      .then((d) => {
-        if (!current) return;
-        setDetail(d);
-        // A refresh or new tab during an attempt must re-enter full screen to resume (BR §6.5).
-        if (d.active_attempt_id) {
-          return api.get<AttemptView>(`/attempts/${d.active_attempt_id}`).then((a) => {
-            if (!current) return;
-            setAttempt(a);
-            if (a.status === "IN_PROGRESS") setScreen("resume");
-            else router.replace(`/results/${a.attempt_id}`);
-          });
-        }
-      })
-      .catch((e) => current && setError(e as ApiError));
+    if (running) return;
+    let alive = true;
+    void runSystemCheck(true).then((result) => alive && setChecks(result));
     return () => {
-      current = false;
+      alive = false;
     };
-  }, [item, router]);
+  }, [running]);
 
-  const loadChecks = useCallback(async () => {
+  const retryChecks = async () => {
     setChecks(null);
-    setChecks(await runSystemCheck(detail?.require_fullscreen ?? true));
-  }, [detail?.require_fullscreen]);
+    setChecks(await runSystemCheck(requireFullscreen));
+  };
 
-  const goFullscreen = async (next: Screen) => {
+  const goFullscreen = async (next: SecureScreen) => {
     setFullscreenError("");
     const problem = await enterFullscreen();
     if (problem) setFullscreenError(problem);
@@ -104,41 +113,23 @@ export function GateFlow() {
   };
 
   const begin = async () => {
-    if (!item) return;
-    if (detail?.require_fullscreen && !isFullscreen()) {
-      setFullscreenError("Full screen was turned off before the assessment started. Enter full screen again.");
+    if (requireFullscreen && !isFullscreen()) {
+      setFullscreenError(`Full screen was turned off before the ${noun} started. Enter full screen again.`);
       setScreen("fullscreen");
       return;
     }
     setBusy(true);
-    setError(null);
     try {
-      setAttempt(await api.post<AttemptView>(`/assessment-obligations/${item.obligation_id}/attempts`, { instructions_acknowledged: true }));
+      setAttempt(await start());
       setScreen("exam");
     } catch (e) {
-      setError(e as ApiError);
-      setScreen("gate");
+      onStartFailed(e as ApiError);
     } finally {
       setBusy(false);
     }
   };
 
-  const acknowledge = async () => {
-    if (!item) return;
-    setBusy(true);
-    try {
-      await api.post(`/assessment-obligations/${item.obligation_id}/refresher-acknowledgement`);
-      await refresh();
-    } catch (e) {
-      setError(e as ApiError);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!ready || !user || !access) return <Loading label="Checking your access…" />;
   if (screen === "exam" && attempt) return <ExamView initial={attempt} />;
-  if (!item) return <Loading label="Opening your workspace…" />;
 
   if (screen === "check") {
     const passed = systemCheckPassed(checks);
@@ -146,7 +137,7 @@ export function GateFlow() {
     return (
       <Stage step={0}>
         <h1 tabIndex={-1}>System check</h1>
-        <p className="lead">Before the timer starts, we confirm that this browser can run the assessment and reach TrainCheck to save your answers.</p>
+        <p className="lead">Before the timer starts, we confirm that this browser can run the {noun} and reach TrainCheck to save your answers.</p>
         <ul className="check-list" aria-busy={!checks} aria-live="polite">
           {checks
             ? checks.map((c) => (
@@ -190,11 +181,12 @@ export function GateFlow() {
           </div>
         ) : null}
         <div className="exam-stage-actions">
-          <Btn onClick={() => void loadChecks()}>
+          <Btn onClick={() => void retryChecks()}>
             <Icon name="refresh" /> Retry check
           </Btn>
-          <Btn kind="primary" disabled={!passed} onClick={() => setScreen(detail?.require_fullscreen ? "fullscreen" : "instructions")}>
-            Continue <Icon name="arrow" />
+          {/* Waits for the rules: before they arrive, the full-screen step could be skipped by mistake. */}
+          <Btn kind="primary" disabled={!passed || !rules} onClick={() => rules && setScreen(rules.require_fullscreen ? "fullscreen" : "instructions")}>
+            {rules ? "Continue" : `Loading ${noun}…`} <Icon name="arrow" />
           </Btn>
         </div>
         <p className="small">Checks use this browser&apos;s own capabilities and a request to TrainCheck only. No speed test is run.</p>
@@ -213,10 +205,10 @@ export function GateFlow() {
         <p className="lead">
           {resume ? (
             <>
-              Your <strong>{item.training_title}</strong> attempt is still in progress. The timer kept running and {clock(attempt.remaining_seconds)} remain. Your saved answers are waiting.
+              Your <strong>{trainingTitle}</strong> {noun} is still in progress. The timer kept running and {clock(attempt.remaining_seconds)} remain. Your saved answers are waiting.
             </>
           ) : (
-            "This assessment must be taken in full-screen mode. Select the button below; your browser may ask you to confirm."
+            `This ${noun} must be taken in full-screen mode. Select the button below; your browser may ask you to confirm.`
           )}
         </p>
         {fullscreenError ? (
@@ -232,70 +224,157 @@ export function GateFlow() {
             <Icon name="maximize" /> {resume ? "Enter full screen and resume" : "Enter full screen"}
           </Btn>
         </div>
-        <p className="small centered">Leaving full screen during the assessment is recorded as a security violation. {detail?.violation_limit ?? 3} violations submit the assessment automatically.</p>
+        <p className="small centered">
+          Leaving full screen during the {noun} is recorded as a security violation. {limit} violations submit the {noun} automatically.
+        </p>
       </Stage>
     );
   }
 
-  if (screen === "instructions") {
-    const limit = detail?.violation_limit ?? 3;
-    const facts: [string, string, string | number][] = [
-      ["clipboard", "Assessment", item.training_title],
-      ["file", "Questions", item.question_count],
-      ["clock", "Duration", `${Math.round(item.duration_seconds / 60)} minutes`],
-      ["target", "Pass mark", `${item.pass_mark_percent}% or higher`],
-      ["refresh", "Attempt", `${item.attempts_used + 1} of ${item.max_attempts}`],
-    ];
-    const rules: [string, string][] = [
-      ["Navigation", "Questions appear one at a time. Use Previous, Next or the question navigator. You can change answers until you submit."],
-      ["Mark for review", "Flag any question to revisit later. Marking does not affect your score."],
-      ["Saving", "Each answer is saved to the server as soon as you select it. A refresh or lost connection does not lose saved answers."],
-      ["Timer", "The timer starts when you select Start assessment. It keeps running if you refresh, close the tab or lose connection. When time runs out, saved answers are submitted automatically."],
-      ["Full screen", "Stay in full screen until you submit. Questions are hidden while full screen is off."],
-      ["Tabs and windows", "Do not switch tabs, open other windows or move focus away from this window."],
-      ["Restricted actions", "Copy, cut, paste, the right-click menu and browser back navigation are disabled during the assessment."],
-      ["Violation policy", `Each security event is a violation. Violation 1 shows a warning, violation ${limit - 1} a final warning, and violation ${limit} submits the assessment automatically. Losing your internet connection is not a violation.`],
-      ["Automatic submission", "The assessment is submitted automatically when time expires or the violation limit is reached. Unanswered questions receive no marks. Violations do not change your score."],
-      ["Monitoring", "Browser-level, best-effort monitoring records only the event type and time. No camera, screen recording or keystroke capture is used."],
-    ];
-    return (
-      <Stage step={2}>
-        <h1 tabIndex={-1}>Assessment instructions</h1>
-        <p className="lead">Read these rules before you start. The timer begins only when you select Start assessment.</p>
-        <div className="instructions-grid">
-          <dl className="instruction-facts">
-            {facts.map(([icon, label, value]) => (
-              <div key={label}>
-                <dt>
-                  <Icon name={icon} />
-                  {label}
-                </dt>
-                <dd>{value}</dd>
-              </div>
+  const rulesList: [string, string][] = [
+    ["Navigation", "Questions appear one at a time. Use Previous, Next or the question navigator. You can change answers until you submit."],
+    ["Mark for review", "Flag any question to revisit later. Marking does not affect your score."],
+    ["Saving", "Each answer is saved to the server as soon as you select it. A refresh or lost connection does not lose saved answers."],
+    ["Timer", `The timer starts when you select Start ${noun}. It keeps running if you refresh, close the tab or lose connection. When time runs out, saved answers are submitted automatically.`],
+    ...(requireFullscreen ? ([["Full screen", "Stay in full screen until you submit. Questions are hidden while full screen is off."]] as [string, string][]) : []),
+    ["Tabs and windows", "Do not switch tabs, open other windows or move focus away from this window."],
+    ["Restricted actions", `Copy, cut, paste, the right-click menu and browser back navigation are disabled during the ${noun}.`],
+    ["Violation policy", `Each security event is a violation. Violation 1 shows a warning, violation ${limit - 1} a final warning, and violation ${limit} submits the ${noun} automatically. Losing your internet connection is not a violation.`],
+    ["Automatic submission", `The ${noun} is submitted automatically when time expires or the violation limit is reached. Unanswered questions receive no marks. Violations do not change your score.`],
+    ["Monitoring", "Browser-level, best-effort monitoring records only the event type and time. No camera, screen recording or keystroke capture is used."],
+  ];
+  return (
+    <Stage step={2}>
+      <h1 tabIndex={-1}>{Noun} instructions</h1>
+      <p className="lead">Read these rules before you start. The timer begins only when you select Start {noun}.</p>
+      <div className="instructions-grid">
+        <dl className="instruction-facts">
+          {facts.map(([icon, label, value]) => (
+            <div key={label}>
+              <dt>
+                <Icon name={icon} />
+                {label}
+              </dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+        <section className="instruction-rules" aria-labelledby="rules-title">
+          <h2 id="rules-title">
+            <Icon name="shield" /> Important rules
+          </h2>
+          <ul>
+            {rulesList.map(([label, text]) => (
+              <li key={label}>
+                <strong>{label}.</strong> {text}
+              </li>
             ))}
-          </dl>
-          <section className="instruction-rules" aria-labelledby="rules-title">
-            <h2 id="rules-title">
-              <Icon name="shield" /> Important rules
-            </h2>
-            <ul>
-              {rules.map(([label, text]) => (
-                <li key={label}>
-                  <strong>{label}.</strong> {text}
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
-        <div className="exam-stage-actions split">
-          <label className="ack-line">
-            <input type="checkbox" name="exam-ack" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I have read and understood the instructions.
-          </label>
-          <Btn kind="primary" large id="exam-begin" disabled={!ack || busy} onClick={() => void begin()}>
-            {busy ? "Starting…" : "Start assessment"} <Icon name="arrow" />
-          </Btn>
-        </div>
-      </Stage>
+          </ul>
+        </section>
+      </div>
+      <div className="exam-stage-actions split">
+        <label className="ack-line">
+          <input type="checkbox" name="exam-ack" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I have read and understood the instructions.
+        </label>
+        <Btn kind="primary" large id="exam-begin" disabled={!ack || busy} onClick={() => void begin()}>
+          {busy ? "Starting…" : `Start ${noun}`} <Icon name="arrow" />
+        </Btn>
+      </div>
+    </Stage>
+  );
+}
+
+/* ---------- Post-training assessment gate ---------- */
+
+type Item = AccessState["queue"][number];
+
+interface Detail extends Item {
+  active_attempt_id: string | null;
+  violation_limit: number;
+  require_fullscreen: boolean;
+  refresher: { text: string | null; url: string | null };
+}
+
+export function GateFlow() {
+  const router = useRouter();
+  const { user, ready, access, refresh } = useSession();
+  const [secure, setSecure] = useState(false);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [running, setRunning] = useState<AttemptView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const item = access?.queue[0];
+
+  useEffect(() => {
+    if (!ready) return;
+    if (!user) router.replace("/login");
+    else if (access && access.access_status !== "ASSESSMENT_REQUIRED") router.replace(landingPath(user, access));
+  }, [ready, user, access, router]);
+
+  useEffect(() => {
+    if (!item) return;
+    let current = true;
+    // Without the detail the screen cannot know whether an attempt is already running, so a hiccup is retried
+    // quietly instead of falling back to the start screen.
+    withRetry(async () => {
+      const d = await api.get<Detail>(`/me/assessment-obligations/${item.obligation_id}`);
+      // A refresh or new tab during an attempt must re-enter full screen to resume (BR §6.5).
+      const attempt = d.active_attempt_id ? await api.get<AttemptView>(`/attempts/${d.active_attempt_id}`) : null;
+      return { d, attempt };
+    }, () => current)
+      .then(({ d, attempt }) => {
+        if (!current) return;
+        setDetail(d);
+        if (attempt) {
+          if (attempt.status === "IN_PROGRESS") {
+            setRunning(attempt);
+            setSecure(true);
+          } else router.replace(`/results/${attempt.attempt_id}`);
+        }
+      })
+      .catch((e) => current && setError(e as ApiError));
+    return () => {
+      current = false;
+    };
+  }, [item, router]);
+
+  const acknowledge = async () => {
+    if (!item) return;
+    setBusy(true);
+    try {
+      await api.post(`/assessment-obligations/${item.obligation_id}/refresher-acknowledgement`);
+      await refresh();
+    } catch (e) {
+      setError(e as ApiError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!ready || !user || !access) return <Loading label="Checking your access…" />;
+  if (!item) return <Loading label="Opening your workspace…" />;
+
+  if (secure) {
+    return (
+      <SecureStart
+        key={running?.attempt_id ?? "new"}
+        noun="assessment"
+        trainingTitle={item.training_title}
+        rules={detail}
+        running={running}
+        facts={[
+          ["clipboard", "Assessment", item.training_title],
+          ["file", "Questions", item.question_count],
+          ["clock", "Duration", minutesLabel(item.duration_seconds)],
+          ["target", "Pass mark", `${item.pass_mark_percent}% or higher`],
+          ["refresh", "Attempt", `${item.attempts_used + 1} of ${item.max_attempts}`],
+        ]}
+        start={() => api.post<AttemptView>(`/assessment-obligations/${item.obligation_id}/attempts`, { instructions_acknowledged: true })}
+        onStartFailed={(e) => {
+          setError(e);
+          setSecure(false);
+        }}
+      />
     );
   }
 
@@ -344,9 +423,8 @@ export function GateFlow() {
           <Btn
             kind="wide"
             onClick={() => {
-              setAck(false);
-              setScreen("check");
-              void loadChecks();
+              setError(null);
+              setSecure(true);
             }}
           >
             Start assessment <Icon name="arrow" />
@@ -368,33 +446,136 @@ export function GateFlow() {
   );
 }
 
-/** Optional pre-test. Records a baseline, is not monitored and never blocks login. */
+/* ---------- Pre-test ---------- */
+
+interface PreTestInfo {
+  enrolment_id: string;
+  training_title: string;
+  training_description: string | null;
+  available: boolean;
+  question_count: number | null;
+  duration_seconds: number | null;
+  violation_limit: number | null;
+  require_fullscreen: boolean;
+  active_attempt_id: string | null;
+}
+
+/** Optional pre-test before training. Records a baseline and never blocks sign-in, but it is taken in the same
+ *  secure environment as the post-training assessment: system check, full screen, instructions, monitoring. */
 export function PreTestFlow({ enrolmentId }: { enrolmentId: string }) {
   const router = useRouter();
-  const [attempt, setAttempt] = useState<AttemptView | null>(null);
+  const [info, setInfo] = useState<PreTestInfo | null>(null);
+  const [running, setRunning] = useState<AttemptView | null>(null);
+  const [secure, setSecure] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
-  const [busy, setBusy] = useState(false);
-  const start = async () => {
-    setBusy(true);
-    try {
-      setAttempt(await api.post<AttemptView>(`/me/pre-tests/${enrolmentId}/attempts`, { instructions_acknowledged: true }));
-    } catch (e) {
-      setError(e as ApiError);
-      setBusy(false);
-    }
-  };
-  if (attempt) return <ExamView initial={attempt} />;
+  const [loadError, setLoadError] = useState<ApiError | null>(null);
+  const [attemptLoad, setAttemptLoad] = useState(0);
+
+  useEffect(() => {
+    let current = true;
+    withRetry(async () => {
+      const pre = await api.get<PreTestInfo>(`/me/pre-tests/${enrolmentId}`);
+      const attempt = pre.active_attempt_id ? await api.get<AttemptView>(`/attempts/${pre.active_attempt_id}`) : null;
+      return { pre, attempt };
+    }, () => current)
+      .then(({ pre, attempt }) => {
+        if (!current) return;
+        setInfo(pre);
+        setLoadError(null);
+        if (attempt?.status === "IN_PROGRESS") {
+          // A refresh or a second tab during the pre-test resumes it in full screen.
+          setRunning(attempt);
+          setSecure(true);
+        } else if (attempt) router.replace(`/results/${attempt.attempt_id}`);
+      })
+      .catch((e) => current && setLoadError(e as ApiError));
+    return () => {
+      current = false;
+    };
+  }, [enrolmentId, router, attemptLoad]);
+
+  if (loadError) {
+    const missing = loadError.status === 404;
+    return (
+      <FocusShell>
+        <section className="gate-panel">
+          <span className="eyebrow">PRE-TRAINING BASELINE</span>
+          {missing ? <h1 tabIndex={-1}>This pre-test is not available</h1> : <ErrorPanel error={loadError} retry={() => setAttemptLoad((n) => n + 1)} />}
+          {missing ? <p>The link may be wrong. Your trainings show every pre-test you can take.</p> : null}
+          <Btn kind="wide" onClick={() => router.push("/employee/trainings")}>
+            Open my trainings <Icon name="arrow" />
+          </Btn>
+        </section>
+      </FocusShell>
+    );
+  }
+  if (!info) return <Loading label="Opening the pre-test…" />;
+
+  if (!info.available) {
+    return (
+      <FocusShell>
+        <section className="gate-panel">
+          <span className="eyebrow">PRE-TRAINING BASELINE · {info.training_title}</span>
+          <h1 tabIndex={-1}>This pre-test is not available</h1>
+          <p>It may already be taken or the training may be completed. Your trainings show every pre-test you can take.</p>
+          <Btn kind="wide" onClick={() => router.push("/employee/trainings")}>
+            Open my trainings <Icon name="arrow" />
+          </Btn>
+        </section>
+      </FocusShell>
+    );
+  }
+
+  if (secure) {
+    return (
+      <SecureStart
+        key={running?.attempt_id ?? "new"}
+        noun="pre-test"
+        trainingTitle={info.training_title}
+        rules={{ require_fullscreen: info.require_fullscreen, violation_limit: info.violation_limit ?? 3 }}
+        running={running}
+        facts={[
+          ["clipboard", "Pre-test", info.training_title],
+          ["file", "Questions", info.question_count ?? "—"],
+          ["clock", "Duration", info.duration_seconds ? minutesLabel(info.duration_seconds) : "—"],
+          ["target", "Purpose", "Baseline before training, not pass or fail"],
+          ["refresh", "Attempts", "One"],
+        ]}
+        start={() => api.post<AttemptView>(`/me/pre-tests/${enrolmentId}/attempts`, { instructions_acknowledged: true })}
+        onStartFailed={(e) => {
+          setError(e);
+          setSecure(false);
+        }}
+      />
+    );
+  }
+
   return (
     <FocusShell>
       <section className="gate-panel">
-        <span className="eyebrow">PRE-TRAINING BASELINE</span>
+        <span className="eyebrow">PRE-TRAINING BASELINE · {info.training_title}</span>
         <h1 tabIndex={-1}>Optional pre-test</h1>
-        <p>This records what you know before training so your learning gain can be measured. It does not count as your post-training assessment, and you can take it once. The timer starts when you begin.</p>
+        <p>This records what you know before training so your learning gain can be measured. It does not count as your post-training assessment, and you can take it once.</p>
         {error ? <ErrorPanel error={error} /> : null}
-        <Btn kind="wide" disabled={busy} onClick={() => void start()}>
+        <div className="gate-training">
+          <Metrics
+            items={[
+              ["Questions", info.question_count ?? "—", "One at a time"],
+              ["Time limit", info.duration_seconds ? `${Math.round(info.duration_seconds / 60)} min` : "—", "Continues on refresh"],
+              ["Environment", info.require_fullscreen ? "Full screen" : "Monitored", "Secure, like the assessment"],
+            ]}
+          />
+        </div>
+        <Btn
+          kind="wide"
+          onClick={() => {
+            setError(null);
+            setSecure(true);
+          }}
+        >
           Begin pre-test <Icon name="arrow" />
         </Btn>
-        <Btn kind="text" onClick={() => router.back()}>
+        <Btn kind="text" onClick={() => router.push("/employee/trainings")}>
           Not now
         </Btn>
       </section>

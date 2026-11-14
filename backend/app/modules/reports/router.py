@@ -8,14 +8,14 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin, require_gate_clear
 from app.core.enums import Cadence, DeliveryStatus, ExportFormat, ExportStatus, ReportCode, RoleCode
-from app.core.errors import forbidden, not_found
+from app.core.errors import forbidden, not_found, validation
 from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.models import Function, ReportDelivery, ReportExport, ReportSchedule, Training, UserAccount
@@ -40,7 +40,22 @@ def filters_dep(
     grade: str | None = None,
     function_id: uuid.UUID | None = None,
 ) -> ReportFilters:
-    return ReportFilters(date_from, date_to, department_id, location_id, training_id, trainer_id, batch_id, grade or None, function_id)
+    return checked(ReportFilters(date_from, date_to, department_id, location_id, training_id, trainer_id, batch_id, grade or None, function_id))
+
+
+def checked(filters: ReportFilters) -> ReportFilters:
+    if filters.date_from and filters.date_to and filters.date_from > filters.date_to:
+        raise validation("The start date is after the end date. Choose a start date on or before the end date.")
+    return filters
+
+
+def parse_stored_filters(data: dict) -> ReportFilters:
+    """Filters sent in a request body (exports, schedules): a bad value is a validation error, never a 500."""
+    try:
+        filters = ReportFilters.from_stored(data)
+    except (ValueError, TypeError) as exc:
+        raise validation("A report filter is not valid.") from exc
+    return checked(filters)
 
 
 def resolve_scope(db: Session, user: CurrentUser, code: ReportCode) -> list[uuid.UUID] | None:
@@ -202,12 +217,7 @@ def export_view(record: ReportExport) -> dict:
 
 @router.post("/reports/exports", dependencies=[expensive("export")])
 def create_export(body: ExportIn, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    try:
-        filters = ReportFilters.from_stored(body.filters)
-    except (ValueError, TypeError) as exc:
-        from app.core.errors import validation
-
-        raise validation("A report filter is not valid.") from exc
+    filters = parse_stored_filters(body.filters)
     if body.own_record:  # The personal history export belonged to the removed Assessment History page.
         raise forbidden("Personal history exports are no longer available.")
     record = run_export(db, user, body.report_code, body.export_format, filters, body.own_record)
@@ -217,7 +227,8 @@ def create_export(body: ExportIn, user: CurrentUser = Depends(require_gate_clear
 
 @router.get("/reports/exports")
 def list_exports(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    records = db.scalars(select(ReportExport).where(ReportExport.owner_user_id == user.id).order_by(ReportExport.created_at.desc()).limit(100)).all()
+    # The file names come with the list in one query; loading each export's file separately cost a round trip each.
+    records = db.scalars(select(ReportExport).options(joinedload(ReportExport.artifact)).where(ReportExport.owner_user_id == user.id).order_by(ReportExport.created_at.desc()).limit(100)).all()
     return ok([export_view(r) for r in records])
 
 
@@ -264,14 +275,14 @@ def schedule_view(schedule: ReportSchedule) -> dict:
 
 @router.get("/reports/schedules")
 def list_schedules(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    schedules = db.scalars(select(ReportSchedule).where(ReportSchedule.owner_user_id == user.id).order_by(ReportSchedule.created_at.desc())).all()
+    schedules = db.scalars(select(ReportSchedule).options(selectinload(ReportSchedule.deliveries)).where(ReportSchedule.owner_user_id == user.id).order_by(ReportSchedule.created_at.desc())).all()
     return ok([schedule_view(s) for s in schedules])
 
 
 @router.post("/reports/schedules")
 def create_schedule(body: ScheduleIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """The owner is the only recipient, so a schedule can never send a report beyond the owner's scope."""
-    filters = ReportFilters.from_stored(body.filters)
+    filters = parse_stored_filters(body.filters)
     schedule = ReportSchedule(owner_user_id=user.id, report_code=body.report_code, export_format=body.export_format, filters=filters.stored(), cadence=body.cadence, next_run_at=next_run(body.cadence, utcnow()))
     db.add(schedule)
     db.flush()

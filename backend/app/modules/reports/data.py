@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, contains_eager, joinedload, selectinload
 
 from app.core.deps import CurrentUser
 from app.core.enums import AssessmentType, AttemptStatus, EnrolmentStatus, ObligationStatus, ResultStatus, ReviewerType, RoleCode
@@ -97,12 +97,14 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
         select(Enrolment)
         .join(Enrolment.employee)
         .join(Enrolment.training)
+        # Each separate load is a database round trip (about 100 ms to Neon), so the one-to-one links come in
+        # the main query and only the two collections are loaded separately: 3 round trips instead of 10.
         .options(
-            selectinload(Enrolment.employee).selectinload(Employee.department),
-            selectinload(Enrolment.employee).selectinload(Employee.location),
-            selectinload(Enrolment.training).selectinload(Training.trainer),
-            selectinload(Enrolment.batch),
-            selectinload(Enrolment.completion),
+            contains_eager(Enrolment.employee).joinedload(Employee.department),
+            contains_eager(Enrolment.employee).joinedload(Employee.location),
+            contains_eager(Enrolment.training).joinedload(Training.trainer),
+            joinedload(Enrolment.batch),
+            joinedload(Enrolment.completion),
             selectinload(Enrolment.obligations).selectinload(AssessmentObligation.attempts),
         )
         .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
@@ -126,7 +128,7 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
         query = query.where(Enrolment.batch_id == filters.batch_id)
 
     rows: list[Row] = []
-    for enrolment in db.scalars(query):
+    for enrolment in db.scalars(query).unique():
         # Date filters select the training-completion cohort, as in the prototype.
         completed = enrolment.completion.completed_at.date() if enrolment.completion else None
         if filters.date_from and (completed is None or completed < filters.date_from):
@@ -189,6 +191,9 @@ def summary(rows: list[Row]) -> dict:
         "not_passed_employees": len({r.enrolment.employee_id for r in failed}),
         "needs_retraining_employees": len({r.enrolment.employee_id for r in flagged}),
         "pending_assessment": len(rows) - len(assessed),
+        # Completed training whose post-test has no result yet. Unlike pending_assessment, it leaves out
+        # assignments whose training is not finished (those have no assessment to take).
+        "awaiting_assessment": sum(1 for r in completed if not r.post_attempts),
         "in_progress": len(in_progress),
         "pass_rate": rate(len(passed), len(assessed)),
         "completion_rate": rate(len(completed), len(rows)),

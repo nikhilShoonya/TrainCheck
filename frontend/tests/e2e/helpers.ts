@@ -33,6 +33,30 @@ export async function startSecureAssessment(page: Page) {
   await expect(page.locator(".exam-timer")).toBeVisible();
 }
 
+/** Walks from a pre-test's intro to the live, monitored pre-test (same secure steps as the assessment). */
+export async function startSecurePreTest(page: Page) {
+  await page.getByRole("button", { name: /Begin pre-test/ }).click();
+  await expect(page.getByRole("heading", { name: "System check" })).toBeVisible();
+  const proceed = page.getByRole("button", { name: /^Continue/ });
+  await expect(proceed).toBeEnabled({ timeout: 15_000 });
+  await proceed.click();
+  await page.getByRole("button", { name: "Enter full screen" }).click();
+  await expect(page.getByRole("heading", { name: "Pre-test instructions" })).toBeVisible();
+  await page.getByRole("checkbox", { name: /read and understood/ }).check();
+  await page.getByRole("button", { name: /Start pre-test/ }).click();
+  await expect(page.locator(".exam-timer")).toBeVisible();
+  await expect(page.locator(".exam-mode")).toContainText("Secure pre-test mode");
+}
+
+/** The five-question feedback, required once after each post-training assessment. */
+export async function giveFeedback(page: Page) {
+  const form = page.getByRole("dialog", { name: "Training & assessment feedback" });
+  await expect(form).toBeVisible();
+  for (let i = 0; i < 5; i++) await form.locator(".feedback-scale").nth(i).locator("label").nth(3).click();
+  await form.getByRole("button", { name: "Submit feedback" }).click();
+  await expect(page.getByText("Thank you for your feedback")).toBeVisible();
+}
+
 export async function answerAll(page: Page) {
   const total = await page.locator(".q-cell").count();
   for (let i = 0; i < total; i++) {

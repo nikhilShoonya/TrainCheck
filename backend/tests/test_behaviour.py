@@ -28,12 +28,12 @@ def form_body(form: dict, rating: int = 4, example: str = "Handled a real case u
     return {"responses": [{"template_question_id": q["template_question_id"], "rating": rating, "example_text": example} for q in form["questions"]]}
 
 
-def test_completion_creates_30_60_90_cycles_with_self_reviews(world, db):  # TC-L3-001
+def test_completion_creates_one_30_day_cycle_with_a_self_review(world, db):  # TC-L3-001
     cleared_training(world, world.employee, db)
     cycles = db.scalars(select(BehaviourReviewCycle).order_by(BehaviourReviewCycle.period_days)).all()
-    assert [c.period_days for c in cycles] == [30, 60, 90]
+    assert [c.period_days for c in cycles] == [30]  # Only the 30-day follow-up: no 60- or 90-day cycles.
     reviews = db.scalars(select(BehaviourReview)).all()
-    assert len(reviews) == 3 and {r.reviewer_type for r in reviews} == {"SELF"}  # No manager observations any more.
+    assert len(reviews) == 1 and {r.reviewer_type for r in reviews} == {"SELF"}  # No manager observations any more.
     assert cycles[0].due_at - (NOW - timedelta(days=40)) == timedelta(days=30)
 
 

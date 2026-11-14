@@ -28,6 +28,7 @@ from app.modules.scheduler.jobs import build_scheduler
 from app.modules.training.router import router as training_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("traincheck")
 
 API_PREFIX = "/api/v1"
 
@@ -82,7 +83,13 @@ def create_app() -> FastAPI:
                 if not decision.allowed:
                     response = JSONResponse(status_code=429, content=error_body("RATE_LIMITED", "Too many requests. Please wait a moment."), headers={"Retry-After": str(decision.retry_after)})
             if response is None:
-                response = await call_next(request)
+                try:
+                    response = await call_next(request)
+                except Exception as exc:
+                    # Answered here, while the request ID is still set, so the user sees a reference that
+                    # matches the log line. (Starlette's outer error handler runs after it has been reset.)
+                    logger.exception("Unhandled error", exc_info=exc)
+                    response = JSONResponse(status_code=500, content=error_body("INTERNAL_ERROR", "Something went wrong. Quote the reference if you contact support."))
             response.headers["X-Request-ID"] = request_id_var.get()
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["X-Frame-Options"] = "DENY"

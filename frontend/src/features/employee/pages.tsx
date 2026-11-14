@@ -9,7 +9,7 @@ import { EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, Panel, RecentRow, Scor
 import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import type { BehaviourMeans, ReviewSummary, Summary, TrainingCard } from "@/lib/types";
-import { day, firstName, percent } from "@/lib/utils";
+import { day, firstName, percent, ORG_TIMEZONE } from "@/lib/utils";
 
 const EYEBROW = "EMPLOYEE";
 
@@ -77,6 +77,7 @@ function AssessmentBanner({ data }: { data: Dashboard }) {
 export function EmployeeDashboard() {
   const { user } = useSession();
   const state = useApi<Dashboard>("/me/dashboard");
+  const behaviourOn = Boolean(user?.features?.behaviour); // Level 3 is outside the approved scope while off.
   return (
     <Loaded state={state}>
       {(d) => (
@@ -84,8 +85,8 @@ export function EmployeeDashboard() {
           <Welcome heading={<GoodMorning name={firstName(user?.full_name ?? "")} />} description="Continue your learning journey and track how you apply it at work." />
           <AssessmentBanner data={d} />
           <div className="dashboard-row dashboard-row-top">
-            <Panel title={<>Learning & Behaviour <span className="heading-note">(Evidence)</span></>} action={<EvidenceHelp />} className="effectiveness-panel">
-              <EvidenceTiles learning={d.summary.mean_latest_score} assessed={d.summary.assessed} behaviour={d.behaviour} />
+            <Panel title={<>{behaviourOn ? "Learning & Behaviour" : "Learning"} <span className="heading-note">(Evidence)</span></>} action={<EvidenceHelp />} className="effectiveness-panel">
+              <EvidenceTiles learning={d.summary.mean_latest_score} assessed={d.summary.assessed} behaviour={d.behaviour} behaviourEnabled={behaviourOn} />
             </Panel>
             <Panel title="My Training Progress" className="progress-panel">
               <TrainingProgress summary={d.summary} />
@@ -114,8 +115,8 @@ export function EmployeeDashboard() {
                   return (
                     <a className="calendar-event" href={event.link} key={event.title + event.date}>
                       <time dateTime={event.date}>
-                        <strong>{date.getUTCDate()}</strong>
-                        <span>{date.toLocaleDateString("en", { month: "short", timeZone: "UTC" })}</span>
+                        <strong>{date.toLocaleDateString("en", { day: "numeric", timeZone: ORG_TIMEZONE })}</strong>
+                        <span>{date.toLocaleDateString("en", { month: "short", timeZone: ORG_TIMEZONE })}</span>
                       </time>
                       <span>
                         <strong>{event.title}</strong>
@@ -135,8 +136,9 @@ export function EmployeeDashboard() {
                 [
                   ["book", d.summary.assignments, "Total Trainings"],
                   ["check", d.summary.completed, "Completed"],
-                  ["hourglass", d.reviews_due, "Reviews Due"],
-                  ["target", d.summary.pending_assessment, "Assessment Pending"],
+                  ...(behaviourOn ? [["hourglass", d.reviews_due, "Reviews Due"]] : []),
+                  // Only completed training has an assessment to take; unfinished training is counted above.
+                  ["target", d.summary.awaiting_assessment ?? d.summary.pending_assessment, "Assessment Pending"],
                 ] as [string, number, string][]
               ).map(([icon, value, text]) => (
                 <div key={text}>

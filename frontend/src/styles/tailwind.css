@@ -1,5 +1,7 @@
 /* Tailwind's theme and utilities, without its reset. The prototype's stylesheets own the base look. */
 @layer theme, utilities;
 @import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
+/* source(none): scan only the folders named by @source. Automatic detection also reached the backend, and a
+   change to a backend file then broke the frontend build ("webpack loader path ... is outside configured roots"). */
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
 @source "../";

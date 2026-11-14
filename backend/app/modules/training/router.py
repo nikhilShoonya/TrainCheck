@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, contains_eager, joinedload, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
@@ -47,6 +47,7 @@ from app.models import (
 from app.modules.assessment.gate import obligation_startable
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.assessment.service import PoolData, active_config, next_config_version, pool_message, pool_problem, pool_report
+from app.modules.behaviour.service import FOLLOWUP_DAYS
 from app.modules.notifications.service import notify_employee
 from app.modules.training import service
 
@@ -81,7 +82,7 @@ class TrainingIn(Strict):
     refresher_url: str | None = Field(default=None, max_length=500)
     pretest_enabled: bool = False
     behaviour_enabled: bool = True
-    followup_days: list[int] = Field(default_factory=lambda: [30, 60, 90], max_length=10)
+    followup_days: list[int] = Field(default_factory=lambda: [FOLLOWUP_DAYS], max_length=10)
     item_minimum_sample: int = Field(default=10, ge=1, le=1000)
 
     _url = field_validator("refresher_url")(https_only)
@@ -89,9 +90,10 @@ class TrainingIn(Strict):
     @field_validator("followup_days")
     @classmethod
     def valid_days(cls, days: list[int]) -> list[int]:
-        if any(d < 1 or d > 365 for d in days) or len(set(days)) != len(days):
-            raise ValueError("Use distinct follow-up intervals from 1 to 365 days.")
-        return sorted(days)
+        # One behaviour follow-up, 30 days after completion. An empty list means no follow-up for this training.
+        if days and days != [FOLLOWUP_DAYS]:
+            raise ValueError(f"The behaviour follow-up is fixed at {FOLLOWUP_DAYS} days after completion.")
+        return days
 
 
 class StatusIn(Strict):
@@ -206,7 +208,7 @@ class TrainingData:
             return
         for e in db.scalars(
             select(Enrolment)
-            .options(selectinload(Enrolment.completion), selectinload(Enrolment.obligations), selectinload(Enrolment.employee))
+            .options(joinedload(Enrolment.completion), joinedload(Enrolment.employee), selectinload(Enrolment.obligations))
             .where(Enrolment.training_id.in_(ids), Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
         ):
             self.enrolments[e.training_id].append(e)
@@ -216,7 +218,7 @@ class TrainingData:
         cache: dict = {}
         for o in db.scalars(
             select(AssessmentObligation)
-            .options(selectinload(AssessmentObligation.config), selectinload(AssessmentObligation.employee))
+            .options(joinedload(AssessmentObligation.config), joinedload(AssessmentObligation.employee))
             .where(AssessmentObligation.training_id.in_(ids), AssessmentObligation.assessment_type == AssessmentType.POST_TEST, AssessmentObligation.status.in_(service.OPEN_OBLIGATION_STATUSES))
         ):
             if not obligation_startable(db, o, cache, self.pools):
@@ -273,7 +275,9 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
 
 def _apply_training(db: Session, t: Training, body: TrainingIn) -> None:
     t.title, t.description, t.category = body.title, body.description, body.category
-    t.trainer_id, t.owner_employee_id = body.trainer_id, body.owner_employee_id
+    t.trainer_id = body.trainer_id
+    if t.id is None or "owner_employee_id" in body.model_fields_set:  # An edit that does not mention the owner keeps it.
+        t.owner_employee_id = body.owner_employee_id
     t.target_scope = body.target_scope
     t.refresher_text, t.refresher_url = body.refresher_text, body.refresher_url
     t.pretest_enabled, t.behaviour_enabled = body.pretest_enabled, body.behaviour_enabled
@@ -293,7 +297,7 @@ def _apply_training(db: Session, t: Training, body: TrainingIn) -> None:
 
 @router.get("/trainings")
 def list_trainings(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db), search: str = "", status: str = "") -> dict:
-    query = select(Training).options(selectinload(Training.owner), selectinload(Training.trainer), selectinload(Training.departments), selectinload(Training.functions), selectinload(Training.competencies)).order_by(Training.title)
+    query = select(Training).options(joinedload(Training.owner), joinedload(Training.trainer), selectinload(Training.departments), selectinload(Training.functions), selectinload(Training.competencies)).order_by(Training.title)
     if status:
         query = query.where(Training.status == status)
     if search:
@@ -659,11 +663,11 @@ def list_enrolments(
     query = (
         select(Enrolment)
         .join(Enrolment.employee)
-        .options(
-            selectinload(Enrolment.employee).selectinload(Employee.department),
-            selectinload(Enrolment.training),
-            selectinload(Enrolment.batch),
-            selectinload(Enrolment.completion),
+        .options(  # One-to-one links in the main query: each separate load is a round trip to the database.
+            contains_eager(Enrolment.employee).joinedload(Employee.department),
+            joinedload(Enrolment.training),
+            joinedload(Enrolment.batch),
+            joinedload(Enrolment.completion),
             selectinload(Enrolment.obligations),
         )
         .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
@@ -675,7 +679,7 @@ def list_enrolments(
         query = query.where(Enrolment.batch_id == batch_id)
     if search:
         query = query.where(Employee.full_name.ilike(f"%{search}%") | Employee.employee_code.ilike(f"%{search}%"))
-    rows = db.scalars(query).all()
+    rows = db.scalars(query).unique().all()
     if completed is not None:
         rows = [e for e in rows if bool(e.completion) == completed]
     now = utcnow()

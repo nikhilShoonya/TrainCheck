@@ -6,9 +6,8 @@ Revises: e0f4968d8aea
 Additive only: one nullable column. Existing import jobs keep NULL, which means "file-based": each row
 named its own training. ON DELETE SET NULL keeps import history when a draft training is deleted.
 """
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = 'a7c4e19b3d52'
 down_revision = 'e0f4968d8aea'

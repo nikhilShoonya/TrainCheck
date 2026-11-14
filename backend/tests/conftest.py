@@ -147,7 +147,7 @@ class World:
         return employee
 
     def training(self, code: str = "T1", questions: int = 10, count: int = 10, marks: Decimal = Decimal("1"), pass_mark: Decimal = Decimal("70"), mix: dict | None = None, **config) -> Training:
-        training = Training(training_code=code, title=f"Training {code}", status=TrainingStatus.ACTIVE, trainer_id=self.trainer.id, refresher_text="Review the guidance.", followup_days=[30, 60, 90], item_minimum_sample=2)
+        training = Training(training_code=code, title=f"Training {code}", status=TrainingStatus.ACTIVE, trainer_id=self.trainer.id, refresher_text="Review the guidance.", followup_days=[30], item_minimum_sample=2)
         self.db.add(training)
         self.db.flush()
         batch = TrainingBatch(training_id=training.id, batch_code="B1", name=f"Batch {code}")

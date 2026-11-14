@@ -4,10 +4,14 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
-import { Btn, Empty, ErrorPanel } from "@/components/ui";
+import { Btn, Empty, ErrorPanel, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
-import { HINDI, navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
+import { HINDI, HINGLISH, navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
+
+const LANGUAGE_KEY = "tc-language";
+const LANGUAGES = ["English", "Hindi", "Hinglish"] as const;
+const DICTIONARY: Record<string, Record<string, string>> = { Hindi: HINDI, Hinglish: HINGLISH };
 import { useQueryClient } from "@tanstack/react-query";
 import { useApi, useSession } from "@/lib/hooks";
 import { NAV_PREFETCH, prefetchPaths } from "@/lib/query";
@@ -83,6 +87,26 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [language, setLanguage] = useState("English");
+  const toast = useToast();
+  // The choice is kept in this browser. It is read after mount so the first render matches the server's HTML.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(LANGUAGE_KEY);
+      // Reading browser storage after mount is the purpose of this effect.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (saved && (LANGUAGES as readonly string[]).includes(saved)) setLanguage(saved);
+    } catch {
+      /* The default language is used without storage. */
+    }
+  }, []);
+  const chooseLanguage = (value: string) => {
+    setLanguage(value);
+    try {
+      localStorage.setItem(LANGUAGE_KEY, value);
+    } catch {
+      /* The choice still applies to this page. */
+    }
+  };
   const [online, setOnline] = useState(true);
   const [search, setSearch] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -133,6 +157,16 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (event.key === "Escape") setNavOpen(false);
     };
     const onConnection = () => setOnline(navigator.onLine);
+    // Following a link while offline makes the browser replace the whole app with its own offline page.
+    // Stay on the current page instead and say why.
+    const onClick = (event: MouseEvent) => {
+      if (navigator.onLine || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
+      const link = (event.target as Element | null)?.closest?.("a[href]");
+      if (!(link instanceof HTMLAnchorElement) || link.origin !== window.location.origin || link.target === "_blank") return;
+      event.preventDefault();
+      toast("You are offline. Reconnect to open another page.");
+    };
+    document.addEventListener("click", onClick, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("online", onConnection);
     window.addEventListener("offline", onConnection);
@@ -140,13 +174,14 @@ export function AppShell({ children }: { children: ReactNode }) {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("online", onConnection);
       window.removeEventListener("offline", onConnection);
+      document.removeEventListener("click", onClick, true);
     };
-  }, []);
+  }, [toast]);
 
   if (!user) return null;
   const role = user.primary_role;
   const items = navFor(role, user.features);
-  const label = (text: string) => (language === "Hindi" ? (HINDI[text] ?? text) : text);
+  const label = (text: string) => DICTIONARY[language]?.[text] ?? text;
   const [praiseTitle, praiseLines] = SIDEBAR_COPY[role];
   const activeHref = [...items].sort((a, b) => b[0].length - a[0].length).find(([href]) => pathname === href || pathname.startsWith(`${href}/`))?.[0];
 
@@ -160,7 +195,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className={`workspace reference-workspace${collapsed ? " is-collapsed" : ""}${navOpen ? " nav-open" : ""}`} data-role={role}>
       <aside className="sidebar" id="sidebar" aria-label={`${ROLE_LABEL[role]} workspace`}>
         <Brand />
-        <nav aria-label="Main navigation" lang={language === "Hindi" ? "hi" : "en"}>
+        <nav aria-label="Main navigation" lang={language === "Hindi" ? "hi" : language === "Hinglish" ? "hi-Latn" : "en"}>
           {items.map(([href, text, icon]) => (
             <Link key={href} href={href} className={`nav-link${href === activeHref ? " active" : ""}`} aria-label={label(text)} title={label(text)} aria-current={href === activeHref ? "page" : undefined} onMouseEnter={() => prefetchFor(href)} onFocus={() => prefetchFor(href)}>
               <Icon name={icon} />
@@ -189,7 +224,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {/* The text is hidden while collapsed, so the label keeps the button named for screen readers. */}
           <Btn kind="text" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} aria-controls="sidebar" title={collapsed ? "Expand sidebar" : undefined} onClick={() => setCollapsed((c) => !c)}>
             <Icon name={collapsed ? "chevron" : "menu"} />
-            <span>{collapsed ? "Expand sidebar" : "Collapse sidebar"}</span>
+            <span>{label(collapsed ? "Expand sidebar" : "Collapse sidebar")}</span>
           </Btn>
         </div>
       </aside>
@@ -207,7 +242,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <label className="sr-only" htmlFor="global-query">
               Search trainings, reports or help
             </label>
-            <input ref={searchInput} id="global-query" name="query" placeholder="Search trainings, reports, or help…" autoComplete="off" required />
+            <input ref={searchInput} id="global-query" name="query" placeholder={label("Search trainings, reports, or help…")} autoComplete="off" required />
             <button type="button" aria-label="Focus search" onClick={() => searchInput.current?.focus()}>
               <kbd>⌘ K</kbd>
             </button>
@@ -216,8 +251,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <label className="language-control">
               <Icon name="globe" />
               <span className="sr-only">Navigation language</span>
-              <select id="ui-language" aria-label="Navigation language" value={language} onChange={(e) => setLanguage(e.target.value)}>
-                {["English", "Hindi", "Hinglish"].map((l) => (
+              <select id="ui-language" aria-label="Navigation language" value={language} onChange={(e) => chooseLanguage(e.target.value)}>
+                {LANGUAGES.map((l) => (
                   <option key={l}>{l}</option>
                 ))}
               </select>

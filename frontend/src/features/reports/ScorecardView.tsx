@@ -74,9 +74,9 @@ function ScorecardBody({ card }: { card: Scorecard }) {
             ]}
           />
           <p>
-            <strong>Improvement status:</strong> {b.improvement_status}. {b.overdue ? `${b.overdue} review(s) overdue.` : "No overdue reviews."}
+            <strong>Follow-up:</strong> one self-assessment 30 days after training completion. {b.overdue ? `${b.overdue} review(s) overdue.` : "No overdue reviews."}
           </p>
-          <h3>30/60/90-day progress</h3>
+          <h3>30-day follow-up</h3>
           {b.periods.length ? (
             <DataTable
               all

@@ -118,7 +118,8 @@ export function Loading({ label = "Loading…" }: { label?: string }) {
 }
 
 export function ErrorPanel({ error, retry }: { error: ApiError | Error; retry?: () => void }) {
-  const reference = error instanceof ApiError ? error.requestId : undefined;
+  // A reference helps support trace a server fault. For a validation answer it is only noise.
+  const reference = error instanceof ApiError && !(error.status >= 400 && error.status < 500) ? error.requestId : undefined;
   return (
     <div className="notice danger" role="alert">
       <div>
@@ -263,7 +264,9 @@ export function DataTable({ headers, rows, all, emptyTitle, emptyHint }: { heade
   const visible = sorted.slice(current * size, (current + 1) * size);
   return (
     <>
-      <div className="table-wrap">
+      {/* On phones each row becomes a card of "label: value" lines (styles/traincheck.css), so every
+          column and action stays reachable without sideways scrolling. */}
+      <div className="table-wrap stack-on-phone">
         <table>
           <thead>
             <tr>
@@ -293,7 +296,9 @@ export function DataTable({ headers, rows, all, emptyTitle, emptyHint }: { heade
             {visible.map((row, r) => (
               <tr key={r}>
                 {row.map((cell, c) => (
-                  <td key={c}>{renderCell(cell)}</td>
+                  <td key={c} data-label={headers[c] || undefined}>
+                    {renderCell(cell)}
+                  </td>
                 ))}
               </tr>
             ))}

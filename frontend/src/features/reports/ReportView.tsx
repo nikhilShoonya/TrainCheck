@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/dialog";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import type { Named, ReportData } from "@/lib/types";
+import { day } from "@/lib/utils";
 
 interface FilterOptions {
   departments: Named[];
@@ -228,7 +229,7 @@ export function ReportsHub() {
                 s.cadence === "WEEKLY" ? "Weekly" : "Monthly",
                 s.export_format,
                 s.is_active ? s.next_run_at.slice(0, 16).replace("T", " ") : "Stopped",
-                s.deliveries[0] ? `${s.deliveries[0].status} · ${s.deliveries[0].run_at.slice(0, 10)}` : "None yet",
+                s.deliveries[0] ? `${s.deliveries[0].status} · ${day(s.deliveries[0].run_at)}` : "None yet",
                 s.is_active ? (
                   <Btn key={s.id} kind="text" tone="danger" onClick={() => void stop(s.id)}>
                     Stop

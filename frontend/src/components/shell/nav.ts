@@ -1,4 +1,4 @@
-import type { RoleCode } from "@/lib/types";
+import type { AccessState, RoleCode, User } from "@/lib/types";
 
 /* Role navigation. A convenience only: the backend enforces every permission. */
 export type NavItem = [href: string, label: string, icon: string];
@@ -47,6 +47,14 @@ export const HOME: Record<RoleCode, string> = {
   LD_ADMIN: "/lnd",
 };
 
+/** Where a signed-in person must go first: a due assessment, then owed feedback, then their workspace.
+    The backend makes the same decision and refuses workspace APIs until it is met. */
+export function landingPath(user: User, access: AccessState | null): string {
+  if (access?.access_status === "ASSESSMENT_REQUIRED") return "/access/assessment-required";
+  if (access?.access_status === "FEEDBACK_REQUIRED" && access.feedback_due) return `/results/${access.feedback_due.attempt_id}`;
+  return HOME[user.primary_role];
+}
+
 const PREFIX: [string, RoleCode][] = [
   ["/lnd", "LD_ADMIN"],
   ["/employee", "EMPLOYEE"],
@@ -68,7 +76,36 @@ export const SIDEBAR_COPY: Record<RoleCode, [string, string[]]> = {
   LD_ADMIN: ["Design · Deliver · Evaluate", ["Manage training, assessments", "and behaviour follow-ups"]],
 };
 
+/** Hindi in Latin script, as it is commonly typed. Same keys as HINDI. */
+export const HINGLISH: Record<string, string> = {
+  Dashboard: "Dashboard",
+  "My Trainings": "Meri Trainings",
+  Assessments: "Aakalan",
+  "Refresher Materials": "Refresher Saamagri",
+  "Self-Assessment (L3)": "Swa-Mulyankan (L3)",
+  "Behaviour Questionnaires": "Vyavhaar Prashnavali",
+  "Training Management": "Training Prabandhan",
+  "Departments & Functions": "Vibhaag aur Kaarya",
+  "Batches & Sessions": "Batch aur Session",
+  "Employee Assignments": "Karmachari Aavantan",
+  "Training Completion": "Training Poornata",
+  "Question Bank": "Prashn Bank",
+  "Import Centre": "Import Kendra",
+  "Assessment Configuration": "Aakalan Setting",
+  "Learning & Behaviour Scorecards": "Seekhne aur Vyavhaar ke Scorecard",
+  "Reports & Analytics": "Report aur Vishleshan",
+  "Training Feedback": "Training Pratikriya",
+  Notifications: "Soochnaayein",
+  "Audit Logs": "Badlaav ka Itihaas",
+  "Search trainings, reports, or help…": "Training, report ya madad khojein…",
+  "Collapse sidebar": "Sidebar chhota karein",
+  "Expand sidebar": "Sidebar bada karein",
+};
+
 export const HINDI: Record<string, string> = {
+  "Search trainings, reports, or help…": "प्रशिक्षण, रिपोर्ट या सहायता खोजें…",
+  "Collapse sidebar": "साइडबार छोटा करें",
+  "Expand sidebar": "साइडबार बड़ा करें",
   Dashboard: "डैशबोर्ड",
   "My Trainings": "मेरे प्रशिक्षण",
   Assessments: "आकलन",

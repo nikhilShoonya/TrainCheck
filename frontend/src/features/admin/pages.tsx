@@ -13,7 +13,7 @@ import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
 import type { ConfigView, Named, OrgUnit, Summary, TrainingAdmin, TrendPoint } from "@/lib/types";
-import { dateTime, day, firstName, percent } from "@/lib/utils";
+import { dateTime, day, firstName, percent, todayInOrg } from "@/lib/utils";
 import Link from "next/link";
 
 const EYEBROW = "L&D ADMIN";
@@ -21,10 +21,9 @@ const SCOPE_LABEL: Record<string, string> = { COMMON: "Common (all departments)"
 const TYPE_LABEL: Record<string, string> = { MCQ_SINGLE: "Single choice", MCQ_MULTIPLE: "Multiple choice", TRUE_FALSE: "True / False", SCENARIO: "Scenario" };
 const SCHEDULE_LABEL: Record<string, string> = { SAME_DAY: "Same day", NEXT_WORKING_DAY: "Next working day", DELAY_DAYS: "After a delay", FIXED_DATE: "On a specific date" };
 /** Today's date in the browser, as the YYYY-MM-DD a date input uses. */
-const todayInput = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-};
+const todayInput = () => todayInOrg();
+/** The one behaviour follow-up: a self-assessment 30 days after training completion (no 60- or 90-day cycles). */
+const FOLLOWUP_DAYS = 30;
 
 const names = (items?: Named[]) => (items ?? []).map((x) => ({ value: x.id, label: x.name }));
 
@@ -134,8 +133,8 @@ export function AdminDashboard() {
             ]}
           />
           <div className="image-primary-grid admin-primary">
-            <Panel title={<>Learning & Behaviour <span className="heading-note">(Evidence)</span></>} action={<EvidenceHelp />}>
-              <EvidenceTiles learning={d.summary.mean_latest_score} assessed={d.summary.assessed} behaviour={latest ?? null} />
+            <Panel title={<>{user?.features?.behaviour ? "Learning & Behaviour" : "Learning"} <span className="heading-note">(Evidence)</span></>} action={<EvidenceHelp />}>
+              <EvidenceTiles learning={d.summary.mean_latest_score} assessed={d.summary.assessed} behaviour={latest ?? null} behaviourEnabled={Boolean(user?.features?.behaviour)} />
             </Panel>
             <Panel title="Training Completion by Department">
               <DepartmentBars departments={d.departments} />
@@ -225,12 +224,9 @@ function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin 
       pretest_enabled: form.has("pretest_enabled"),
       // Level 3 settings are hidden while Behaviour is switched off; the stored values are kept unchanged.
       behaviour_enabled: behaviourOn ? form.has("behaviour_enabled") : (training?.behaviour_enabled ?? false),
-      followup_days: behaviourOn
-        ? String(form.get("followup_days") ?? "")
-            .split(",")
-            .map((x) => Number(x.trim()))
-            .filter(Boolean)
-        : (training?.followup_days ?? []),
+      // There is one behaviour follow-up, 30 days after completion ([] = none). While Level 3 is switched off
+      // the training keeps whether it has one.
+      followup_days: (behaviourOn ? form.has("behaviour_enabled") : Boolean(training?.followup_days?.length)) ? [FOLLOWUP_DAYS] : [],
       item_minimum_sample: Number(form.get("item_minimum_sample")),
     };
     if (training) await api.patch(`/admin/trainings/${training.id}`, body);
@@ -272,11 +268,10 @@ function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin 
       </label>
       {behaviourOn ? (
         <label className="checkline">
-          <input type="checkbox" name="behaviour_enabled" defaultChecked={training?.behaviour_enabled ?? true} /> Schedule behaviour follow-ups (Level 3)
+          <input type="checkbox" name="behaviour_enabled" defaultChecked={training?.behaviour_enabled ?? true} /> Schedule the {FOLLOWUP_DAYS}-day behaviour follow-up (Level 3)
         </label>
       ) : null}
       <div className="form-grid">
-        {behaviourOn ? <TextField label="Follow-up days (comma separated)" name="followup_days" defaultValue={(training?.followup_days ?? [30, 60, 90]).join(",")} /> : null}
         <TextField label="Minimum responses for question flags" name="item_minimum_sample" type="number" min={1} max={1000} defaultValue={training?.item_minimum_sample ?? 10} />
       </div>
       <div className="notice">New programmes start as drafts and cannot be assigned until they are active. Add questions and configure the assessment before activating.</div>
@@ -998,14 +993,16 @@ function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (res
       title="Assign employees"
       submitLabel="Assign selected employees"
       wide
-      submitBlockedReason={trainings.data && !list.length ? "No active training can take assignments. Activate a training in Training Management first." : null}
+      submitBlockedReason={
+        !trainings.data ? "Loading active trainings…" : !list.length ? "No active training can take assignments. Activate a training in Training Management first." : null
+      }
       onClose={onClose}
       onSubmit={async (form) => {
         const result = await api.post<AssignmentResult>("/admin/enrolments", { training_id: selected, batch_id: form.get("batch_id") || null, employee_ids: form.getAll("employee_ids"), use_training_target: useTarget });
         onSaved(result);
       }}
     >
-      <SelectField label="Training (active only) *" value={selected} onChange={(e) => setTrainingId(e.target.value)} options={list.map((t) => ({ value: t.id, label: t.title }))} />
+      <SelectField label="Training (active only) *" value={selected} onChange={(e) => setTrainingId(e.target.value)} placeholder={trainings.data ? undefined : "Loading trainings…"} options={list.map((t) => ({ value: t.id, label: t.title }))} />
       <SelectField label="Batch" name="batch_id" placeholder="No batch" options={(batches.data ?? []).filter((b) => b.training_id === selected).map((b) => ({ value: b.id, label: b.name }))} />
       {training ? (
         <p className="small">
@@ -1157,7 +1154,7 @@ function AssignmentsInner() {
 }
 
 const ATTENDANCE = ["PENDING", "PRESENT", "PARTIAL", "ABSENT", "EXCUSED"];
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayInOrg();
 
 /** Trainings whose completed employees have no usable assessment, with the fix and the people affected. */
 function SchedulingAttention({ rows, onChanged }: { rows: EnrolmentRow[]; onChanged: () => void }) {
@@ -1214,12 +1211,24 @@ export function Completion() {
   const [cycle, setCycle] = useState<EnrolmentRow | null>(null);
   const [lastOutcome, setLastOutcome] = useState<SchedulingOutcome | null>(null);
   const toast = useToast();
+  // An attendance change shows at once (and is what the completion dialog starts from), so nothing acts on
+  // the attendance from before the change while it saves or while the list reloads (that takes seconds).
+  // Kept only until the reloaded list, which already holds the change, replaces the list it was made on.
+  const [updated, setUpdated] = useState<{ source: EnrolmentRow[] | null; rows: Record<string, EnrolmentRow> }>({ source: null, rows: {} });
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+  const latest = (e: EnrolmentRow) => (updated.source === state.data ? (updated.rows[e.id] ?? e) : e);
+  const remember = (row: EnrolmentRow) => setUpdated((u) => ({ source: state.data, rows: { ...(u.source === state.data ? u.rows : {}), [row.id]: row } }));
   const setAttendance = async (e: EnrolmentRow, status: string) => {
+    remember({ ...e, attendance_status: status });
+    setSaving((s) => ({ ...s, [e.id]: true }));
     try {
-      await api.patch(`/admin/enrolments/${e.id}/attendance`, { attendance_status: status });
+      remember(await api.patch<EnrolmentRow>(`/admin/enrolments/${e.id}/attendance`, { attendance_status: status }));
       void state.reload();
     } catch (error) {
+      remember(e); // Refused: show the attendance the server kept.
       toast((error as ApiError).message);
+    } finally {
+      setSaving((s) => ({ ...s, [e.id]: false }));
     }
   };
   return (
@@ -1227,7 +1236,7 @@ export function Completion() {
       <PageTitle
         eyebrow={EYEBROW}
         title="Training Completion"
-        description={`Record attendance and completion. Only Present attendance counts as completion. Completion schedules the assessment when the training's configuration and question pool are ready${user?.features?.behaviour ? ", and the 30/60/90-day follow-ups" : ""}.`}
+        description={`Record attendance and completion. Only Present attendance counts as completion. Completion schedules the assessment when the training's configuration and question pool are ready${user?.features?.behaviour ? ", and the 30-day follow-up" : ""}.`}
         action={<BtnLink href="/lnd/imports" tone="data">Import Attendance</BtnLink>}
       />
       {lastOutcome && lastOutcome.status === "NOT_SCHEDULED" ? (
@@ -1244,7 +1253,7 @@ export function Completion() {
             <DataTable
               headers={["Employee", "Training", "Attendance", "Completion", "Assessment Due", "Assessment", "Result", ""]}
               emptyTitle="No assignments yet."
-              rows={rows.map((e) => [
+              rows={rows.map(latest).map((e) => [
                 <div key="p" data-sort={e.employee_name}>
                   {e.employee_name}
                   <small>{e.employee_code}</small>
@@ -1266,7 +1275,7 @@ export function Completion() {
                 resultOf(e),
                 <div className="row wrap" key="x">
                   {e.completed_at ? null : (
-                    <Btn tone="success" onClick={() => setCompleting(e)}>
+                    <Btn tone="success" disabled={saving[e.id]} onClick={() => setCompleting(e)}>
                       Mark Completed
                     </Btn>
                   )}
@@ -2123,8 +2132,9 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
             show_explanations: form.has("show_explanations"),
             shuffle_questions: form.has("shuffle_questions"),
             shuffle_options: form.has("shuffle_options"),
-            violation_limit: post ? Number(form.get("violation_limit")) : 3,
-            require_fullscreen: post ? form.has("require_fullscreen") : false,
+            // Pre-tests run in the same secure environment as the post-training assessment.
+            violation_limit: Number(form.get("violation_limit")),
+            require_fullscreen: form.has("require_fullscreen"),
           });
         } catch (e) {
           // The server is the authority. Its counts may be newer than ours, so refresh them; the form keeps every value.
@@ -2191,16 +2201,13 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
       <label className="checkline">
         <input type="checkbox" name="show_explanations" defaultChecked={current?.show_explanations} /> Show correct answers and explanations after submission
       </label>
-      {post ? (
-        <>
-          <h3>Secure browser policy</h3>
-          <label className="checkline">
-            <input type="checkbox" name="require_fullscreen" defaultChecked={current?.require_fullscreen ?? true} /> Require full screen
-          </label>
-          <TextField label="Violations before automatic submission *" name="violation_limit" type="number" required min={1} max={10} defaultValue={current?.violation_limit ?? 3} />
-          <div className="notice">Monitoring is browser-level and best-effort. A lost internet connection is never counted as a violation. The default policy awaits L&D, Security and HR approval.</div>
-        </>
-      ) : null}
+      {/* Pre-tests run in the same secure environment as the post-training assessment. */}
+      <h3>Secure browser policy{post ? "" : " (pre-test)"}</h3>
+      <label className="checkline">
+        <input type="checkbox" name="require_fullscreen" defaultChecked={current?.require_fullscreen ?? true} /> Require full screen
+      </label>
+      <TextField label="Violations before automatic submission *" name="violation_limit" type="number" required min={1} max={10} defaultValue={current?.violation_limit ?? 3} />
+      <div className="notice">Monitoring is browser-level and best-effort. A lost internet connection is never counted as a violation. The default policy awaits L&D, Security and HR approval.</div>
     </DialogForm>
   );
 }

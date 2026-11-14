@@ -263,7 +263,9 @@ def start_attempt(db: Session, obligation: AssessmentObligation, acknowledged: b
             raise conflict("ASSESSMENT_NOT_DUE", "This assessment is already finished.")
         if obligation.status == ObligationStatus.RETAKE_PENDING or obligation.due_at is None or obligation.due_at > now:
             raise conflict("ASSESSMENT_NOT_DUE", "This assessment is not open yet.")
-        if obligation.attempts and obligation.refresher_acknowledged_at is None:
+        from app.modules.assessment.gate import finished_attempts
+
+        if finished_attempts(obligation) and obligation.refresher_acknowledged_at is None:
             raise conflict("REFRESHER_REQUIRED", "Review and acknowledge the refresher material before your retake.")
     elif obligation.status != ObligationStatus.DUE:
         raise conflict("ASSESSMENT_NOT_DUE", "This pre-test is not available.")
@@ -561,7 +563,9 @@ def _notify_final_failure(db: Session, attempt: AssessmentAttempt, obligation: A
 
 def acknowledge_refresher(db: Session, obligation: AssessmentObligation, now: datetime | None = None) -> None:
     now = now or utcnow()
-    if not obligation.attempts or obligation.status not in (ObligationStatus.RETAKE_PENDING, ObligationStatus.DUE):
+    from app.modules.assessment.gate import finished_attempts
+
+    if not finished_attempts(obligation) or obligation.status not in (ObligationStatus.RETAKE_PENDING, ObligationStatus.DUE):
         raise conflict("REFRESHER_NOT_REQUIRED", "No refresher acknowledgement is needed right now.")
     if obligation.refresher_acknowledged_at is None:
         obligation.refresher_acknowledged_at = now
