@@ -319,11 +319,9 @@ export function FocusShell({ children, footer = "Your answers and timer are mana
   return (
     <div className="assessment-layout">
       <header className="focus-header">
-        <div className="brand">
-          <span className="brand-mark">
-            <Icon name="check" />
-          </span>
-          TrainCheck
+        <div className="focus-logo">
+          <Art file="green-login" box="90 52 285 70" />
+          <span className="sr-only">TrainCheck · Finvasia L&D Evaluation</span>
         </div>
         <span className="muted">Learning verification</span>
         <Btn kind="text" tone="danger" onClick={() => void signOut()}>

@@ -129,44 +129,129 @@ function browserName(ua: string): { name: string; version: number } | null {
   return null;
 }
 
-export async function runSystemCheck(requireFullscreen: boolean): Promise<Check[]> {
-  const checks: Check[] = [];
-  const add = (id: string, label: string, status: Check["status"], detail: string, essential: boolean) => checks.push({ id, label, status, detail, essential });
+/** Number of rows the system check produces, so the page can show placeholders for the ones still running. */
+export const SYSTEM_CHECK_COUNT = 7;
 
-  const missing = [
-    ["Promises", typeof Promise === "function"],
-    ["Fetch", typeof fetch === "function"],
-    ["Secure random IDs", typeof crypto?.randomUUID === "function"],
-  ]
-    .filter(([, ok]) => !ok)
-    .map(([name]) => name);
-  add("browser", "Browser support", missing.length ? "fail" : "pass", missing.length ? `Missing: ${missing.join(", ")}. Update or change your browser.` : "Required browser features are available.", true);
-  add("javascript", "JavaScript", "pass", "Enabled. This page is running its scripts.", true);
+/** Smallest window an assessment may run in (tablet portrait and up). Smaller windows, such as phones, are blocked. */
+const MIN_WINDOW_WIDTH = 768;
+const MIN_WINDOW_HEIGHT = 500;
+/** Oldest versions with every browser feature the exam relies on. Older or unrecognised browsers are blocked. */
+const MIN_VERSIONS: Record<string, number> = { Chrome: 100, Edge: 100, Firefox: 100, Opera: 86, Safari: 15 };
+const PING_COUNT = 3;
+const SLOW_MS = 2000;
 
-  const online = navigator.onLine !== false;
-  add("internet", "Internet connection", online ? "pass" : "fail", online ? "The browser reports an active network connection." : "The browser reports that it is offline. Reconnect and retry.", true);
-
-  let reachable = false;
+/** One real request with a time limit. Returns the response (null when nothing came back) and how long it took. */
+async function timedRequest(path: string, timeoutMs = 8000): Promise<{ response: Response | null; ms: number }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = performance.now();
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch("/api/v1/system/ping", { cache: "no-store", signal: controller.signal });
-    clearTimeout(timer);
-    reachable = response.ok;
+    const response = await fetch(path, { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+    return { response, ms: Math.round(performance.now() - started) };
   } catch {
-    reachable = false;
+    return { response: null, ms: Math.round(performance.now() - started) };
+  } finally {
+    clearTimeout(timer);
   }
-  add("application", "Application connection", reachable ? "pass" : "fail", reachable ? "The TrainCheck server responded." : "TrainCheck could not be reached. Check your connection and retry.", true);
+}
 
-  const fullscreen = Boolean(document.fullscreenEnabled);
-  add("fullscreen", "Full-screen support", fullscreen ? "pass" : requireFullscreen ? "fail" : "warn", fullscreen ? "Full-screen mode is available." : "This browser does not allow full-screen pages. Use a desktop browser such as Chrome, Edge or Firefox.", requireFullscreen);
+/** Every check is measured on this device at the moment it runs; nothing is assumed. `onProgress` receives the
+ *  rows finished so far, so the page fills in as each test completes. */
+export async function runSystemCheck(requireFullscreen: boolean, onProgress?: (checks: Check[]) => void): Promise<Check[]> {
+  const checks: Check[] = [];
+  const add = (id: string, label: string, status: Check["status"], detail: string, essential: boolean) => {
+    checks.push({ id, label, status, detail, essential });
+    onProgress?.([...checks]);
+  };
 
+  // 1. Browser support: each feature the exam uses is exercised, not only looked up.
+  const features: [string, () => boolean][] = [
+    ["Network requests", () => typeof fetch === "function" && typeof new AbortController().abort === "function"],
+    ["Secure random IDs", () => /^[0-9a-f-]{36}$/.test(crypto.randomUUID())],
+    ["Tab-switch detection", () => typeof document.visibilityState === "string" && typeof document.hidden === "boolean"],
+    ["Focus detection", () => typeof document.hasFocus() === "boolean"],
+    ["Navigation lock", () => typeof history.pushState === "function" && typeof history.state !== "undefined"],
+    ["Precise timing", () => typeof performance.now() === "number"],
+  ];
+  const missing = features
+    .filter(([, works]) => {
+      try {
+        return !works();
+      } catch {
+        return true;
+      }
+    })
+    .map(([name]) => name);
+  add("browser", "Browser support", missing.length ? "fail" : "pass", missing.length ? `Not working in this browser: ${missing.join(", ")}. Update or change your browser.` : `All ${features.length} browser features the assessment uses work here.`, true);
+
+  // 2. Signed-in session: answers are saved to the signed-in account, so the server must accept this session.
+  const me = await timedRequest("/api/v1/auth/me");
+  if (me.response?.ok) {
+    const body = (await me.response.json().catch(() => null)) as { data?: { user?: { full_name?: string } } } | null;
+    const name = body?.data?.user?.full_name;
+    add("session", "Signed-in session", "pass", name ? `Signed in as ${name}. Your answers will be saved to this account.` : "Your sign-in is active. Your answers will be saved to your account.", true);
+  } else if (me.response?.status === 401) {
+    add("session", "Signed-in session", "fail", "Your sign-in has expired. Sign out, sign in again, then retry.", true);
+  } else {
+    add("session", "Signed-in session", "fail", me.response ? `TrainCheck could not confirm your sign-in (status ${me.response.status}). Retry.` : "TrainCheck could not confirm your sign-in. Check your connection and retry.", true);
+  }
+
+  // 3 and 4. Internet and application: several real round trips to the TrainCheck server, timed.
+  const times: number[] = []; // Round trips that came back, whatever the reply.
+  let correct = 0; // Replies that were the server's expected answer.
+  let badStatus: number | null = null;
+  for (let i = 0; i < PING_COUNT; i++) {
+    const { response, ms } = await timedRequest("/api/v1/system/ping");
+    if (!response) continue;
+    times.push(ms);
+    const body = (await response.json().catch(() => null)) as { data?: { ok?: boolean; server_now?: string } } | null;
+    if (response.ok && body?.data?.ok === true && body.data.server_now) correct++;
+    else badStatus = response.status;
+  }
+  const lost = PING_COUNT - times.length;
+  const average = times.length ? Math.round(times.reduce((sum, t) => sum + t, 0) / times.length) : 0;
+  if (navigator.onLine === false) {
+    add("internet", "Internet connection", "fail", "This device is offline. Reconnect and retry.", true);
+  } else if (lost === PING_COUNT) {
+    add("internet", "Internet connection", "fail", `None of ${PING_COUNT} test requests got through. Check your connection and retry.`, true);
+  } else if (lost) {
+    add("internet", "Internet connection", "fail", `${lost} of ${PING_COUNT} test requests ${lost === 1 ? "was" : "were"} lost. The connection is unstable, so answers may not save. Retry on a steadier connection.`, true);
+  } else {
+    add("internet", "Internet connection", "pass", `${PING_COUNT} of ${PING_COUNT} test requests got through · average ${average} ms${average > SLOW_MS ? ". The connection is slow, so answers may take a moment to save." : "."}`, true);
+  }
+  if (correct === PING_COUNT) {
+    add("application", "Application connection", "pass", `The TrainCheck server answered all ${PING_COUNT} requests correctly.`, true);
+  } else if (badStatus !== null) {
+    add("application", "Application connection", "fail", `The TrainCheck server sent an unexpected reply (status ${badStatus}). Retry in a moment.`, true);
+  } else {
+    add("application", "Application connection", "fail", correct ? `The TrainCheck server answered only ${correct} of ${PING_COUNT} requests. Retry.` : "TrainCheck could not be reached. Check your connection and retry.", true);
+  }
+
+  // 5. Full screen: the browser must offer it, allow it for this page, and the page must not be inside another page.
+  let framed = false;
+  try {
+    framed = window.self !== window.top;
+  } catch {
+    framed = true;
+  }
+  const hasApi = typeof document.documentElement.requestFullscreen === "function";
+  const allowed = hasApi && Boolean(document.fullscreenEnabled) && !framed;
+  const fullscreenProblem = framed ? "TrainCheck is open inside another page, which blocks full screen. Open it in its own browser tab." : !hasApi ? "This browser cannot show pages in full screen. Use Chrome, Edge or Firefox on a computer." : "Full screen is turned off for this page by a browser or organisation setting. Allow it, then retry.";
+  add("fullscreen", "Full-screen support", allowed ? "pass" : requireFullscreen ? "fail" : "warn", allowed ? "This browser allows full screen here. It is switched on, and confirmed, in the next step." : fullscreenProblem, requireFullscreen);
+
+  // 6. Screen size (required): the real window, measured now. Tablets, laptops and desktops pass; phones do not.
   const width = window.innerWidth;
-  const small = width < 768;
-  add("screen", "Screen size", width < 320 ? "fail" : small ? "warn" : "pass", `Screen ${screen.width} × ${screen.height} · window ${width} × ${window.innerHeight}${width < 320 ? ". The window is too narrow." : small ? ". A larger screen is recommended." : ""}`, width < 320);
+  const height = window.innerHeight;
+  const tooSmall = width < MIN_WINDOW_WIDTH || height < MIN_WINDOW_HEIGHT;
+  const sizeDetail = `Screen ${screen.width} × ${screen.height} · window ${width} × ${height}`;
+  add("screen", "Screen size", tooSmall ? "fail" : "pass", tooSmall ? `${sizeDetail}. The assessment needs a window at least ${MIN_WINDOW_WIDTH} × ${MIN_WINDOW_HEIGHT}. Use a tablet, laptop or desktop, or make the window larger, then retry.` : `${sizeDetail} · meets the ${MIN_WINDOW_WIDTH} × ${MIN_WINDOW_HEIGHT} minimum.`, true);
 
+  // 7. Browser version (required): a recognised browser at or above its oldest supported release.
   const browser = browserName(navigator.userAgent);
-  add("compatibility", "Browser compatibility", browser ? "pass" : "warn", browser ? `${browser.name} ${browser.version} detected.` : "Browser not recognised. You can continue if every required check is ready.", false);
+  const minimum = browser ? MIN_VERSIONS[browser.name] : undefined;
+  const supported = Boolean(browser && minimum !== undefined && browser.version >= minimum);
+  const versionDetail = !browser ? "Browser not recognised. Use a current version of Chrome, Edge, Firefox or Safari, then retry." : !supported ? `${browser.name} ${browser.version} is older than the supported ${browser.name} ${minimum}. Update the browser, then retry.` : `${browser.name} ${browser.version} · supported (${browser.name} ${minimum} or newer).`;
+  add("compatibility", "Browser compatibility", supported ? "pass" : "fail", versionDetail, true);
   return checks;
 }
 

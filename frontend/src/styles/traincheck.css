@@ -97,8 +97,16 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .green-impact-login .impact-login-card{margin-top:0;padding:clamp(16px,3.4vh,29px) clamp(18px,2.6vw,44px) clamp(14px,2.8vh,24px)}
 /* Laptops and desktops: 20px taller card (10px more at the top and bottom), as requested. */
 @media(min-width:701px){.green-impact-login .impact-login-card{padding-top:calc(clamp(16px,3.4vh,29px) + 10px);padding-bottom:calc(clamp(14px,2.8vh,24px) + 10px)}}
-.green-impact-login .impact-login-card>h2{font-size:clamp(21px,4.2vh,34px)}
-.green-impact-login .login-subtitle{font-size:clamp(13px,2.2vh,19px);margin:2px 0 clamp(10px,3vh,28px)}
+/* Tablets, laptops and desktops: the card sits in the vertical middle of the window instead of at the top.
+   When the window is too short for the card, the row grows to fit it, so nothing is cut off. */
+@media(min-width:701px){.green-impact-login .impact-login-card{align-self:center}}
+/* Tablets: the two role buttons share the card width (the prototype grid has four slots, so two buttons
+   left half the card empty and "L&D Admin" wrapped). */
+@media(max-width:1100px){.green-impact-login .demo-roles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* The heading and subtitle also scale with the window width, so the narrow card on tablets keeps
+   "Welcome to TrainCheck" on one line. Laptops and desktops are unchanged. */
+.green-impact-login .impact-login-card>h2{font-size:clamp(21px,min(4.2vh,2.9vw),34px)}
+.green-impact-login .login-subtitle{font-size:clamp(13px,min(2.2vh,1.5vw),19px);margin:2px 0 clamp(10px,3vh,28px)}
 .green-impact-login .demo-roles{margin:0 0 clamp(10px,2.6vh,23px)}
 .green-impact-login .role-choice{min-height:clamp(56px,11.5vh,100px);gap:clamp(4px,1vh,10px);padding:clamp(6px,1.2vh,12px) 6px}
 .green-impact-login .role-choice>svg{width:clamp(20px,3.4vh,28px);height:clamp(20px,3.4vh,28px)}
@@ -112,7 +120,7 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 /* Phones: one compact column (the photo is already hidden). The long description is left out; on shorter phones
    the tile descriptions, and on the shortest the tiles, tagline and subtitle, so the sign-in form always fits. */
 @media(max-width:700px){
-  .green-impact-login{padding:14px 16px;gap:14px;min-height:100dvh}
+  .green-impact-login{padding:14px 16px;gap:14px;min-height:100dvh;justify-content:center}
   .green-impact-login .impact-login-story{min-height:0;padding-bottom:0}
   .green-impact-login .login-brand-head{height:40px;gap:14px}
   .green-impact-login .login-traincheck-logo{width:160px}
@@ -151,6 +159,19 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
   .green-impact-login .login-positioning{margin-top:10px}
   .green-impact-login .impact-login-card>h2{margin-bottom:10px}
 }
+
+/* Assessment, gate and result pages: the same TrainCheck logo as the sign-in page and the sidebar,
+   sized to the header height. */
+.focus-header .focus-logo{display:flex;align-items:center;flex-shrink:0}
+.focus-header .focus-logo>svg{display:block;height:56px;width:auto;aspect-ratio:285/70;overflow:hidden}
+@media(min-width:701px){.assessment-layout:has(.gate-panel) .focus-header .focus-logo>svg{height:clamp(36px,6vh,56px)}}
+@media(max-width:700px){.focus-header .focus-logo>svg{height:38px}}
+/* "Learning verification" and "Sign out" were 14px everywhere, too small next to the logo: 16px on tablets
+   and small laptops, rising to 18px on large screens. Phones (650px and below) hide the tagline for room,
+   as before, and show "Sign out" at 16px. */
+.focus-header>.muted,.focus-header>.btn{font-size:clamp(16px,1vw,18px)}
+.focus-header>.btn{min-height:44px;padding:10px 16px}
+@media(max-width:650px){.focus-header>.btn{font-size:16px;padding:10px 12px}}
 
 /* Feedback after a post-training assessment */
 .feedback-form>p{font-size:14px;margin:0 0 18px}

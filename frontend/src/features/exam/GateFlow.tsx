@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { FocusShell } from "@/components/shell/AppShell";
 import { landingPath } from "@/components/shell/nav";
@@ -11,7 +11,7 @@ import { useSession } from "@/lib/hooks";
 import type { AccessState, AttemptView } from "@/lib/types";
 import { clock, firstName, greeting } from "@/lib/utils";
 import { ExamView } from "./ExamView";
-import { enterFullscreen, isFullscreen, runSystemCheck, systemCheckPassed, type Check } from "./monitor";
+import { enterFullscreen, isFullscreen, runSystemCheck, SYSTEM_CHECK_COUNT, systemCheckPassed, type Check } from "./monitor";
 
 const STEPS = ["System check", "Full screen", "Instructions", "Assessment"];
 const DETAIL_RETRY_DELAYS_MS = [700, 2000, 4000];
@@ -20,7 +20,7 @@ const minutesLabel = (seconds: number) => {
   return `${m} minute${m === 1 ? "" : "s"}`;
 };
 const STATUS: Record<Check["status"], [string, string]> = { pass: ["Ready", "check"], fail: ["Action needed", "x"], warn: ["Advisory", "alert"], info: ["Not applicable", "help"] };
-const CHECK_ICONS: Record<string, string> = { browser: "globe", javascript: "code", internet: "wifi", application: "monitor", storage: "storage", fullscreen: "maximize", screen: "monitor", compatibility: "shield" };
+const CHECK_ICONS: Record<string, string> = { browser: "globe", session: "lock", internet: "wifi", application: "monitor", storage: "storage", fullscreen: "maximize", screen: "monitor", compatibility: "shield" };
 
 /** Retries a load quietly after a momentary database or network hiccup (status 0 or 5xx). */
 async function withRetry<T>(load: () => Promise<T>, alive: () => boolean): Promise<T> {
@@ -84,6 +84,10 @@ function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStar
   const [screen, setScreen] = useState<SecureScreen>(running ? "resume" : "check");
   const [attempt, setAttempt] = useState<AttemptView | null>(running);
   const [checks, setChecks] = useState<Check[] | null>(null);
+  const [checking, setChecking] = useState(!running);
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null);
+  // Each run gets a number; results from an older run (before a retry, or after leaving the page) are ignored.
+  const checkRun = useRef(0);
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [fullscreenError, setFullscreenError] = useState("");
@@ -91,18 +95,31 @@ function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStar
   const limit = rules?.violation_limit ?? 3;
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
 
+  /** Runs every check for real; rows appear one by one as each test finishes. */
+  const runChecks = (needFullscreen: boolean) => {
+    const run = ++checkRun.current;
+    const current = () => run === checkRun.current;
+    void runSystemCheck(needFullscreen, (partial) => current() && setChecks(partial)).then((result) => {
+      if (!current()) return;
+      setChecks(result);
+      setChecking(false);
+      setCheckedAt(new Date());
+    });
+  };
+
   useEffect(() => {
     if (running) return;
-    let alive = true;
-    void runSystemCheck(true).then((result) => alive && setChecks(result));
+    const runs = checkRun;
+    runChecks(true);
     return () => {
-      alive = false;
+      runs.current++;
     };
-  }, [running]);
+  }, [running]); // Once per mount, as before; a retry calls runChecks itself.
 
-  const retryChecks = async () => {
+  const retryChecks = () => {
     setChecks(null);
-    setChecks(await runSystemCheck(requireFullscreen));
+    setChecking(true);
+    runChecks(requireFullscreen);
   };
 
   const goFullscreen = async (next: SecureScreen) => {
@@ -132,42 +149,42 @@ function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStar
   if (screen === "exam" && attempt) return <ExamView initial={attempt} />;
 
   if (screen === "check") {
-    const passed = systemCheckPassed(checks);
-    const failed = checks?.filter((c) => c.essential && c.status !== "pass") ?? [];
+    const passed = !checking && systemCheckPassed(checks);
+    const failed = checking ? [] : (checks?.filter((c) => c.essential && c.status !== "pass") ?? []);
+    const pending = checking ? Math.max(0, SYSTEM_CHECK_COUNT - (checks?.length ?? 0)) : 0;
     return (
       <Stage step={0}>
         <h1 tabIndex={-1}>System check</h1>
         <p className="lead">Before the timer starts, we confirm that this browser can run the {noun} and reach TrainCheck to save your answers.</p>
-        <ul className="check-list" aria-busy={!checks} aria-live="polite">
-          {checks
-            ? checks.map((c) => (
-                <li className="check-row" key={c.id}>
-                  <span className="check-icon">
-                    <Icon name={CHECK_ICONS[c.id] ?? "shield"} />
-                  </span>
-                  <div>
-                    <strong>
-                      {c.label}
-                      {c.essential ? "" : " "}
-                      {c.essential ? null : <small>(optional)</small>}
-                    </strong>
-                    <small>{c.detail}</small>
-                  </div>
-                  <span className={`check-status ${c.status}`}>
-                    <Icon name={STATUS[c.status][1]} />
-                    {STATUS[c.status][0]}
-                  </span>
-                </li>
-              ))
-            : Array.from({ length: 7 }, (_, i) => (
-                <li className="check-row loading" key={i}>
-                  <span className="check-icon" />
-                  <div>
-                    <strong>Checking…</strong>
-                    <small>&nbsp;</small>
-                  </div>
-                </li>
-              ))}
+        <ul className="check-list" aria-busy={checking} aria-live="polite">
+          {(checks ?? []).map((c) => (
+            <li className="check-row" key={c.id}>
+              <span className="check-icon">
+                <Icon name={CHECK_ICONS[c.id] ?? "shield"} />
+              </span>
+              <div>
+                <strong>
+                  {c.label}
+                  {c.essential ? "" : " "}
+                  {c.essential ? null : <small>(optional)</small>}
+                </strong>
+                <small>{c.detail}</small>
+              </div>
+              <span className={`check-status ${c.status}`}>
+                <Icon name={STATUS[c.status][1]} />
+                {STATUS[c.status][0]}
+              </span>
+            </li>
+          ))}
+          {Array.from({ length: pending }, (_, i) => (
+            <li className="check-row loading" key={`pending-${i}`}>
+              <span className="check-icon" />
+              <div>
+                <strong>Checking…</strong>
+                <small>&nbsp;</small>
+              </div>
+            </li>
+          ))}
         </ul>
         {failed.length ? (
           <div className="notice danger" role="alert">
@@ -181,15 +198,18 @@ function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStar
           </div>
         ) : null}
         <div className="exam-stage-actions">
-          <Btn onClick={() => void retryChecks()}>
-            <Icon name="refresh" /> Retry check
+          <Btn onClick={retryChecks} disabled={checking}>
+            <Icon name="refresh" /> {checking ? "Checking…" : "Retry check"}
           </Btn>
           {/* Waits for the rules: before they arrive, the full-screen step could be skipped by mistake. */}
           <Btn kind="primary" disabled={!passed || !rules} onClick={() => rules && setScreen(rules.require_fullscreen ? "fullscreen" : "instructions")}>
             {rules ? "Continue" : `Loading ${noun}…`} <Icon name="arrow" />
           </Btn>
         </div>
-        <p className="small">Checks use this browser&apos;s own capabilities and a request to TrainCheck only. No speed test is run.</p>
+        <p className="small">
+          Checks test this browser&apos;s features and make a few small requests to TrainCheck. No speed test is run.
+          {checkedAt ? ` Last checked at ${checkedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.` : ""}
+        </p>
       </Stage>
     );
   }

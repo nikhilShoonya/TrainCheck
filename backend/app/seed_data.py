@@ -11,7 +11,7 @@ TRAINERS = ["Riya Anand", "Sanjay Verma"]
 EMPLOYEES = [
     ("M001", "Neha Kapoor", "manager@traincheck.demo", "OPS", "OPERATIONS", "Demo G3", None),
     ("M002", "Kabir Das", "manager2@traincheck.demo", "CX", "SUPPORT", "Demo G3", None),
-    ("A001", "Riya Anand", "admin@traincheck.demo", "LND", None, "Demo G3", None),
+    ("A001", "Deepjot Tiwari", "admin@traincheck.demo", "LND", None, "Demo G3", None),
     ("H001", "Dev Malhotra", "hr@traincheck.demo", "HR", None, "Demo G4", None),
     ("E001", "Aarav Mehta", "employee@traincheck.demo", "OPS", "COMPLIANCE", "Demo G1", "M001"),
     ("E002", "Isha Rao", "clear@traincheck.demo", "OPS", "COMPLIANCE", "Demo G2", "M001"),
