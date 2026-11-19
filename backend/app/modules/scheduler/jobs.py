@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.core.db import session_factory
 from app.core.enums import AssessmentType, AttemptStatus, ObligationStatus, ReviewerType
 from app.models import AssessmentAttempt, AssessmentObligation, BehaviourReview, BehaviourReviewCycle
-from app.modules.assessment.gate import alert_unavailable, obligation_startable
+from app.modules.assessment.gate import alert_unavailable, obligation_startable, training_not_archived
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.assessment.service import finalise_attempt
 from app.modules.behaviour.service import overdue_working_days
@@ -28,12 +28,20 @@ LD_ESCALATION_WORKING_DAYS = 2  # Overdue post-tests are escalated to L&D Admin.
 
 
 def finalise_expired(db: Session, now: datetime | None = None) -> int:
+    """Each attempt is finalised and committed on its own: one that fails is logged and retried on the next run,
+    and never holds back everyone else's result. Safe in several processes at once (finalise_attempt row-locks)."""
     now = now or utcnow()
     ids = db.scalars(select(AssessmentAttempt.id).where(AssessmentAttempt.status == AttemptStatus.IN_PROGRESS, AssessmentAttempt.expires_at <= now)).all()
+    done = 0
     for attempt_id in ids:
-        finalise_attempt(db, attempt_id, now=now)
-    db.commit()
-    return len(ids)
+        try:
+            finalise_attempt(db, attempt_id, now=now)
+            db.commit()
+            done += 1
+        except Exception:
+            db.rollback()
+            logger.exception("Could not finalise expired attempt %s; it will be retried", attempt_id)
+    return done
 
 
 def pending_assessment_reminders(db: Session, now: datetime | None = None) -> int:
@@ -46,6 +54,7 @@ def pending_assessment_reminders(db: Session, now: datetime | None = None) -> in
             AssessmentObligation.assessment_type == AssessmentType.POST_TEST,
             AssessmentObligation.status.in_((ObligationStatus.SCHEDULED, ObligationStatus.DUE)),
             AssessmentObligation.due_at <= now,
+            training_not_archived(),
         )
     ).all()
     startable_cache: dict = {}

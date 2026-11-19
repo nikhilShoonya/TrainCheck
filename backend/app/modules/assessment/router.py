@@ -17,11 +17,14 @@ from app.core.deps import CurrentUser, require_gate_clear, require_session
 from app.core.enums import AssessmentType, AttemptStatus, ObligationStatus, ResultStatus, SecurityEventType
 from app.core.errors import conflict, not_found
 from app.core.responses import display_percent, iso, num, ok
+from app.core.routing import ReleasingRoute
 from app.models import AssessmentAttempt, AssessmentObligation, AttemptQuestion, Enrolment
 from app.modules.assessment import service
-from app.modules.assessment.gate import access_state, blocking_obligations, queue_item
+from app.modules.assessment.entry import obligation_entry
+from app.modules.assessment.gate import access_state, blocking_obligations, finalise_expired_attempts, queue_item
+from app.modules.assessment.scheduling import load_calendar
 
-router = APIRouter(tags=["Assessment"])
+router = APIRouter(route_class=ReleasingRoute, tags=["Assessment"])
 
 
 class StartAttemptIn(BaseModel):
@@ -30,6 +33,10 @@ class StartAttemptIn(BaseModel):
 
 class SaveAnswerIn(BaseModel):
     selected_option_ids: list[str] = Field(default_factory=list, max_length=20)
+    # The answer revision this choice was made against (compare-and-set). Omitted: an unconditional save.
+    base_revision: int | None = Field(default=None, ge=0)
+    # A random ID for this save, kept with the answer it writes (see service.save_answer).
+    op_id: str | None = Field(default=None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
 
 
 class MarkIn(BaseModel):
@@ -54,6 +61,8 @@ def attempt_question_view(question: AttemptQuestion) -> dict:
         "marks": num(question.marks_snapshot),
         "options": question.options_snapshot,
         "selected_option_ids": answer.selected_option_ids if answer else [],
+        "revision": answer.revision if answer else 0,
+        "op_id": answer.last_op_id if answer else None,
         "marked_for_review": answer.marked_for_review if answer else False,
         "saved_at": iso(answer.saved_at) if answer else None,
     }
@@ -188,9 +197,18 @@ def ping() -> dict:
 
 @router.get("/me/assessment-obligations/{obligation_id}")
 def get_obligation(obligation_id: uuid.UUID, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
+    """The assessment's rules and whether it can be entered now. Used by the gate and by the waiting screen,
+    whose countdown is timed against server_now. Never includes questions: nothing is revealed before an attempt."""
     obligation = service.get_own_obligation(db, obligation_id, user.employee_id)
+    now = utcnow()
+    finalise_expired_attempts(db, user.employee_id, now)  # A deadline that passed is a result, not a resume.
+    db.commit()
+    db.refresh(obligation)
     active = next((a for a in obligation.attempts if a.status == AttemptStatus.IN_PROGRESS), None)
     item = queue_item(obligation, 1)
+    item.update(obligation_entry(db, obligation, now, {}))
+    item["server_now"] = iso(now)
+    item["timezone"] = load_calendar(db).timezone  # The organisation timezone, for showing the opening time.
     item["status"] = obligation.status
     item["active_attempt_id"] = str(active.id) if active else None
     item["violation_limit"] = obligation.config.violation_limit
@@ -283,9 +301,9 @@ def get_attempt(attempt_id: uuid.UUID, user: CurrentUser = Depends(require_sessi
 @router.put("/attempts/{attempt_id}/questions/{attempt_question_id}/answer")
 def save_answer(attempt_id: uuid.UUID, attempt_question_id: uuid.UUID, body: SaveAnswerIn, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
     attempt = service.get_own_attempt(db, attempt_id, user.employee_id)
-    answer = service.save_answer(db, attempt, attempt_question_id, body.selected_option_ids)
+    answer = service.save_answer(db, attempt, attempt_question_id, body.selected_option_ids, base_revision=body.base_revision, op_id=body.op_id)
     db.commit()
-    return ok({"saved_at": iso(answer.saved_at), "selected_option_ids": answer.selected_option_ids})
+    return ok({"saved_at": iso(answer.saved_at), "selected_option_ids": answer.selected_option_ids, "revision": answer.revision, "op_id": answer.last_op_id})
 
 
 @router.post("/attempts/{attempt_id}/questions/{attempt_question_id}/mark")

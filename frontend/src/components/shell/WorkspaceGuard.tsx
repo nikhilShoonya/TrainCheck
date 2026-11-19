@@ -10,6 +10,12 @@ import { useSession } from "@/lib/hooks";
 import { ROLE_PREFETCH, prefetchPaths } from "@/lib/query";
 
 const SESSION_RECHECK_MS = 30_000;
+/** Returning to the tab re-checks at most this often. */
+const RETURN_RECHECK_MS = 5_000;
+/** Checked a moment after the opening time, so the server already counts the assessment as due. */
+const OPENING_MARGIN_MS = 1_000;
+/** setTimeout's upper bound (about 24.8 days); a later opening is re-armed by the check at that point. */
+const MAX_TIMER_MS = 2_147_000_000;
 
 /** Workspace content waits for the backend's gate decision. This is presentation only:
  *  every API behind it enforces the same gate on the server. */
@@ -40,6 +46,38 @@ export function WorkspaceGuard({ children }: { children: ReactNode }) {
     lastCheck.current = now;
     void refresh();
   }, [pathname, ready, user, refresh]);
+
+  // A page left open must notice when a scheduled assessment opens, without the person navigating: re-check at the
+  // opening moment the server reported, timed against the server's clock. Each check re-arms this with the new answer.
+  const nextChange = access?.next_change_at ?? null;
+  const serverNow = access?.server_now ?? null;
+  useEffect(() => {
+    if (!ready || !user || !nextChange) return;
+    const reference = serverNow ? Date.parse(serverNow) : Date.now();
+    const wait = Math.min(Math.max(0, Date.parse(nextChange) - reference) + OPENING_MARGIN_MS, MAX_TIMER_MS);
+    if (Number.isNaN(wait)) return;
+    const timer = window.setTimeout(() => {
+      lastCheck.current = Date.now();
+      void refresh();
+    }, wait);
+    return () => window.clearTimeout(timer);
+  }, [ready, user, nextChange, serverNow, refresh]);
+
+  // Timers are slowed or paused in background tabs and sleeping laptops, so re-check on return to the tab as well.
+  useEffect(() => {
+    if (!ready || !user) return;
+    const onReturn = () => {
+      if (document.visibilityState !== "visible" || Date.now() - lastCheck.current < RETURN_RECHECK_MS) return;
+      lastCheck.current = Date.now();
+      void refresh();
+    };
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("focus", onReturn);
+    return () => {
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("focus", onReturn);
+    };
+  }, [ready, user, refresh]);
 
   // Once the first screen is usable, quietly load the role's likely next pages. It waits until the visible
   // page's own requests have finished, so it never delays them, and runs at most two requests at a time.

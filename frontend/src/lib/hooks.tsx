@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, reloadAt } from "./api";
+import { browserStorage, purgePendingAnswers } from "./pendingAnswers";
 import { apiQuery, clearApiCache } from "./query";
 import type { AccessState, User } from "./types";
 
@@ -84,6 +85,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
       const { me, gate } = loaded;
       if (mine !== generation.current) return;
+      purgePendingAnswers(browserStorage(), me.user.id, Date.now()); // Unsaved answers left by another account go.
       setUser((previous) => {
         if (previous?.id !== me.user.id) clearApiCache(); // Another account: nothing cached may carry over.
         return me.user;
@@ -108,6 +110,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const adopt = useCallback((next: User, state: AccessState) => {
     generation.current += 1;
     clearApiCache();
+    purgePendingAnswers(browserStorage(), next.id, Date.now());
     setUser(next);
     setAccess(state);
     setError(null);
@@ -115,10 +118,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    // First: every live answer queue (here and in other tabs) is stopped, so a save finishing while signing out
+    // cannot write answers back to this device. Then again after, in case anything slipped in.
+    purgePendingAnswers(browserStorage(), null, Date.now());
     try {
       await api.post("/auth/logout");
     } finally {
       clearApiCache();
+      purgePendingAnswers(browserStorage(), null, Date.now()); // Nothing of this account's answers stays behind.
       reloadAt("/login"); // A full load, so nothing from the signed-in session stays in memory.
     }
   }, []);

@@ -4,22 +4,27 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear
-from app.core.enums import AssessmentType, ObligationStatus, ResultStatus, ReviewerType
+from app.core.enums import AssessmentType, ObligationStatus, ResultStatus, ReviewerType, ScheduleMode
 from app.core.responses import display_percent, iso, ok
-from app.models import AssessmentConfig
+from app.core.routing import ReleasingRoute
+from app.models import AssessmentConfig, AssessmentFeedback, Training
+from app.modules.assessment.entry import before_assessment, obligation_entry, order_cards, pending_group, unavailable
+from app.modules.assessment.scheduling import CalendarView, fixed_instant, load_calendar
 from app.modules.behaviour.service import review_status, reviews_for_self
+from app.modules.feedback.router import ratings_of
 from app.modules.reports.data import Row, assessment_timing, behaviour_means, behaviour_reviews, load_rows, mean, summary
 from app.modules.reports.scorecard import gain_values
 
-router = APIRouter(prefix="/me", tags=["Employee"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/me", tags=["Employee"])
 
 
-def training_card(r: Row, now, pretest_ready: set[uuid.UUID]) -> dict:
+def training_card(r: Row, now, pretest_ready: set[uuid.UUID], planned: dict | None = None, calendar: CalendarView | None = None) -> dict:
     e, t = r.enrolment, r.enrolment.training
     config = r.obligation.config if r.obligation else None
     # Offered only once pre-test rules are saved; otherwise starting it fails with "no pre-test configured".
@@ -44,6 +49,10 @@ def training_card(r: Row, now, pretest_ready: set[uuid.UUID]) -> dict:
         "latest_attempt_id": str(r.post_attempts[-1].id) if r.post_attempts else None,
         "obligation_id": str(r.obligation.id) if r.obligation else None,
         "due_at": iso(r.obligation.due_at) if r.obligation else None,
+        # Before completion is recorded there is no assessment yet; a custom date already chosen is shown as the
+        # earliest moment it can open. It still opens only once completion is recorded.
+        "planned_at": iso(planned[t.id]) if planned and r.obligation is None and t.id in planned else None,
+        "timezone": calendar.timezone if calendar else None,
         "retake_pending": bool(r.obligation and r.obligation.status == ObligationStatus.RETAKE_PENDING),
         "refresher_acknowledged": bool(r.obligation and r.obligation.refresher_acknowledged_at),
         "question_count": config.question_count if config else None,
@@ -57,7 +66,64 @@ def training_card(r: Row, now, pretest_ready: set[uuid.UUID]) -> dict:
 
 
 def _rows(db: Session, user: CurrentUser) -> list[Row]:
-    return load_rows(db, [user.employee_id])
+    """The employee's rows, with each assessment's rules and each training's materials read in one query apiece
+    instead of one per training (audit F-22)."""
+    rows = load_rows(db, [user.employee_id])
+    config_ids = {r.obligation.config_id for r in rows if r.obligation}
+    if config_ids:
+        configs = {c.id: c for c in db.scalars(select(AssessmentConfig).where(AssessmentConfig.id.in_(config_ids)))}
+        for r in rows:
+            if r.obligation:
+                set_committed_value(r.obligation, "config", configs[r.obligation.config_id])  # Loaded, not changed.
+    training_ids = {r.enrolment.training_id for r in rows}
+    if training_ids:
+        db.scalars(select(Training).options(selectinload(Training.materials)).where(Training.id.in_(training_ids)).execution_options(populate_existing=True)).all()
+    return rows
+
+
+def _planned(db: Session, rows: list[Row], calendar: CalendarView) -> dict[uuid.UUID, object]:
+    """Opening moments of custom-date post-tests for trainings among these rows not yet scheduled for the employee."""
+    ids = {r.enrolment.training_id for r in rows if r.obligation is None}
+    if not ids:
+        return {}
+    query = select(AssessmentConfig).where(
+        AssessmentConfig.training_id.in_(ids), AssessmentConfig.assessment_type == AssessmentType.POST_TEST, AssessmentConfig.is_active, AssessmentConfig.schedule_mode == ScheduleMode.FIXED_DATE
+    )
+    return {c.training_id: opens for c in db.scalars(query) if (opens := fixed_instant(calendar, c))}
+
+
+def _cards(db: Session, rows: list[Row], now) -> list[dict]:
+    calendar = load_calendar(db)
+    ready, planned = _pretest_ready(db, rows), _planned(db, rows, calendar)
+    owed, cache = _feedback_owed(db, rows), {}
+    cards = []
+    for r in rows:
+        card = training_card(r, now, ready, planned, calendar)
+        # What the employee can do about the assessment, by the same rules the gate and start_attempt apply.
+        entry = obligation_entry(db, r.obligation, now, cache) if r.obligation else before_assessment(r.enrolment.completion is not None)
+        if r.enrolment.id in owed and entry["entry_reason"] == "COMPLETED":
+            entry = unavailable("FEEDBACK_REQUIRED")
+        card.update(entry, feedback_required=r.enrolment.id in owed, pending_group=pending_group(entry, r.result, r.enrolment.id in owed))
+        cards.append(card)
+    return cards
+
+
+def _feedback_owed(db: Session, rows: list[Row]) -> set[uuid.UUID]:
+    """Enrolments with a post-test result whose required feedback is not given (the rule of gate.feedback_due)."""
+    from app.modules.assessment.gate import feedback_cutoff
+
+    post = [o for r in rows for o in r.enrolment.obligations if o.assessment_type == AssessmentType.POST_TEST]
+    if not post:
+        return set()
+    given = set(db.scalars(select(AssessmentFeedback.obligation_id).where(AssessmentFeedback.obligation_id.in_([o.id for o in post]))))
+    cutoff = feedback_cutoff()
+    owed = set()
+    for o in post:
+        results = [a for a in o.attempts if a.result_status is not None]
+        exempt = cutoff is not None and any(a.submitted_at < cutoff for a in results)  # Results from before feedback existed.
+        if results and o.id not in given and not exempt:
+            owed.add(o.enrolment_id)
+    return owed
 
 
 def _pretest_ready(db: Session, rows: list[Row]) -> set[uuid.UUID]:
@@ -73,8 +139,7 @@ def _pretest_ready(db: Session, rows: list[Row]) -> set[uuid.UUID]:
 def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     now = utcnow()
     rows = _rows(db, user)
-    ready = _pretest_ready(db, rows)
-    cards = [training_card(r, now, ready) for r in rows]
+    cards = _cards(db, rows, now)
     window = now - timedelta(days=90)
     points = sorted(
         ({"label": r.enrolment.training.title, "score": display_percent(r.latest), "date": iso(r.post_attempts[-1].submitted_at)} for r in rows if r.post_attempts and r.post_attempts[-1].submitted_at >= window),
@@ -113,9 +178,7 @@ def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Dep
 @router.get("/trainings")
 def trainings(user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     now = utcnow()
-    rows = _rows(db, user)
-    ready = _pretest_ready(db, rows)
-    return ok([training_card(r, now, ready) for r in rows])
+    return ok(order_cards(_cards(db, _rows(db, user), now)))  # Pending first (see entry.order_cards).
 
 
 @router.get("/refresher-materials")
@@ -139,8 +202,16 @@ def personal_scorecard(user: CurrentUser = Depends(require_gate_clear), db: Sess
     """The employee's own Learning and Behaviour evidence for each training."""
     now = utcnow()
     items = []
-    for r in _rows(db, user):
-        reviews = behaviour_reviews(db, [r.enrolment.id])
+    feedback_by_obligation = {f.obligation_id: f for f in db.scalars(select(AssessmentFeedback).where(AssessmentFeedback.employee_id == user.employee_id))}
+    rows = _rows(db, user)
+    reviews_by_enrolment: dict[uuid.UUID, list] = {}
+    for review in behaviour_reviews(db, [r.enrolment.id for r in rows]):  # One read for every training.
+        reviews_by_enrolment.setdefault(review.cycle.enrolment_id, []).append(review)
+    for r in rows:
+        # Feedback is given once per assessment cycle; show the most recent one for this training.
+        given = [feedback_by_obligation[o.id] for o in r.enrolment.obligations if o.id in feedback_by_obligation]
+        latest_feedback = max(given, key=lambda f: f.submitted_at) if given else None
+        reviews = reviews_by_enrolment.get(r.enrolment.id, [])
         pre = float(r.pre_attempt.score_percent) if r.pre_attempt else None
         first = float(r.first) if r.first is not None else None
         absolute, normalised, note = gain_values(pre, first)
@@ -153,6 +224,8 @@ def personal_scorecard(user: CurrentUser = Depends(require_gate_clear), db: Sess
                 "pre_test": display_percent(pre),
                 "first_score": display_percent(r.first),
                 "best_score": display_percent(r.best),
+                "test_score": display_percent(r.latest),
+                "feedback_score": mean(list(ratings_of(latest_feedback).values())) if latest_feedback else None,
                 "gain": absolute,
                 "normalised_gain": normalised,
                 "gain_note": note,

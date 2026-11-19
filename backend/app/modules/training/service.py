@@ -11,26 +11,28 @@ from datetime import datetime
 
 from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.config import get_settings
 from app.core.enums import (
     AssessmentType,
+    AttemptStatus,
     AttendanceStatus,
     EmploymentStatus,
     EnrolmentStatus,
     ObligationStatus,
+    SubmissionReason,
     TargetScope,
     TrainingStatus,
 )
 from app.core.errors import ApiError, conflict, validation
 from app.core.responses import iso
-from app.models import AssessmentConfig, AssessmentObligation, Employee, Enrolment, Training, TrainingBatch, TrainingCompletion
+from app.models import AssessmentAttempt, AssessmentConfig, AssessmentObligation, Employee, Enrolment, Training, TrainingBatch, TrainingCompletion
 from app.modules.assessment.gate import obligation_startable
-from app.modules.assessment.scheduling import calculate_due_at, load_calendar, schedule_snapshot
-from app.modules.assessment.service import active_config, counted_attempts, pool_message, pool_report
+from app.modules.assessment.scheduling import CalendarView, calculate_due_at, load_calendar, schedule_snapshot
+from app.modules.assessment.service import active_config, counted_attempts, finalise_attempt, pool_message, pool_report
 from app.modules.behaviour.service import create_cycles
 from app.modules.notifications.service import notify_employee, notify_roles
 
@@ -319,7 +321,7 @@ def schedule_post_test(db: Session, enrolment: Enrolment, completed_at: datetime
     )
     db.add(obligation)
     db.flush()
-    due_day = calendar.local_date(obligation.due_at).isoformat()
+    due_day = local_moment(calendar, obligation.due_at)
     record_audit(db, actor_id, "ASSESSMENT_OBLIGATION_CREATED", "assessment_obligation", obligation.id, after={"employee": employee.employee_code, "training": training.training_code, "due_at": iso(obligation.due_at), "config_version": config.version})
     notify_employee(
         db,
@@ -334,8 +336,116 @@ def schedule_post_test(db: Session, enrolment: Enrolment, completed_at: datetime
     return {"status": "SCHEDULED", "reason": None, "message": f"Assessment scheduled for {label}, due from {due_day}.", "action": None, "due_at": iso(obligation.due_at), "obligation": obligation}
 
 
+def local_moment(calendar: CalendarView, moment: datetime) -> str:
+    """A moment as people read it: local date and time with the timezone named, e.g. 2026-11-19 15:30 (Asia/Kolkata)."""
+    return f"{moment.astimezone(calendar.tz):%Y-%m-%d %H:%M} ({calendar.timezone})"
+
+
+# Not started: no attempt of any status. A running attempt keeps its deadline; a submitted result never moves.
+RESCHEDULABLE_STATUSES = (ObligationStatus.SCHEDULED, ObligationStatus.DUE)
+
+
+def not_started_post_tests(db: Session, training_id: uuid.UUID) -> list[AssessmentObligation]:
+    """First-cycle post-tests of a training that no attempt has touched. Retakes and re-training cycles follow
+    their own approval rules and are never moved by a change of schedule."""
+    candidates = db.scalars(
+        select(AssessmentObligation)
+        .options(selectinload(AssessmentObligation.attempts))
+        .where(
+            AssessmentObligation.training_id == training_id,
+            AssessmentObligation.assessment_type == AssessmentType.POST_TEST,
+            AssessmentObligation.status.in_(RESCHEDULABLE_STATUSES),
+            AssessmentObligation.cycle_number == 1,
+            AssessmentObligation.completed_training_at.is_not(None),
+        )
+    )
+    return [o for o in candidates if not o.attempts]
+
+
+def lock_if_not_started(db: Session, obligation_id: uuid.UUID) -> AssessmentObligation | None:
+    """Takes the obligation's row lock (the one start_attempt takes) and checks again, from the database, that it is
+    still a first-cycle post-test nobody has started. None when an attempt began, it finished, or it changed meanwhile.
+
+    The list from not_started_post_tests was read without a lock: an attempt may have started since. Holding the lock
+    until commit also makes a start that comes after wait, and then see the new due time."""
+    obligation = db.scalar(select(AssessmentObligation).where(AssessmentObligation.id == obligation_id).with_for_update().execution_options(populate_existing=True))
+    if obligation is None or obligation.status not in RESCHEDULABLE_STATUSES or obligation.cycle_number != 1:
+        return None
+    started = db.scalar(select(AssessmentAttempt.id).where(AssessmentAttempt.obligation_id == obligation.id).limit(1))
+    return None if started is not None else obligation
+
+
+def apply_schedule(db: Session, training: Training, config: AssessmentConfig, actor_id: uuid.UUID | None, now: datetime | None = None) -> dict:
+    """Applies newly saved post-test rules to employees already waiting, when L&D explicitly chooses to.
+
+    Configuration changes apply prospectively unless applied explicitly (BR §3.1), and due dates are never
+    recalculated silently (BR §4.3): this runs only on that choice, audits every change with its before and
+    after values, records the policy version in the schedule snapshot and tells each employee affected.
+
+    1. Completions recorded while no assessment could be scheduled get one now (as schedule_pending_assessments).
+    2. Post-tests not yet started are recalculated from their recorded completion time under the new rules.
+    Employees without a recorded completion get nothing: completion is the only trigger (BR §4.1).
+    """
+    now = now or utcnow()
+    calendar = load_calendar(db)
+    scheduled: list[dict] = []
+    readiness = assessment_readiness(db, training)
+    if readiness.ready and readiness.config is not None and readiness.config.id == config.id:
+        for enrolment in unscheduled_completions(db, training.id):
+            outcome = schedule_post_test(db, enrolment, enrolment.completion.completed_at, actor_id, now, readiness)
+            if outcome["status"] == "SCHEDULED":
+                scheduled.append({"employee_code": enrolment.employee.employee_code, "employee_name": enrolment.employee.full_name, "due_at": outcome["due_at"]})
+    rescheduled: list[dict] = []
+    for candidate in not_started_post_tests(db, training.id):
+        obligation = lock_if_not_started(db, candidate.id)
+        if obligation is None or obligation.config_id == config.id:
+            continue  # Started meanwhile (left alone), or already on these rules (including those just scheduled).
+        before = {"due_at": iso(obligation.due_at), "config_version": obligation.config.version}
+        due_at = calculate_due_at(calendar, obligation.completed_training_at, config)
+        obligation.config = config
+        obligation.due_at = due_at
+        obligation.schedule_snapshot = schedule_snapshot(calendar, config)
+        if due_at > now:
+            obligation.status = ObligationStatus.SCHEDULED  # Not open yet: it opens on its own at due_at.
+        record_audit(db, actor_id, "ASSESSMENT_OBLIGATION_RESCHEDULED", "assessment_obligation", obligation.id, reason="Assessment rules saved and applied to assessments not yet started.", before=before, after={"due_at": iso(due_at), "config_version": config.version})
+        if iso(due_at) != before["due_at"]:
+            notify_employee(
+                db,
+                obligation.employee_id,
+                "ASSESSMENT_RESCHEDULED",
+                f"Assessment rescheduled: {training.title}",
+                f"Your mandatory assessment now opens from {local_moment(calendar, due_at)}.",
+                "/employee/assessments",
+                f"rescheduled:{obligation.id}:{config.version}",
+                now,
+            )
+        employee = obligation.employee
+        rescheduled.append({"employee_code": employee.employee_code, "employee_name": employee.full_name, "due_at": iso(due_at)})
+    db.flush()
+    if scheduled or rescheduled:
+        record_audit(db, actor_id, "ASSESSMENT_SCHEDULE_APPLIED", "training", training.id, after={"config_version": config.version, "scheduled": len(scheduled), "rescheduled": len(rescheduled)})
+    return {"scheduled": scheduled, "rescheduled": rescheduled}
+
+
 def scheduling_view(outcome: dict) -> dict:
     return {k: v for k, v in outcome.items() if k != "obligation"}
+
+
+def submit_running_pre_test(db: Session, enrolment: Enrolment, now: datetime) -> None:
+    """A pre-test only makes sense before training completion. One still running when completion is recorded is
+    submitted with its saved answers (decision of 19 Nov 2026); otherwise the employee would be held by the gate for
+    the post-test while the one-active-attempt rule refuses to start it."""
+    running = db.scalars(
+        select(AssessmentAttempt.id)
+        .join(AssessmentObligation, AssessmentObligation.id == AssessmentAttempt.obligation_id)
+        .where(
+            AssessmentObligation.enrolment_id == enrolment.id,
+            AssessmentAttempt.assessment_type == AssessmentType.PRE_TEST,
+            AssessmentAttempt.status == AttemptStatus.IN_PROGRESS,
+        )
+    ).all()
+    for attempt_id in running:
+        finalise_attempt(db, attempt_id, reason=SubmissionReason.TRAINING_COMPLETED, now=now)
 
 
 @dataclass
@@ -368,6 +478,7 @@ def complete_enrolment(
     if completed_at > now:
         raise validation("The completion date cannot be in the future.")
 
+    submit_running_pre_test(db, enrolment, now)
     completion = TrainingCompletion(
         enrolment_id=enrolment.id,
         completed_at=completed_at,

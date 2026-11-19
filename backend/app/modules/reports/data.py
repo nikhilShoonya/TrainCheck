@@ -148,14 +148,20 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
 
 def assessment_timing(row: Row, now: datetime) -> str:
     o = row.obligation
-    if row.enrolment.completion is None or o is None:
-        return "Not scheduled"
+    # The assessment is created when completion is recorded (BR §4.1): say which prerequisite is missing.
+    if row.enrolment.completion is None:
+        return "Awaiting training completion"
+    if o is None:
+        return "Awaiting scheduling"  # Completed, but L&D has not been able to schedule it yet.
     if o.status == ObligationStatus.WAIVED:
         return "Waived"
     if o.status == ObligationStatus.CANCELLED:
         return "Cancelled"
-    if row.post_attempts:
-        return "Retake pending" if o.status == ObligationStatus.RETAKE_PENDING else "Submitted"
+    # Status of the current cycle: an approved re-attempt or re-training cycle is Due again, not Submitted.
+    if o.status == ObligationStatus.RETAKE_PENDING:
+        return "Waiting for L&D approval" if o.refresher_acknowledged_at else "Refresher required"
+    if o.status == ObligationStatus.COMPLETED:
+        return "Waiting for L&D approval" if o.retraining_flag == "NEEDS_RETRAINING" else "Submitted"
     if o.status == ObligationStatus.IN_PROGRESS:
         return "In progress"
     if o.due_at and o.due_at > now:

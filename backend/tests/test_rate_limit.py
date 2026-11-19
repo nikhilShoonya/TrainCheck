@@ -293,3 +293,15 @@ def test_rate_limiting_can_be_turned_off_only_by_configuration(world):
     assert get_settings().rate_limit_enabled is False
     client = ApiClient()
     assert statuses(client, "/system/ping", 20) == [200] * 20
+
+
+def test_an_office_sign_in_rush_fits_the_default_anonymous_limit(limits):
+    """500 employees behind one office address open the sign-in page within a minute (about four signed-out requests
+    each). The default anonymous limit must let them in; brute force stays limited per account (login lockout)."""
+    from app.core.config import Settings
+
+    limits(rate_limit_anonymous_per_minute=Settings.model_fields["rate_limit_anonymous_per_minute"].default)
+    office = via_proxy(OFFICE)
+    paths = ("/auth/sso/providers", "/demo/status", "/system/ping", "/auth/sso/providers")
+    codes = [office.get(paths[i % 4]).status_code for i in range(2000)]
+    assert codes.count(429) == 0

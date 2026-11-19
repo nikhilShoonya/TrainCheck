@@ -18,10 +18,12 @@ from app.core.deps import CurrentUser, require_admin, require_session
 from app.core.enums import AssessmentType
 from app.core.errors import conflict
 from app.core.responses import display_percent, iso, ok
+from app.core.routing import ReleasingRoute
 from app.models import AssessmentAttempt, AssessmentFeedback, Employee, Training
+from app.modules.assessment.gate import feedback_exempt
 from app.modules.assessment.service import get_own_attempt
 
-router = APIRouter(tags=["Assessment feedback"])
+router = APIRouter(route_class=ReleasingRoute, tags=["Assessment feedback"])
 
 # (key, model column, question, label for 1, label for 5). Order is the order shown to the employee.
 QUESTIONS: list[tuple[str, str, str, str, str]] = [
@@ -64,10 +66,12 @@ def _feedback_for(db: Session, attempt: AssessmentAttempt) -> AssessmentFeedback
     return db.scalar(select(AssessmentFeedback).where(AssessmentFeedback.obligation_id == attempt.obligation_id))
 
 
-def _feedback_view(attempt: AssessmentAttempt, feedback: AssessmentFeedback | None) -> dict:
+def _feedback_view(db: Session, attempt: AssessmentAttempt, feedback: AssessmentFeedback | None) -> dict:
     eligible = attempt.assessment_type == AssessmentType.POST_TEST and attempt.result_status is not None
+    # Same rule as the gate (assessment.gate.feedback_due): results from before the cutoff are never asked.
+    required = eligible and feedback is None and not feedback_exempt(db, attempt.obligation_id)
     return {
-        "required": eligible and feedback is None,
+        "required": required,
         "training_title": attempt.training.title,
         "questions": questions_payload(),
         "submitted": None if feedback is None else {"ratings": ratings_of(feedback), "comment": feedback.comment_text, "submitted_at": iso(feedback.submitted_at)},
@@ -77,7 +81,7 @@ def _feedback_view(attempt: AssessmentAttempt, feedback: AssessmentFeedback | No
 @router.get("/attempts/{attempt_id}/feedback")
 def get_feedback(attempt_id: uuid.UUID, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
     attempt = get_own_attempt(db, attempt_id, user.employee_id)
-    return ok(_feedback_view(attempt, _feedback_for(db, attempt)))
+    return ok(_feedback_view(db, attempt, _feedback_for(db, attempt)))
 
 
 @router.post("/attempts/{attempt_id}/feedback")
@@ -100,13 +104,14 @@ def submit_feedback(attempt_id: uuid.UUID, body: FeedbackIn, user: CurrentUser =
         **{COLUMN[key]: value for key, value in body.ratings.model_dump().items()},
     )
     db.add(feedback)
-    record_audit(db, user.id, "ASSESSMENT_FEEDBACK_SUBMITTED", "assessment_feedback", feedback.id, after={"attempt_id": str(attempt.id)})
     try:
+        db.flush()  # Assigns the ID, so the audit record names the feedback it is about.
+        record_audit(db, user.id, "ASSESSMENT_FEEDBACK_SUBMITTED", "assessment_feedback", feedback.id, after={"attempt_id": str(attempt.id)})
         db.commit()
     except IntegrityError as error:  # The same feedback sent twice at once, e.g. from two tabs.
         db.rollback()
         raise conflict("FEEDBACK_ALREADY_SUBMITTED", "You have already given feedback for this assessment.") from error
-    return ok(_feedback_view(attempt, feedback))
+    return ok(_feedback_view(db, attempt, feedback))
 
 
 @router.get("/admin/feedback")

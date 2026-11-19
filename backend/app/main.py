@@ -1,5 +1,6 @@
 """TrainCheck API: one FastAPI application, organised by business module."""
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -31,6 +32,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("traincheck")
 
 API_PREFIX = "/api/v1"
+# Import uploads: FastAPI reads and spools a multipart body before any dependency (sign-in included) runs, so these
+# are checked from their headers first (audit F-08). The allowance covers multipart framing and the form fields.
+UPLOAD_PATH = re.compile(rf"^{API_PREFIX}/admin/imports(/[^/]+/replace)?/?$")
+MULTIPART_ALLOWANCE = 64 * 1024
+
+
+def upload_precheck(request: Request) -> JSONResponse | None:
+    """Refuses an import upload from its headers alone: no valid session, no declared length, or clearly too large."""
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token or ratelimit.session_account_id(token) is None:
+        return JSONResponse(status_code=401, content=error_body("UNAUTHENTICATED", "Please sign in again."))
+    try:
+        length = int(request.headers.get("content-length", ""))
+    except ValueError:
+        return JSONResponse(status_code=411, content=error_body("LENGTH_REQUIRED", "Upload the file again from TrainCheck."))
+    limit = get_settings().max_upload_bytes
+    if length > limit + MULTIPART_ALLOWANCE:
+        return JSONResponse(status_code=413, content=error_body("FILE_TOO_LARGE", f"This file is larger than the {limit // (1024 * 1024)} MB limit."))
+    return None
 
 
 @asynccontextmanager
@@ -82,6 +102,8 @@ def create_app() -> FastAPI:
                 decision = await run_in_threadpool(ratelimit.get_limiter().hit, f"general|{identity}", limit)
                 if not decision.allowed:
                     response = JSONResponse(status_code=429, content=error_body("RATE_LIMITED", "Too many requests. Please wait a moment."), headers={"Retry-After": str(decision.retry_after)})
+            if response is None and request.method == "POST" and UPLOAD_PATH.match(request.url.path):
+                response = await run_in_threadpool(upload_precheck, request)
             if response is None:
                 try:
                     response = await call_next(request)

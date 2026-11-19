@@ -94,7 +94,9 @@ def require_session(request: Request, db: Session = Depends(get_db)) -> CurrentU
 
     if now - session.last_seen_at > timedelta(seconds=60):  # Avoid a database write on every request.
         session.last_seen_at = now
-        db.commit()
+    # Ends the transaction, so the connection goes back to the pool before the next step waits for a worker thread
+    # (see app.core.routing). Also persists last_seen_at when it changed.
+    db.commit()
 
     return CurrentUser(account, account.employee, session, {link.role.code for link in account.role_links})
 
@@ -102,9 +104,13 @@ def require_session(request: Request, db: Session = Depends(get_db)) -> CurrentU
 def require_gate_clear(user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> CurrentUser:
     from app.modules.assessment.gate import blocking_obligations, feedback_due  # Imported here to avoid an import cycle.
 
-    if blocking_obligations(db, user.employee_id):
+    blocked = bool(blocking_obligations(db, user.employee_id))
+    owed = None if blocked else feedback_due(db, user.employee_id)
+    # Keeps any attempt the check finalised on timeout, and frees the connection before the endpoint waits for a
+    # worker thread (see app.core.routing).
+    db.commit()
+    if blocked:
         raise ApiError(403, "ASSESSMENT_REQUIRED", "Complete your pending assessment before opening this page.")
-    owed = feedback_due(db, user.employee_id)
     if owed:
         raise ApiError(403, "FEEDBACK_REQUIRED", "Share your feedback on your last assessment before opening this page.", owed)
     return user

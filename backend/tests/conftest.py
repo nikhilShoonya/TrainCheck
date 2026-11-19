@@ -20,6 +20,10 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 os.environ["RATE_LIMIT_ENABLED"] = "false"  # test_rate_limit.py switches it on for its own tests.
 os.environ["BEHAVIOUR_ENABLED"] = "false"  # The approved scope; Level 3 tests switch it on with `behaviour_on`.
 os.environ["COMPLETION_ALLOWS_PARTIAL_ATTENDANCE"] = "false"
+# Pinned so a developer's backend/.env (e.g. a demo deployment with reset switched on) cannot change test outcomes.
+os.environ["DEMO_RESET_ENABLED"] = "false"
+# The frozen test clock (NOW, 4 Nov 2026) predates the production feedback cutoff; tests that need the cutoff set it.
+os.environ["FEEDBACK_REQUIRED_FROM"] = ""
 
 from app.core import clock  # noqa: E402
 from app.core import db as database
@@ -284,6 +288,22 @@ def take(db: Session, client: ApiClient, obligation_id, correct_count: int) -> d
     attempt = start(client, obligation_id)
     answer_with_score(db, client, attempt, correct_count)
     return submit(client, attempt["attempt_id"])
+
+
+FEEDBACK = {"ratings": {"relevance": 4, "clarity": 4, "alignment": 4, "fairness": 4, "confidence": 4}}
+
+
+def give_feedback(client: ApiClient, attempt_id) -> None:
+    """The required post-test feedback (asked once per assessment), so the workspace opens again."""
+    response = client.post(f"/attempts/{attempt_id}/feedback", json=FEEDBACK)
+    assert response.status_code == 200, response.text
+
+
+def refresher_then_approval(client: ApiClient, admin: ApiClient, obligation_id) -> None:
+    """After a failure that left attempts: the employee acknowledges the refresher, then L&D approves the re-attempt."""
+    assert client.post(f"/assessment-obligations/{obligation_id}/refresher-acknowledgement").status_code == 200
+    response = admin.post(f"/admin/obligations/{obligation_id}/approve-retake")
+    assert response.status_code == 200, response.text
 
 
 def relogin(client: ApiClient, email: str) -> ApiClient:

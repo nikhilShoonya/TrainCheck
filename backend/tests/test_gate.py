@@ -1,11 +1,11 @@
 """Mandatory assessment gate. TC-GATE-*, MVP-010 to MVP-014, BR-GATE-*."""
 from datetime import timedelta
 
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 
 from app.core.deps import require_gate_clear, require_session
 from app.main import app
-from tests.conftest import NOW, take
+from tests.conftest import NOW, give_feedback, take
 
 # The explicit allowlist from Business Rules §5.4 and Security §6.2. Adding to it is a security decision.
 GATE_EXEMPT = {
@@ -27,7 +27,28 @@ GATE_EXEMPT = {
     "/api/v1/attempts/{attempt_id}/submit",
     "/api/v1/attempts/{attempt_id}/result",
     "/api/v1/assessment-obligations/{obligation_id}/refresher-acknowledgement",
+    # The required post-assessment feedback is the very thing the FEEDBACK_REQUIRED gate asks for, so it cannot
+    # itself require a clear gate. It still needs the employee's session (and the attempt must be their own).
+    "/api/v1/attempts/{attempt_id}/feedback",
+    # Demo data reset on the sign-in page: no session by design. Refused (404) unless DEMO_RESET_ENABLED is on
+    # and the environment is not production, and rate-limited.
+    "/api/v1/demo/status",
+    "/api/v1/demo/reset",
 }
+
+
+# Every API route has to be inspected. With FastAPI 0.162 an included router appears in app.routes as one wrapper,
+# not as its APIRoutes, so iterating app.routes inspected nothing; iter_route_contexts yields each effective route
+# with its full path and every dependency it inherits from its routers. Fewer than this means the walk is broken.
+MIN_API_ROUTES = 80
+
+
+def api_routes(prefix: str = "/api/v1") -> list:
+    routes = [r for r in iter_route_contexts(app.routes) if isinstance(r.original_route, APIRoute) and r.path.startswith(prefix)]
+    if prefix == "/api/v1":
+        assert len(routes) >= MIN_API_ROUTES, f"only {len(routes)} API routes found: the route walk is broken"
+    assert routes, f"no routes found under {prefix}"
+    return routes
 
 
 def dependency_calls(route: APIRoute) -> set:
@@ -42,19 +63,31 @@ def dependency_calls(route: APIRoute) -> set:
 
 def test_every_route_outside_the_allowlist_enforces_the_gate():
     """A new route cannot quietly skip the gate: this fails unless it uses require_gate_clear."""
-    missing = []
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.path.startswith("/api/v1") and route.path not in GATE_EXEMPT:
+    missing, checked = [], 0
+    for route in api_routes():
+        if route.path not in GATE_EXEMPT:
+            checked += 1
             if require_gate_clear not in dependency_calls(route):
                 missing.append(route.path)
+    assert checked > 0
     assert missing == []
 
 
 def test_exempt_routes_other_than_public_ones_still_need_a_session():
-    public = {"/api/v1/auth/login", "/api/v1/auth/sso/providers", "/api/v1/auth/sso/{provider}/start", "/api/v1/system/ping"}
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.path in GATE_EXEMPT - public:
+    public = {"/api/v1/auth/login", "/api/v1/auth/sso/providers", "/api/v1/auth/sso/{provider}/start", "/api/v1/system/ping", "/api/v1/demo/status", "/api/v1/demo/reset"}
+    checked = 0
+    for route in api_routes():
+        if route.path in GATE_EXEMPT - public:
+            checked += 1
             assert require_session in dependency_calls(route), route.path
+    assert checked >= len(GATE_EXEMPT - public), "every exempt, non-public route must be inspected"
+
+
+def test_the_route_walk_sees_every_api_path():
+    """Guards the two tests above: they must inspect the same routes the API actually serves."""
+    served = {path for path in app.openapi()["paths"] if path.startswith("/api/v1")}
+    inspected = {route.path for route in api_routes()}
+    assert served <= inspected, sorted(served - inspected)
 
 
 def test_no_pending_assessment_opens_dashboard(world, client_for):  # TC-AUTH-001
@@ -117,13 +150,16 @@ def test_queue_is_oldest_completion_first_and_recalculated(world, client_for, db
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "ASSESSMENT_NOT_NEXT"
 
-    result = take(db, client, old_obligation.id, 10)
-    assert result["access_state"]["access_status"] == "ASSESSMENT_REQUIRED"
-    assert result["access_state"]["queue"][0]["obligation_id"] == str(new_obligation.id)
+    first = take(db, client, old_obligation.id, 10)
+    assert first["access_state"]["access_status"] == "ASSESSMENT_REQUIRED"  # Due assessments come before feedback.
+    assert first["access_state"]["queue"][0]["obligation_id"] == str(new_obligation.id)
     assert client.get("/me/dashboard").status_code == 403
 
-    result = take(db, client, new_obligation.id, 10)
-    assert result["access_state"]["access_status"] == "DASHBOARD_ALLOWED"
+    second = take(db, client, new_obligation.id, 10)
+    assert second["access_state"]["access_status"] == "FEEDBACK_REQUIRED"
+    give_feedback(client, first["attempt_id"])
+    give_feedback(client, second["attempt_id"])
+    assert client.get("/me/access-state").json()["data"]["access_status"] == "DASHBOARD_ALLOWED"
     assert client.get("/me/dashboard").status_code == 200
 
 
@@ -196,3 +232,20 @@ def test_pre_test_never_blocks_login(world, client_for, db):  # SC-2L-107
     assert started.status_code == 200, started.text
     assert client.get("/me/access-state").json()["data"]["access_status"] == "DASHBOARD_ALLOWED"
     assert client.get("/me/dashboard").status_code == 200
+
+
+def test_archived_training_stops_blocking_and_reactivation_restores_it(world, client_for, db):
+    """Decision of 19 Nov 2026: archiving a training releases its pending assessments; records are kept."""
+    training = world.training()
+    obligation = world.complete(world.employee, training)
+    admin, employee = client_for(world.admin), client_for(world.employee)
+    assert employee.get("/me/access-state").json()["data"]["access_status"] == "ASSESSMENT_REQUIRED"
+
+    assert admin.post(f"/admin/trainings/{training.id}/status", json={"status": "ARCHIVED"}).status_code == 200
+    assert employee.get("/me/access-state").json()["data"]["access_status"] == "DASHBOARD_ALLOWED"
+    assert employee.get("/me/dashboard").status_code == 200
+    refused = employee.post(f"/assessment-obligations/{obligation.id}/attempts", json={"instructions_acknowledged": True})
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "TRAINING_ARCHIVED"
+
+    assert admin.post(f"/admin/trainings/{training.id}/status", json={"status": "ACTIVE"}).status_code == 200
+    assert employee.get("/me/access-state").json()["data"]["access_status"] == "ASSESSMENT_REQUIRED"

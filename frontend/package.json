@@ -8,6 +8,7 @@
     "start": "node server.mjs --production",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test:unit": "node --import ./tests/unit/resolve.mjs --test \"tests/unit/**/*.test.mjs\"",
     "test:e2e": "playwright test"
   },
   "dependencies": {

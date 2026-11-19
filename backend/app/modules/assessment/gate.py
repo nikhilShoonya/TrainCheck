@@ -9,7 +9,7 @@ as the pool can run, or after L&D moves it onto a valid configuration.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.clock import utcnow
@@ -20,9 +20,23 @@ from app.models import AssessmentAttempt, AssessmentObligation
 BLOCKING_STATUSES = (ObligationStatus.SCHEDULED, ObligationStatus.DUE, ObligationStatus.IN_PROGRESS)
 
 
+def training_not_archived():
+    """Assessments of an archived training never block or remind (decision of 19 Nov 2026). Records are kept, and
+    reactivating the training brings them back."""
+    from app.core.enums import TrainingStatus
+    from app.models import Training
+
+    return AssessmentObligation.training.has(Training.status != TrainingStatus.ARCHIVED)
+
+
 def finalise_expired_attempts(db: Session, employee_id: uuid.UUID, now: datetime) -> None:
-    """A deadline that passes with nobody connected still produces exactly one result."""
-    from app.modules.assessment.service import finalise_attempt
+    """A deadline that passes with nobody connected still produces exactly one result.
+
+    Runs on every protected request, so an attempt that cannot be finalised (which database constraints should make
+    impossible) is logged and left for the scheduler and L&D, instead of failing every page this employee opens."""
+    import logging
+
+    from app.modules.assessment import service
 
     expired = db.scalars(
         select(AssessmentAttempt).where(
@@ -32,7 +46,11 @@ def finalise_expired_attempts(db: Session, employee_id: uuid.UUID, now: datetime
         )
     ).all()
     for attempt in expired:
-        finalise_attempt(db, attempt.id, now=now)
+        try:
+            with db.begin_nested():
+                service.finalise_attempt(db, attempt.id, now=now)
+        except Exception:
+            logging.getLogger("traincheck.gate").exception("Could not finalise expired attempt %s", attempt.id)
 
 
 def obligation_startable(db: Session, obligation: AssessmentObligation, cache: dict, pools=None) -> bool:
@@ -57,6 +75,7 @@ def due_post_tests(db: Session, employee_id: uuid.UUID, now: datetime) -> list[A
                 AssessmentObligation.assessment_type == AssessmentType.POST_TEST,
                 AssessmentObligation.status.in_(BLOCKING_STATUSES),
                 AssessmentObligation.due_at <= now,
+                training_not_archived(),
             )
             .order_by(AssessmentObligation.completed_training_at, AssessmentObligation.created_at, AssessmentObligation.id)
         )
@@ -109,21 +128,6 @@ def alert_unavailable(db: Session, obligations: list[AssessmentObligation], now:
         )
 
 
-def promote_due_retakes(db: Session, employee_id: uuid.UUID, now: datetime) -> None:
-    """Run at sign-in. Provisional default (OD-BRD-006, OD-BRD-007): a retake becomes due at the next
-    login once the refresher is acknowledged or the next working day has arrived."""
-    pending = db.scalars(
-        select(AssessmentObligation).where(
-            AssessmentObligation.employee_id == employee_id,
-            AssessmentObligation.status == ObligationStatus.RETAKE_PENDING,
-        )
-    )
-    for obligation in pending:
-        if obligation.refresher_acknowledged_at or (obligation.retake_eligible_at and obligation.retake_eligible_at <= now):
-            obligation.status = ObligationStatus.DUE
-            obligation.due_at = now
-
-
 def finished_attempts(obligation: AssessmentObligation) -> int:
     """Attempts that produced a result. An attempt still running is not a previous attempt."""
     return sum(1 for a in obligation.attempts if a.status not in (AttemptStatus.CANCELLED, AttemptStatus.IN_PROGRESS))
@@ -153,14 +157,52 @@ def queue_item(obligation: AssessmentObligation, position: int) -> dict:
     }
 
 
+def feedback_cutoff() -> datetime | None:
+    """The moment from which post-test feedback is required (FEEDBACK_REQUIRED_FROM), or None for always."""
+    from datetime import date, time
+    from zoneinfo import ZoneInfo
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    raw = (settings.feedback_required_from or "").strip()
+    if not raw:
+        return None
+    return datetime.combine(date.fromisoformat(raw), time.min, ZoneInfo(settings.default_timezone))
+
+
+def _result_before_cutoff(cutoff: datetime):
+    """True for an assessment that already had a result before feedback became required: it is never asked."""
+    earlier = AssessmentAttempt.__table__.alias("earlier")
+    return (
+        select(earlier.c.id)
+        .where(earlier.c.obligation_id == AssessmentAttempt.obligation_id, earlier.c.result_status.is_not(None), earlier.c.submitted_at < cutoff)
+        .exists()
+    )
+
+
+def feedback_exempt(db: Session, obligation_id: uuid.UUID) -> bool:
+    """Whether this assessment's first result predates the feedback cutoff, so no feedback is required for it."""
+    cutoff = feedback_cutoff()
+    if cutoff is None:
+        return False
+    return db.scalar(
+        select(AssessmentAttempt.id)
+        .where(AssessmentAttempt.obligation_id == obligation_id, AssessmentAttempt.result_status.is_not(None), AssessmentAttempt.submitted_at < cutoff)
+        .limit(1)
+    ) is not None
+
+
 def feedback_due(db: Session, employee_id: uuid.UUID) -> dict | None:
     """The oldest post-training assessment whose feedback is still owed (asked once per assessment).
 
     Feedback is required, so an owed form closes the workspace exactly like a due assessment does; it is
-    collected on that assessment's result page. Due assessments come first (see access_state).
+    collected on that assessment's result page. Due assessments come first (see access_state). Assessments
+    whose first result came before FEEDBACK_REQUIRED_FROM are never asked.
     """
     from app.models import AssessmentFeedback
 
+    cutoff = feedback_cutoff()
     owed = db.execute(
         select(AssessmentAttempt.id, AssessmentAttempt.obligation_id)
         .join(AssessmentObligation, AssessmentObligation.id == AssessmentAttempt.obligation_id)
@@ -169,11 +211,25 @@ def feedback_due(db: Session, employee_id: uuid.UUID) -> dict | None:
             AssessmentAttempt.assessment_type == AssessmentType.POST_TEST,
             AssessmentAttempt.result_status.is_not(None),
             ~select(AssessmentFeedback.id).where(AssessmentFeedback.obligation_id == AssessmentAttempt.obligation_id).exists(),
+            *([~_result_before_cutoff(cutoff)] if cutoff is not None else []),
         )
-        .order_by(AssessmentAttempt.submitted_at.desc())
+        .order_by(AssessmentAttempt.submitted_at, AssessmentAttempt.id)
         .limit(1)
     ).first()
     return {"attempt_id": str(owed.id), "obligation_id": str(owed.obligation_id)} if owed else None
+
+
+def next_opening(db: Session, employee_id: uuid.UUID, now: datetime) -> datetime | None:
+    """When this employee's next scheduled post-test becomes due: the moment the gate decision changes by itself."""
+    return db.scalar(
+        select(func.min(AssessmentObligation.due_at)).where(
+            AssessmentObligation.employee_id == employee_id,
+            AssessmentObligation.assessment_type == AssessmentType.POST_TEST,
+            AssessmentObligation.status.in_(BLOCKING_STATUSES),
+            AssessmentObligation.due_at > now,
+            training_not_archived(),
+        )
+    )
 
 
 def access_state(db: Session, employee_id: uuid.UUID) -> dict:
@@ -188,6 +244,8 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
     feedback = None if queue else feedback_due(db, employee_id)
     db.commit()  # Persist any timeout finalised above and any alert.
     held = [{"obligation_id": str(o.id), "training_title": o.training.title, "reason": "QUESTION_POOL_INSUFFICIENT"} for o in unavailable]
+    # An open page re-checks at next_change_at, timed against the server's clock (server_now), not the device's.
+    timing = {"next_change_at": iso(next_opening(db, employee_id, now)), "server_now": iso(now)}
     if queue:
         return {
             "access_status": "ASSESSMENT_REQUIRED",
@@ -196,7 +254,8 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
             "queue": [queue_item(o, i + 1) for i, o in enumerate(queue)],
             "unavailable": held,
             "feedback_due": None,
+            **timing,
         }
     if feedback:
-        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback}
-    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None}
+        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback, **timing}
+    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None, **timing}

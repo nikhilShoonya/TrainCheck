@@ -6,11 +6,11 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
-from app.core.enums import AttendanceStatus, ImportStatus, ImportType, QuestionStatus, TrainingStatus
+from app.core.enums import AttendanceStatus, EnrolmentStatus, ImportStatus, ImportType, QuestionStatus, TrainingStatus
 from app.core.errors import ApiError, conflict, validation
 from app.models import Competency, Department, Employee, Enrolment, Function, ImportJob, ImportJobRow, Question, QuestionRevision, Training, TrainingCompletion
 from app.modules.assessment.scheduling import load_calendar
@@ -59,6 +59,57 @@ def _error(field: str, message: str) -> dict[str, str]:
 
 # ---------- Validation ----------
 
+class Lookups:
+    """Everything row validation reads from the database, loaded once per file instead of once per row.
+
+    A 5,000-row file used to cost several round trips per row; against Neon that outlasts the 30-second proxy
+    timeout (audit F-13). Matching is case-insensitive, exactly as the per-row queries were.
+    """
+
+    def __init__(self, db: Session, import_type: str, cells: list[dict[str, str]]) -> None:
+        def upper(values) -> set[str]:
+            return {v.upper() for v in values if v}
+
+        training_codes = upper(c.get("training", "") for c in cells)
+        self.trainings: dict[str, Training] = {
+            t.training_code.upper(): t for t in db.scalars(select(Training).where(func.upper(Training.training_code).in_(training_codes)))
+        } if training_codes else {}
+        self.question_codes: set[str] = set()
+        self.departments: dict[str, uuid.UUID] = {}
+        self.functions: dict[str, uuid.UUID] = {}
+        self.employees: dict[str, Employee] = {}
+        self.live: dict[tuple[uuid.UUID, uuid.UUID], Enrolment] = {}
+        self.cancelled: set[tuple[uuid.UUID, uuid.UUID]] = set()
+        self.events: set[str] = set()
+        if import_type == ImportType.QUESTIONS:
+            codes = upper(c.get("id", "") for c in cells)
+            if codes:
+                self.question_codes = upper(db.scalars(select(Question.question_code).where(func.upper(Question.question_code).in_(codes))))
+            departments, functions = upper(c.get("department", "") for c in cells), upper(c.get("function", "") for c in cells)
+            if departments:
+                self.departments = {code.upper(): i for code, i in db.execute(select(Department.code, Department.id).where(func.upper(Department.code).in_(departments)))}
+            if functions:
+                self.functions = {code.upper(): i for code, i in db.execute(select(Function.code, Function.id).where(func.upper(Function.code).in_(functions)))}
+            return
+        employee_codes = upper(c.get("employee", "") for c in cells)
+        if employee_codes:
+            self.employees = {e.employee_code.upper(): e for e in db.scalars(select(Employee).where(func.upper(Employee.employee_code).in_(employee_codes)))}
+        employee_ids, training_ids = [e.id for e in self.employees.values()], [t.id for t in self.trainings.values()]
+        if employee_ids and training_ids:
+            for enrolment in db.scalars(
+                select(Enrolment)
+                .options(selectinload(Enrolment.completion))
+                .where(Enrolment.employee_id.in_(employee_ids), Enrolment.training_id.in_(training_ids))
+            ):
+                pair = (enrolment.employee_id, enrolment.training_id)
+                if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
+                    self.cancelled.add(pair)
+                else:
+                    self.live[pair] = enrolment
+        events = {c.get("source_event_id") for c in cells if c.get("source_event_id")}
+        if events:
+            self.events = set(db.scalars(select(TrainingCompletion.source_event_id).where(TrainingCompletion.source_event_id.in_(events))))
+
 def selected_training(db: Session, raw_id: str | None) -> Training | None:
     """The training chosen for a question import. None means a file-based import (each row names its training)."""
     if raw_id is None or not raw_id.strip():
@@ -90,8 +141,9 @@ def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: 
     errors += [_error(k, "Use plain values, not formulas.") for k, value in v.items() if has_formula(value)]
     status = "INVALID" if errors else "VALID"
 
+    lookups: Lookups = (context or {})["lookups"]
     code = v.get("id", "").upper()
-    duplicate = code in seen or bool(code and db.scalar(select(Question.id).where(func.upper(Question.question_code) == code)))
+    duplicate = code in seen or bool(code and code in lookups.question_codes)
     seen.add(code)
 
     if selected is not None:
@@ -100,7 +152,8 @@ def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: 
         if v.get("training") and v["training"].upper() != selected.training_code.upper():
             errors.append(_error("training", f"This row is for training {v['training']}, but the selected training is {selected.training_code}. Leave the cell blank, correct the code, or select the matching training."))
     else:
-        training_id = db.scalar(select(Training.id).where(func.upper(Training.training_code) == v.get("training", "").upper()))
+        row_training = lookups.trainings.get(v.get("training", "").upper())
+        training_id = row_training.id if row_training else None
         if v.get("training") and training_id is None:
             errors.append(_error("training", "Use an existing training code."))
 
@@ -140,11 +193,11 @@ def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: 
 
     department_id = function_id = None
     if v.get("department"):
-        department_id = db.scalar(select(Department.id).where(func.upper(Department.code) == v["department"].upper()))
+        department_id = lookups.departments.get(v["department"].upper())
         if department_id is None:
             errors.append(_error("department", "Use an existing department code."))
     if v.get("function"):
-        function_id = db.scalar(select(Function.id).where(func.upper(Function.code) == v["function"].upper()))
+        function_id = lookups.functions.get(v["function"].upper())
         if function_id is None:
             errors.append(_error("function", "Use an existing function code."))
 
@@ -172,17 +225,19 @@ def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: 
     }
 
 
-def completion_eligibility(db: Session, employee: Employee, training: Training, attendance: str) -> tuple[ApiError | None, bool]:
+def completion_eligibility(db: Session, employee: Employee, training: Training, attendance: str, lookups: "Lookups | None" = None) -> tuple[ApiError | None, bool]:
     """The manual-completion rules applied to an import row. Returns (problem, needs_new_assignment).
 
     A row may create the assignment only when manual assignment would also allow it: the training is
     active, the employee is active and in its audience, and the assignment was never cancelled.
     """
-    enrolment = training_service.find_enrolment(db, employee.id, training.id)
+    pair = (employee.id, training.id)
+    enrolment = lookups.live.get(pair) if lookups else training_service.find_enrolment(db, employee.id, training.id)
     if enrolment is not None:
         return training_service.completion_problem(enrolment, attendance), False
     label = training_service.employee_label(employee)
-    if training_service.cancelled_enrolment(db, employee.id, training.id) is not None:
+    cancelled = pair in lookups.cancelled if lookups else training_service.cancelled_enrolment(db, employee.id, training.id) is not None
+    if cancelled:
         return ApiError(409, "ENROLMENT_CANCELLED", f"The assignment of {label} to {training.title} was cancelled. Assign the employee again in Employee Assignments before importing completion."), False
     problem = training_service.new_assignment_problem(training, employee)
     if problem:
@@ -194,10 +249,11 @@ def _validate_completion(v: dict[str, str], seen: set[str], db: Session, context
     errors = [_error(k, "Required.") for k in COMPLETION_HEADERS if not v.get(k)]
     errors += [_error(k, "Use plain values, not formulas.") for k, value in v.items() if has_formula(value)]
 
-    employee = db.scalar(select(Employee).where(func.upper(Employee.employee_code) == v.get("employee", "").upper())) if v.get("employee") else None
+    lookups: Lookups = context["lookups"]
+    employee = lookups.employees.get(v.get("employee", "").upper()) if v.get("employee") else None
     if v.get("employee") and employee is None:
         errors.append(_error("employee", "Unknown employee ID."))
-    training = db.scalar(select(Training).where(func.upper(Training.training_code) == v.get("training", "").upper())) if v.get("training") else None
+    training = lookups.trainings.get(v.get("training", "").upper()) if v.get("training") else None
     if v.get("training") and training is None:
         errors.append(_error("training", "Use an existing training code."))
 
@@ -217,19 +273,19 @@ def _validate_completion(v: dict[str, str], seen: set[str], db: Session, context
     if errors:
         return errors, "INVALID", None
     key = f"{employee.id}|{training.id}"
-    enrolment = training_service.find_enrolment(db, employee.id, training.id)
+    enrolment = lookups.live.get((employee.id, training.id))
     if key in seen or (enrolment is not None and enrolment.completion is not None):
         # Replaying a file must not create a second completion or obligation.
         seen.add(key)
         return [_error("employee", "Completion is already recorded. The row was skipped.")], "DUPLICATE", None
     event = v.get("source_event_id") or None
-    if event and (event in context["events"] or db.scalar(select(TrainingCompletion.id).where(TrainingCompletion.source_event_id == event))):
+    if event and (event in context["events"] or event in lookups.events):
         return [_error("source_event_id", "This source event ID was already imported. The row was skipped.")], "DUPLICATE", None
     seen.add(key)
     if event:
         context["events"].add(event)
 
-    problem, creates_assignment = completion_eligibility(db, employee, training, attendance)
+    problem, creates_assignment = completion_eligibility(db, employee, training, attendance, lookups)
     if problem:
         return [_error("record", problem.message)], "INVALID", None
     notes = []
@@ -288,10 +344,10 @@ def _row_rules(import_type: ImportType, rows: list[list[str]], training: Trainin
 def _validate_rows(db: Session, job: ImportJob, rows: list[list[str]], training: Training | None, validate, label: str, headers: dict[str, int]) -> None:
     import_type = job.import_type
     seen: set[str] = set()
-    context: dict = {"events": set(), "readiness": {}, "training": training}
+    all_cells = [_cells(row, headers) for row in rows[1:]]
+    context: dict = {"events": set(), "readiness": {}, "training": training, "lookups": Lookups(db, import_type, all_cells)}
     accepted = rejected = 0
-    for number, row in enumerate(rows[1:], start=2):
-        cells = _cells(row, headers)
+    for number, cells in enumerate(all_cells, start=2):
         errors, status, payload = validate(cells, seen, db, context)
         accepted += status == "VALID"
         rejected += status != "VALID"

@@ -1,19 +1,24 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/icons";
 import { FocusShell } from "@/components/shell/AppShell";
 import { HOME } from "@/components/shell/nav";
 import { Badge, Btn, ErrorPanel, Loading, Metrics, useToast } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
+import { browserStorage, clearPendingAnswers, countUnconfirmedAnswers } from "@/lib/pendingAnswers";
 import type { AccessState, FeedbackView, ResultView } from "@/lib/types";
 import { dateTime, duration } from "@/lib/utils";
 import { FeedbackDialog } from "./FeedbackForm";
 import { VIOLATION_LABELS } from "./monitor";
 
-const REASONS: Record<string, string> = { MANUAL: "Submitted by you", TIME_EXPIRED: "Submitted automatically when time ran out" };
+const REASONS: Record<string, string> = {
+  MANUAL: "Submitted by you",
+  TIME_EXPIRED: "Submitted automatically when time ran out",
+  TRAINING_COMPLETED: "Submitted automatically when your training completion was recorded",
+};
 
 export function ResultPage() {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -38,6 +43,22 @@ export function ResultPage() {
       setFeedbackOpen(true);
     }
   }, [feedbackRequired, autoOpened]);
+  // Answers chosen on this device that the server never confirmed before the attempt finished (time ran out,
+  // or the page closed). Shown once with the final result, then removed from the device.
+  const accountId = user?.id ?? null;
+  const unconfirmed = useMemo(() => (accountId ? countUnconfirmedAnswers(browserStorage(), accountId, attemptId) : null), [accountId, attemptId]);
+  const resultLoaded = Boolean(state.data);
+  useEffect(() => {
+    if (accountId && resultLoaded) clearPendingAnswers(browserStorage(), accountId, attemptId);
+  }, [accountId, resultLoaded, attemptId]);
+  const unconfirmedNotice = unconfirmed ? (
+    <div className="notice danger left" role="alert">
+      <Icon name="alert" />
+      <div>
+        {unconfirmed} answer{unconfirmed === 1 ? "" : "s"} chosen on this device {unconfirmed === 1 ? "was" : "were"} not confirmed as saved before the assessment finished and may not count. Only answers the server received in time were scored; the score above is final.
+      </div>
+    </div>
+  ) : null;
 
   if (state.error) {
     return (
@@ -55,7 +76,7 @@ export function ResultPage() {
     try {
       await api.post(`/assessment-obligations/${r.obligation_id}/refresher-acknowledgement`);
       setAcknowledged(true);
-      toast("Refresher acknowledged. Your retake becomes due at your next sign-in.");
+      toast("Refresher acknowledged. L&D has been asked to approve your re-attempt.");
     } catch (e) {
       setError(e as ApiError);
     }
@@ -86,6 +107,7 @@ export function ResultPage() {
           ) : r.submission_reason === "TIME_EXPIRED" ? (
             <p className="notice left">Time expired. Your saved answers were submitted automatically.</p>
           ) : null}
+          {unconfirmedNotice}
           <p>This score is a baseline, not a post-training pass. Training completion will create a separate post-training assessment.</p>
           <Btn kind="wide" onClick={proceed}>
             Return to my workspace <Icon name="arrow" />
@@ -120,6 +142,7 @@ export function ResultPage() {
         <h1 tabIndex={-1}>{passed ? "Knowledge demonstrated." : "A little more practice will help."}</h1>
         <p>{passed ? "You met the assessment pass mark. Keep applying what you learned." : "Review the refresher guidance and your topic breakdown before your next attempt."}</p>
         {r.attempt_status === "TIMED_OUT" ? <div className="notice">Time expired. Your saved answers were submitted automatically.</div> : null}
+        {unconfirmedNotice}
         <Metrics
           items={[
             ["Pass mark", `${r.pass_mark_percent}%`, "At time of attempt"],
@@ -194,11 +217,15 @@ export function ResultPage() {
           <div className="notice left">
             {r.needs_retraining ? (
               <p>
-                <strong>Needs Re-training.</strong> You have used all attempts. The L&amp;D team has been notified and will arrange your next learning step. This is a learning follow-up, not a disciplinary record.
+                <strong>Needs Re-training.</strong> You have used all attempts. Waiting for L&amp;D approval of your re-training; a new assessment opens once it is approved. This is a learning follow-up, not a disciplinary record.
               </p>
-            ) : (
-              <p>{r.attempts_remaining} attempt(s) remaining. Acknowledge the refresher, then your retake becomes due at your next sign-in. If you do not acknowledge it, the retake opens at your next sign-in from the next working day.</p>
-            )}
+            ) : r.retake_pending && (acknowledged || r.refresher?.acknowledged) ? (
+              <p>
+                {r.attempts_remaining} attempt(s) remaining. <strong>Waiting for L&amp;D approval.</strong> Your re-attempt opens once L&amp;D approves it.
+              </p>
+            ) : r.retake_pending ? (
+              <p>{r.attempts_remaining} attempt(s) remaining. Acknowledge the refresher below; L&amp;D will then approve your re-attempt.</p>
+            ) : null}
             {r.refresher?.text ? <p>{r.refresher.text}</p> : null}
             {r.refresher?.url ? (
               <p>

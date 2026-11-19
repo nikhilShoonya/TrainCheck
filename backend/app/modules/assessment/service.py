@@ -25,6 +25,7 @@ from app.core.enums import (
     RetrainingFlag,
     SecurityEventType,
     SubmissionReason,
+    TrainingStatus,
 )
 from app.core.errors import ApiError, conflict, not_found, validation
 from app.core.responses import display_percent
@@ -40,7 +41,6 @@ from app.models import (
     QuestionTrainingTag,
     RefresherAcknowledgement,
 )
-from app.modules.assessment.scheduling import load_calendar
 from app.modules.notifications.service import notify_employee, notify_roles
 
 # Signals within this window, or while the employee has not returned, are one incident (SC-2L-106).
@@ -258,6 +258,8 @@ def start_attempt(db: Session, obligation: AssessmentObligation, acknowledged: b
         db.flush()
         db.refresh(obligation)
 
+    if obligation.training.status == TrainingStatus.ARCHIVED:
+        raise conflict("TRAINING_ARCHIVED", "This training has been archived, so its assessment is no longer available.")
     if obligation.assessment_type == AssessmentType.POST_TEST:
         if obligation.status in (ObligationStatus.COMPLETED, ObligationStatus.WAIVED, ObligationStatus.CANCELLED):
             raise conflict("ASSESSMENT_NOT_DUE", "This assessment is already finished.")
@@ -362,8 +364,28 @@ def require_open(db: Session, attempt: AssessmentAttempt, now: datetime) -> None
         raise conflict("ATTEMPT_ALREADY_SUBMITTED", "Time has expired. Your saved answers were submitted.", {"attempt_id": str(attempt.id)})
 
 
-def save_answer(db: Session, attempt: AssessmentAttempt, attempt_question_id: uuid.UUID, selected: list[str], now: datetime | None = None) -> AttemptAnswer:
-    """Idempotent: a retried save simply stores the same selection again."""
+def _insert_answer(db: Session, answer: AttemptAnswer) -> bool:
+    """Inserts a question's first answer row. False when another request created it meanwhile (the row is unique per
+    question); the caller then re-reads and applies its change on top, instead of failing with a server error."""
+    try:
+        with db.begin_nested():
+            db.add(answer)
+            db.flush()
+        return True
+    except IntegrityError:
+        return False
+
+
+def save_answer(db: Session, attempt: AssessmentAttempt, attempt_question_id: uuid.UUID, selected: list[str], now: datetime | None = None, base_revision: int | None = None, op_id: str | None = None, _retried: bool = False) -> AttemptAnswer:
+    """Idempotent: a retried save of the selection already stored changes nothing and succeeds.
+
+    Compare-and-set: a save that names `base_revision` is accepted only while the stored answer is still at that
+    revision, so an older window, another device or a delayed request cannot overwrite a newer answer. Without
+    `base_revision` the save is unconditional, as before. Runs under the attempt row lock, after the deadline check.
+
+    `op_id` identifies the save. The ID of the save that wrote the current revision is kept and reported on a
+    conflict, so the page that sent it can tell its own save (whose reply it never got) from anyone else's.
+    """
     now = now or utcnow()
     db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
     db.refresh(attempt)
@@ -378,12 +400,27 @@ def save_answer(db: Session, attempt: AssessmentAttempt, attempt_question_id: uu
     if question.question_type_snapshot != "MCQ_MULTIPLE" and len(clean) > 1:
         raise validation("Select one answer for this question.")
     answer = _answer_for(db, question.id)
+    current = list(answer.selected_option_ids) if answer else []
+    revision = answer.revision if answer else 0
+    if answer is not None and set(current) == set(clean):
+        return answer  # Already stored (a retry, or a save whose reply was lost): nothing changes.
+    if base_revision is not None and base_revision != revision:
+        raise conflict(
+            "ANSWER_CONFLICT",
+            "This answer was changed in another window or on another device. The newer answer is kept.",
+            {"selected_option_ids": current, "revision": revision, "op_id": answer.last_op_id if answer else None},
+        )
     if answer is None:
-        answer = AttemptAnswer(attempt_question_id=question.id, selected_option_ids=clean, saved_at=now)
-        db.add(answer)
+        answer = AttemptAnswer(attempt_question_id=question.id, selected_option_ids=clean, saved_at=now, revision=revision + 1, last_op_id=op_id)
+        if not _insert_answer(db, answer):
+            if _retried:
+                raise conflict("ANSWER_CONFLICT", "This answer was changed at the same moment elsewhere. Please choose again.")
+            return save_answer(db, attempt, attempt_question_id, selected, now, base_revision, op_id, _retried=True)
     else:
         answer.selected_option_ids = clean
         answer.saved_at = now
+        answer.revision = revision + 1
+        answer.last_op_id = op_id
     db.flush()
     return answer
 
@@ -394,15 +431,18 @@ def _answer_for(db: Session, attempt_question_id: uuid.UUID) -> AttemptAnswer | 
 
 def set_review_mark(db: Session, attempt: AssessmentAttempt, attempt_question_id: uuid.UUID, marked: bool, now: datetime | None = None) -> None:
     now = now or utcnow()
+    # The same row lock as save_answer, re-reading the attempt it locked, so a mark and a save never race.
+    db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
+    db.refresh(attempt)
     require_open(db, attempt, now)
     question = db.get(AttemptQuestion, attempt_question_id)
     if question is None or question.attempt_id != attempt.id:
         raise not_found()
     answer = _answer_for(db, question.id)
-    if answer is None:
-        db.add(AttemptAnswer(attempt_question_id=question.id, selected_option_ids=[], marked_for_review=marked, saved_at=now))
-    else:
-        answer.marked_for_review = marked
+    if answer is None and _insert_answer(db, AttemptAnswer(attempt_question_id=question.id, selected_option_ids=[], marked_for_review=marked, saved_at=now)):
+        return
+    answer = answer or _answer_for(db, question.id)  # Created meanwhile by a save: mark that row.
+    answer.marked_for_review = marked
     db.flush()
 
 
@@ -465,7 +505,9 @@ def truncate_percent(earned: Decimal, total: Decimal) -> Decimal:
 def finalise_attempt(db: Session, attempt_id: uuid.UUID, reason: SubmissionReason | None = None, now: datetime | None = None) -> AssessmentAttempt:
     """The only route to a result. Row-locked and idempotent: a repeat returns the same result."""
     now = now or utcnow()
-    attempt = db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id).with_for_update())
+    # populate_existing: a copy this session loaded before the lock (as every route does) is overwritten with the
+    # locked row, so an attempt another request has just finalised is seen as finalised and is not scored again.
+    attempt = db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id).with_for_update().execution_options(populate_existing=True))
     if attempt is None:
         raise not_found()
     if attempt.status != AttemptStatus.IN_PROGRESS:
@@ -527,12 +569,11 @@ def _apply_outcome(db: Session, attempt: AssessmentAttempt, passed: bool, now: d
         _notify_final_failure(db, attempt, obligation, now)
         record_audit(db, None, "NEEDS_RETRAINING_FLAGGED", "assessment_obligation", obligation.id, after={"attempts": counted_attempts(obligation)})
     else:
-        calendar = load_calendar(db)
-        next_day = calendar.next_working_day(calendar.local_date(now))
+        # The retake never opens by itself: the employee acknowledges the refresher, then L&D approves it.
         obligation.status = ObligationStatus.RETAKE_PENDING
         obligation.outcome = ResultStatus.NOT_PASSED
         obligation.refresher_acknowledged_at = None
-        obligation.retake_eligible_at = calendar.start_of_day(next_day)
+        obligation.retake_eligible_at = None
         used = counted_attempts(obligation)
         notify_employee(
             db,
@@ -540,7 +581,7 @@ def _apply_outcome(db: Session, attempt: AssessmentAttempt, passed: bool, now: d
             "ASSESSMENT_NOT_PASSED",
             f"Not passed: {title}",
             f"You scored {score}. You have used {used} of {max_attempts} attempts. Review and acknowledge the refresher material; "
-            "your retake opens at your next sign-in after that, or from the next working day.",
+            "L&D will then approve your re-attempt.",
             f"/results/{attempt.id}",
             f"not-passed:{attempt.id}",
             now,
@@ -552,11 +593,11 @@ def _notify_final_failure(db: Session, attempt: AssessmentAttempt, obligation: A
     title = f"Needs Re-training: {employee.full_name}"
     message = (
         f"{employee.full_name} ({employee.employee_code}) used all {counted_attempts(obligation)} attempts for "
-        f"{obligation.training.title}. Open the learning records for scores and next steps."
+        f"{obligation.training.title}. After re-training, approve it in Employee Assignments to open a new assessment."
     )
     key = f"final-failure:{obligation.id}"
-    notify_roles(db, ("LD_ADMIN",), "FINAL_FAILURE", title, message, None, key, now)
-    notify_employee(db, employee.id, "FINAL_FAILURE", f"{obligation.training.title}: Needs Re-training", "You have used all attempts. L&D will arrange your next learning step. This is a learning follow-up, not a disciplinary record.", "/employee/assessments", key, now)
+    notify_roles(db, ("LD_ADMIN",), "FINAL_FAILURE", title, message, f"/lnd/assignments?search={employee.employee_code}", key, now)
+    notify_employee(db, employee.id, "FINAL_FAILURE", f"{obligation.training.title}: Needs Re-training", "You have used all attempts. Waiting for L&D approval of your re-training. This is a learning follow-up, not a disciplinary record.", "/employee/assessments", key, now)
 
 
 # ---------- Retakes and exceptions ----------
@@ -569,7 +610,21 @@ def acknowledge_refresher(db: Session, obligation: AssessmentObligation, now: da
         raise conflict("REFRESHER_NOT_REQUIRED", "No refresher acknowledgement is needed right now.")
     if obligation.refresher_acknowledged_at is None:
         obligation.refresher_acknowledged_at = now
-        db.add(RefresherAcknowledgement(obligation_id=obligation.id, employee_id=obligation.employee_id, attempts_at_time=counted_attempts(obligation), acknowledged_at=now))
+        used = counted_attempts(obligation)
+        db.add(RefresherAcknowledgement(obligation_id=obligation.id, employee_id=obligation.employee_id, attempts_at_time=used, acknowledged_at=now))
+        if obligation.status == ObligationStatus.RETAKE_PENDING:
+            employee, title = obligation.employee, obligation.training.title
+            notify_roles(
+                db,
+                ("LD_ADMIN",),
+                "RETAKE_APPROVAL_REQUIRED",
+                f"Re-attempt approval needed: {employee.full_name}",
+                f"{employee.full_name} ({employee.employee_code}) completed the refresher for {title} after failing attempt {used} of "
+                f"{obligation.config.max_attempts}. Approve the re-attempt in Employee Assignments.",
+                f"/lnd/assignments?search={employee.employee_code}",
+                f"retake-approval:{obligation.id}:{used}",
+                now,
+            )
 
 
 def first_and_best(db: Session, obligation_ids: list[uuid.UUID]) -> dict:

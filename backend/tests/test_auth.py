@@ -133,3 +133,15 @@ def test_error_response_hides_internals(world):
     assert body.status_code == 400
     assert "secret-value" not in body.text
     assert body.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_change_password_limits_wrong_current_password_guesses(world, client_for):
+    """A stolen session must not be able to guess the current password without limit (audit F-19)."""
+    client = client_for(world.employee)
+    wrong = {"current_password": "NotMyPassword1", "new_password": "BrandNewPass123"}
+    for _ in range(5):
+        response = client.post("/auth/change-password", json=wrong)
+        assert response.status_code == 400
+    right = {"current_password": "TestPassword123", "new_password": "BrandNewPass123"}
+    blocked = client.post("/auth/change-password", json=right)
+    assert blocked.status_code == 429 and blocked.json()["error"]["code"] == "RATE_LIMITED"

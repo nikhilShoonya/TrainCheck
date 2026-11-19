@@ -15,6 +15,7 @@ from app.core.deps import CSRF_COOKIE, SESSION_COOKIE, CurrentUser, client_ip, r
 from app.core.enums import AccountStatus, EmploymentStatus
 from app.core.errors import ApiError, validation
 from app.core.responses import ok
+from app.core.routing import ReleasingRoute
 from app.core.security import (
     hash_password,
     hash_token,
@@ -24,9 +25,9 @@ from app.core.security import (
     verify_password,
 )
 from app.models import AuthAttempt, UserAccount, UserSession
-from app.modules.assessment.gate import access_state, promote_due_retakes
+from app.modules.assessment.gate import access_state
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/auth", tags=["Authentication"])
 
 SSO_PROVIDERS = ("google", "microsoft")
 
@@ -129,7 +130,6 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     )
     db.add(session)
     account.last_login_at = now
-    promote_due_retakes(db, account.employee_id, now)  # "Next eligible login" (BR §9.2).
     record_audit(db, account.id, "LOGIN_SUCCESS", "user_account", account.id, ip_address=ip)
     db.commit()
 
@@ -155,8 +155,19 @@ def me(user: CurrentUser = Depends(require_session), db: Session = Depends(get_d
 
 @router.post("/change-password")
 def change_password(body: ChangePasswordIn, response: Response, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
+    # Wrong current passwords are counted like failed sign-ins, so a stolen session cannot guess without limit.
+    settings = get_settings()
+    key = hashlib.sha256(f"change-password|{user.id}".encode()).hexdigest()
+    window_start = utcnow() - timedelta(minutes=settings.login_window_minutes)
+    failures = db.scalar(select(func.count()).select_from(AuthAttempt).where(AuthAttempt.key_hash == key, AuthAttempt.attempted_at >= window_start))
+    if failures >= settings.login_max_failures:
+        raise ApiError(429, "RATE_LIMITED", "Too many incorrect attempts. Please wait a few minutes and try again.")
     if not verify_password(user.account.password_hash, body.current_password):
+        db.add(AuthAttempt(key_hash=key, attempted_at=utcnow()))
+        record_audit(db, user.id, "PASSWORD_CHANGE_FAILED", "user_account", user.id)
+        db.commit()
         raise validation("Your current password is incorrect.")
+    db.execute(delete(AuthAttempt).where(AuthAttempt.key_hash == key))
     problem = validate_password_strength(body.new_password)
     if problem:
         raise validation(problem)

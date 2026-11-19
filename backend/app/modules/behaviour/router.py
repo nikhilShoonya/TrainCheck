@@ -12,10 +12,11 @@ from app.core.deps import CurrentUser, require_admin, require_gate_clear
 from app.core.enums import ReviewerType
 from app.core.errors import not_found, validation
 from app.core.responses import iso, ok
+from app.core.routing import ReleasingRoute
 from app.models import BehaviourReview, BehaviourTemplate, BehaviourTemplateQuestion, Competency
 from app.modules.behaviour import service
 
-router = APIRouter(tags=["Behaviour"])
+router = APIRouter(route_class=ReleasingRoute, tags=["Behaviour"])
 
 
 class ResponseIn(BaseModel):

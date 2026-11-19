@@ -9,11 +9,10 @@ import { percent } from "@/lib/utils";
 import { ExportButtons, FilterBar } from "./ReportView";
 
 const score = (value: number | null) => (value === null ? "Not collected" : `${value}%`);
-const rating = (value: number | null) => (value === null ? "Not collected" : `${value} / 5`);
 const signed = (value: number | null, unit = "") => (value === null ? "Not comparable" : `${value > 0 ? "+" : ""}${value}${unit}`);
 
 function ScorecardBody({ card }: { card: Scorecard }) {
-  const { learning: l, behaviour: b } = card;
+  const { learning: l } = card;
   return (
     <>
       <section className="panel scorecard-header">
@@ -22,7 +21,7 @@ function ScorecardBody({ card }: { card: Scorecard }) {
           {l.assigned} assignments · {card.training.batches.join(", ") || "No batch"} · Trainer {card.training.trainer ?? "not assigned"} · Owner {card.training.owner ?? "not assigned"}
         </p>
       </section>
-      <div className="scorecard-grid two-level">
+      <div className="scorecard-grid one-level">
         <section className="panel level-panel" aria-labelledby="learning-section">
           <span className="level-number">L2</span>
           <h2 id="learning-section">Section 1 · Learning</h2>
@@ -61,45 +60,13 @@ function ScorecardBody({ card }: { card: Scorecard }) {
             <p>Not collected.</p>
           )}
         </section>
-        <section className="panel level-panel" aria-labelledby="behaviour-section">
-          <span className="level-number">L3</span>
-          <h2 id="behaviour-section">Section 2 · Behaviour</h2>
-          <Badge status={b.state} />
-          <p className="small">Is the employee applying that knowledge in daily work?</p>
-          <Metrics
-            items={[
-              ["Self-assessment", rating(b.self_mean), "Employee rating"],
-              ["Manager observation", rating(b.manager_mean), "Manager rating"],
-              ["Self-manager gap", signed(b.self_manager_gap), "Manager minus self"],
-            ]}
-          />
-          <p>
-            <strong>Follow-up:</strong> one self-assessment 30 days after training completion. {b.overdue ? `${b.overdue} review(s) overdue.` : "No overdue reviews."}
-          </p>
-          <h3>30-day follow-up</h3>
-          {b.periods.length ? (
-            <DataTable
-              all
-              headers={["Period", "Self /5", "Manager /5", "Submitted", "Overdue", "Not yet due"]}
-              rows={b.periods.map((p) => [`${p.period_days} days`, p.self_mean ?? "Not collected", p.manager_mean ?? "Not collected", `${p.self_submitted + p.manager_submitted} of ${p.reviews_total}`, p.overdue, p.not_due])}
-            />
-          ) : (
-            <p>{b.state}. No follow-up cycles exist yet.</p>
-          )}
-          <h3>Competency ratings</h3>
-          {b.competencies.length ? (
-            <DataTable all headers={["Competency", "Self /5", "Manager /5", "Gap"]} rows={b.competencies.map((c) => [c.competency, c.self_mean ?? "Not collected", c.manager_mean ?? "Not collected", c.gap ?? "Not comparable"])} />
-          ) : (
-            <p>Not collected. No submitted reviews yet.</p>
-          )}
-        </section>
       </div>
       <div className="notice">{card.interpretation} There is no combined effectiveness score or employee ranking.</div>
     </>
   );
 }
 
-export function ScorecardPage({ eyebrow, description = "Learning and Behaviour evidence for one training, kept separate. Missing evidence stays visible." }: { eyebrow: string; description?: string }) {
+export function ScorecardPage({ eyebrow, description = "Learning evidence for one training. Missing evidence stays visible." }: { eyebrow: string; description?: string }) {
   const list = useApi<{ id: string; title: string; code: string }[]>("/scorecards");
   const [selected, setSelected] = useState("");
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -107,7 +74,7 @@ export function ScorecardPage({ eyebrow, description = "Learning and Behaviour e
   const card = useApi<Scorecard>(trainingId ? `/scorecards/${trainingId}${toQuery(filters)}` : null);
   return (
     <>
-      <PageTitle eyebrow={eyebrow} title="Training Learning & Behaviour Scorecard" description={description} action={<div className="row wrap">{trainingId ? <ExportButtons code="scorecard" filters={{ ...filters, training_id: trainingId }} /> : null}</div>} />
+      <PageTitle eyebrow={eyebrow} title="Training Learning Scorecard" description={description} action={<div className="row wrap">{trainingId ? <ExportButtons code="scorecard" filters={{ ...filters, training_id: trainingId }} /> : null}</div>} />
       <Loaded state={list}>
         {(items) =>
           items.length ? (

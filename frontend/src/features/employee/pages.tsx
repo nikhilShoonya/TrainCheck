@@ -5,11 +5,12 @@ import { Icon } from "@/components/icons";
 import { Badge, Btn, BtnLink, DataTable, Empty, Loaded, Loading, PageTitle, useToast } from "@/components/ui";
 import { ReviewFormPage, ReviewTable } from "@/features/behaviour/ReviewForm";
 import { ScoreTrend, type ScorePoint } from "@/features/dashboard/charts";
+import { cardEntry } from "@/features/exam/assessmentEntry";
 import { EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, Panel, RecentRow, ScoreTag, TrainingProgress, ViewAll, Welcome } from "@/features/dashboard/widgets";
 import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import type { BehaviourMeans, ReviewSummary, Summary, TrainingCard } from "@/lib/types";
-import { day, firstName, percent, ORG_TIMEZONE } from "@/lib/utils";
+import { dateTimeIn, day, firstName, percent, ORG_TIMEZONE } from "@/lib/utils";
 
 const EYEBROW = "EMPLOYEE";
 
@@ -27,8 +28,9 @@ interface Dashboard {
 
 function AssessmentBanner({ data }: { data: Dashboard }) {
   const target = data.retake ?? data.upcoming;
-  const heading = data.retake ? "Your Next Step: Refresher & Retake" : data.upcoming ? "You Have an Upcoming Assessment" : "You’re Up to Date with Your Assessments";
-  const text = data.retake ? "Revisit the material before your next eligible assessment." : data.upcoming ? `Your questionnaire opens on ${day(data.upcoming.due_at)}.` : "Keep building your skills and track how you apply them at work.";
+  const waiting = Boolean(data.retake?.refresher_acknowledged);
+  const heading = data.retake ? (waiting ? "Waiting for L&D Approval" : "Your Next Step: Refresher & Retake") : data.upcoming ? "You Have an Upcoming Assessment" : "You’re Up to Date with Your Assessments";
+  const text = data.retake ? (waiting ? "You acknowledged the refresher. Your re-attempt opens once L&D approves it." : "Review and acknowledge the refresher. L&D will then approve your re-attempt.") : data.upcoming ? `Your questionnaire opens ${dateTimeIn(data.upcoming.due_at, data.upcoming.timezone)}.` : "Keep building your skills and track how you apply them at work.";
   const href = data.retake ? "/employee/refresher" : data.upcoming ? "/employee/assessments" : "/employee/trainings";
   const label = data.retake ? "View Refresher" : data.upcoming ? "View Assessment" : "View My Training";
   return (
@@ -155,8 +157,8 @@ export function EmployeeDashboard() {
                 <Icon name="award" />
               </span>
               <div>
-                <h2>Learning & Behaviour Scorecard</h2>
-                <p>View your own learning and behaviour evidence.</p>
+                <h2>Learning Scorecard</h2>
+                <p>View your own learning evidence.</p>
               </div>
               <BtnLink href="/employee/scorecard">
                 View Scorecard <Icon name="arrow" />
@@ -179,7 +181,10 @@ export function MyTrainings() {
         {(cards) =>
           cards.length ? (
             <section className="course-grid personal-courses">
-              {cards.map((c, i) => (
+              {/* The server lists pending assessments first (due, then upcoming, then unfinished, then finished). */}
+              {cards.map((c, i) => {
+                const entry = cardEntry(c);
+                return (
                 <article className="panel course-card" key={c.enrolment_id}>
                   <div className="row between">
                     <Glyph index={i} />
@@ -203,6 +208,12 @@ export function MyTrainings() {
                       {c.pre_test_score !== null ? ` · Pre-test ${c.pre_test_score}%` : ""}
                     </small>
                   </p>
+                  {entry.status ? (
+                    <div className="course-next">
+                      <strong>{entry.status}</strong>
+                      {entry.note ? <small>{entry.note}</small> : null}
+                    </div>
+                  ) : null}
                   {c.materials.length ? (
                     <p>
                       {c.materials.map((m) => (
@@ -213,8 +224,13 @@ export function MyTrainings() {
                     </p>
                   ) : null}
                   <div className="row wrap">
+                    {entry.href ? (
+                      <BtnLink href={entry.href} kind="primary">
+                        {entry.label} <Icon name="arrow" />
+                      </BtnLink>
+                    ) : null}
                     {c.latest_attempt_id ? (
-                      <BtnLink href={`/results/${c.latest_attempt_id}`} kind="primary">
+                      <BtnLink href={`/results/${c.latest_attempt_id}`} kind={entry.href ? "secondary" : "primary"}>
                         View Result
                       </BtnLink>
                     ) : null}
@@ -226,7 +242,8 @@ export function MyTrainings() {
                     {c.pre_test_available ? <BtnLink href={`/assessment/pre-test/${c.enrolment_id}`}>Take Pre-test</BtnLink> : null}
                   </div>
                 </article>
-              ))}
+                );
+              })}
             </section>
           ) : (
             <Empty title="No training is assigned to you right now." hint="Assigned training will appear here." />
@@ -235,6 +252,19 @@ export function MyTrainings() {
       </Loaded>
     </>
   );
+}
+
+/** The next step for one assessment. After a failure the next attempt waits for the refresher and L&D approval.
+    Moments are shown as local date and time in the organisation timezone, which is named. */
+function nextDue(c: TrainingCard): string {
+  const when = (iso: string) => dateTimeIn(iso, c.timezone);
+  if (["Refresher required", "Waiting for L&D approval"].includes(c.assessment_state)) return c.assessment_state;
+  if (["Scheduled", "Due", "Overdue", "In progress"].includes(c.assessment_state)) return c.due_at ? when(c.due_at) : c.assessment_state;
+  if (c.attempts) return "Submitted";
+  if (c.due_at) return when(c.due_at);
+  // No assessment yet. Say what it waits for instead of "Not scheduled".
+  if (!c.completed_at) return c.planned_at ? `Opens ${when(c.planned_at)}, once your training completion is recorded` : "After your training completion is recorded";
+  return "Being scheduled by L&D";
 }
 
 export function MyAssessments() {
@@ -252,7 +282,7 @@ export function MyAssessments() {
               rows={cards.map((c) => [
                 c.title,
                 day(c.completed_at),
-                c.retake_pending ? "Next eligible sign-in after refresher" : c.attempts ? "Submitted" : c.due_at ? day(c.due_at) : "Not scheduled",
+                nextDue(c),
                 c.result,
                 c.attempts,
                 c.latest_attempt_id ? (
@@ -279,7 +309,7 @@ export function MyRefresher() {
   const acknowledge = async (obligationId: string) => {
     try {
       await api.post(`/assessment-obligations/${obligationId}/refresher-acknowledgement`);
-      toast("Refresher acknowledged. Your retake becomes due at your next sign-in.");
+      toast("Refresher acknowledged. L&D has been asked to approve your re-attempt.");
       void state.reload();
     } catch (e) {
       toast((e as ApiError).message);
@@ -315,11 +345,13 @@ export function MyRefresher() {
                   ))}
                   {c.retake_pending ? (
                     <Btn tone="attention" disabled={c.refresher_acknowledged} onClick={() => void acknowledge(c.obligation_id!)}>
-                      {c.refresher_acknowledged ? "Acknowledged · sign in again for your retake" : "Acknowledge refresher"}
+                      {c.refresher_acknowledged ? "Acknowledged · waiting for L&D approval" : "Acknowledge refresher"}
                     </Btn>
-                  ) : (
-                    <p className="notice">No further automatic retake is scheduled. L&D will arrange your next learning step.</p>
-                  )}
+                  ) : c.result === "NEEDS_RETRAINING" ? (
+                    <p className="notice">You have used all attempts. Waiting for L&amp;D approval of your re-training.</p>
+                  ) : ["Due", "Overdue", "In progress"].includes(c.assessment_state) ? (
+                    <p className="notice">L&amp;D has approved your re-attempt. Take it from My Assessments.</p>
+                  ) : null}
                 </section>
               ))}
             </>
@@ -356,7 +388,7 @@ export function MyReview() {
 }
 
 export function MyScorecard() {
-  const state = useApi<{ training: string; result: string; pre_test: number | null; first_score: number | null; best_score: number | null; gain: number | null; gain_note: string | null; self_mean: number | null; manager_mean: number | null; self_reviews_due: number; self_reviews_done: number; behaviour_cycles: number }[]>("/me/scorecard");
+  const state = useApi<{ training: string; result: string; pre_test: number | null; first_score: number | null; best_score: number | null; test_score: number | null; feedback_score: number | null }[]>("/me/scorecard");
   if (state.loading && !state.data) return <Loading />;
   return (
     <>
@@ -365,7 +397,7 @@ export function MyScorecard() {
         <Loaded state={state}>
           {(rows) => (
             <DataTable
-              headers={["Training", "Result", "Pre-test", "First", "Best", "Gain", "Self /5", "Manager /5", "Self-assessments"]}
+              headers={["Training", "Result", "Pre-test", "First", "Best", "Test score", "Feedback score"]}
               emptyTitle="No evidence yet."
               rows={rows.map((r) => [
                 r.training,
@@ -373,10 +405,8 @@ export function MyScorecard() {
                 percent(r.pre_test, "Not collected"),
                 percent(r.first_score, "Not collected"),
                 percent(r.best_score, "Not collected"),
-                r.gain === null ? (r.gain_note ?? "Not comparable") : `${r.gain > 0 ? "+" : ""}${r.gain} pts`,
-                r.self_mean ?? "Not collected",
-                r.manager_mean ?? "Not collected",
-                r.behaviour_cycles ? `${r.self_reviews_done} of ${r.self_reviews_due} due` : "Not yet due",
+                percent(r.test_score, "Not collected"),
+                r.feedback_score === null ? "Not given" : `${r.feedback_score} / 5`,
               ])}
             />
           )}

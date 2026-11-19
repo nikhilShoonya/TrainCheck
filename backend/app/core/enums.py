@@ -114,6 +114,8 @@ class SubmissionReason(StrEnum):
     MANUAL = "MANUAL"
     TIME_EXPIRED = "TIME_EXPIRED"
     VIOLATION_LIMIT = "VIOLATION_LIMIT"
+    # A pre-test still running when training completion was recorded (decision of 19 Nov 2026).
+    TRAINING_COMPLETED = "TRAINING_COMPLETED"
 
 
 class SecurityEventType(StrEnum):

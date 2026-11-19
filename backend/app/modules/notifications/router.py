@@ -11,9 +11,10 @@ from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear
 from app.core.errors import not_found
 from app.core.responses import iso, ok
+from app.core.routing import ReleasingRoute
 from app.models import Notification
 
-router = APIRouter(prefix="/me/notifications", tags=["Notifications"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/me/notifications", tags=["Notifications"])
 
 
 class ReadIn(BaseModel):

@@ -85,7 +85,7 @@ export const NAV_PREFETCH: Record<string, string[]> = {
   "/lnd/trainings": ["/admin/trainings"],
   "/lnd/organisation": ["/admin/departments", "/admin/functions", "/admin/trainers", "/admin/competencies", "/admin/calendar"],
   "/lnd/assignments": ["/admin/enrolments"],
-  "/lnd/completion": ["/admin/enrolments"],
+  "/lnd/completion": ["/admin/trainings"], // The training cards; each training's employees load when opened.
   "/lnd/questions": ["/admin/trainings"], // The bank itself is not preloaded.
   "/lnd/imports": ["/admin/imports", "/admin/trainings"],
   "/lnd/assessment-config": ["/admin/trainings"],

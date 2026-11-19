@@ -1,11 +1,9 @@
 """Role and data boundaries. TC-RBAC-*, SEC-001, -002, -003, -009, -011, -014."""
 
-from fastapi.routing import APIRoute
 from sqlalchemy import func, select
 
 from app.core import clock
 from app.core.deps import require_admin
-from app.main import app
 from app.models import AuditLog, TrainingBatch
 from tests.conftest import NOW, start, take
 
@@ -84,13 +82,15 @@ def test_mass_assignment_is_rejected(world, client_for):  # Security §8
 
 def test_every_mutating_admin_route_is_ld_only():
     """Every non-GET /admin route requires the L&D role."""
-    from tests.test_gate import dependency_calls
+    from tests.test_gate import api_routes, dependency_calls
 
-    missing = []
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.path.startswith("/api/v1/admin") and route.methods - {"GET", "HEAD"}:
+    missing, checked = [], 0
+    for route in api_routes("/api/v1/admin"):
+        if route.methods - {"GET", "HEAD"}:
+            checked += 1
             if require_admin not in dependency_calls(route):
                 missing.append((route.path, sorted(route.methods)))
+    assert checked >= 20, f"only {checked} mutating admin routes inspected"
     assert missing == []
 
 
@@ -145,3 +145,26 @@ def test_search_is_scoped(world, client_for):
     assert titles == ["Training OTHER"]
     assert client.get("/search?q=Person").json()["data"] == []
     clock.freeze(NOW)
+
+
+def test_admin_search_finds_people_and_trainings_without_loading_everyone(world, client_for, db, monkeypatch):
+    """Search reads only matching names (audit F-12), never the whole organisation's assessment history."""
+    from app.modules.audit import router as audit_router
+    from tests.conftest import take
+
+    training = world.training("SRCH")
+    for person in (world.employee, world.teammate, world.outsider):
+        obligation = world.complete(person, training)
+        take(db, client_for(person), obligation.id, 8)
+    admin = client_for(world.admin)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("search loaded every enrolment and attempt")
+
+    monkeypatch.setattr(audit_router, "load_rows", refuse)
+    found = admin.get("/search?q=e2").json()["data"]
+    trainings = admin.get("/search?q=training srch").json()["data"]
+    wildcard = admin.get("/search?q=%25").json()["data"]
+    assert [(r["type"], r["subtitle"]) for r in found] == [("employee", "E2")]
+    assert [(r["type"], r["title"]) for r in trainings] == [("training", "Training SRCH")]
+    assert wildcard == []  # A literal %, not a wildcard.

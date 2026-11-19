@@ -65,7 +65,7 @@ def test_self_assessment_flow(world, db, client_for):
     cleared_training(world, world.employee, db)
     client = client_for(world.employee)
     tasks = client.get("/me/behaviour-reviews").json()["data"]
-    assert [t["status"] for t in tasks] == ["OVERDUE", "NOT_DUE", "NOT_DUE"]
+    assert [t["status"] for t in tasks] == ["OVERDUE"]  # One 30-day follow-up (60/90-day withdrawn, a3d91c7e5b20).
     form = client.get(f"/me/behaviour-reviews/{tasks[0]['review_id']}").json()["data"]
     response = client.post(f"/me/behaviour-reviews/{tasks[0]['review_id']}/submit", json=form_body(form))
     assert response.status_code == 200, response.text
@@ -75,9 +75,10 @@ def test_self_assessment_flow(world, db, client_for):
 
 
 def test_not_due_review_is_refused(world, db, client_for):
-    cleared_training(world, world.employee, db)
+    cleared_training(world, world.employee, db, days_ago=10)  # The 30-day follow-up is not due yet.
     client = client_for(world.employee)
-    task = client.get("/me/behaviour-reviews").json()["data"][1]
+    task = client.get("/me/behaviour-reviews").json()["data"][0]
+    assert task["status"] == "NOT_DUE"
     form = client.get(f"/me/behaviour-reviews/{task['review_id']}").json()["data"]
     response = client.post(f"/me/behaviour-reviews/{task['review_id']}/submit", json=form_body(form))
     assert response.json()["error"]["code"] == "REVIEW_NOT_DUE"
@@ -141,10 +142,11 @@ def test_reminders_are_not_duplicated(world, db):  # TC-KIR-007, BR §16.5
 
 
 def test_cycle_due_date_arrives_with_time(world, db, client_for):
-    cleared_training(world, world.employee, db)
-    clock.freeze(NOW + timedelta(days=21))
+    cleared_training(world, world.employee, db, days_ago=10)
+    assert client_for(world.employee).get("/me/behaviour-reviews").json()["data"][0]["status"] == "NOT_DUE"
+    clock.freeze(NOW + timedelta(days=21))  # Day 31 after completion.
     tasks = client_for(world.employee).get("/me/behaviour-reviews").json()["data"]
-    assert tasks[1]["status"] in ("PENDING", "OVERDUE")
+    assert tasks[0]["status"] in ("PENDING", "OVERDUE")
 
 
 def test_template_edit_creates_version_and_keeps_existing_cycles(world, db, client_for):

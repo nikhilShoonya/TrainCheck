@@ -13,9 +13,10 @@ from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin
 from app.core.errors import conflict, not_found
 from app.core.responses import ok
+from app.core.routing import ReleasingRoute
 from app.models import CalendarHoliday, Competency, Department, Employee, Function, Location, Trainer, WorkingCalendar
 
-router = APIRouter(prefix="/admin", tags=["Organisation"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["Organisation"])
 
 
 class Strict(BaseModel):

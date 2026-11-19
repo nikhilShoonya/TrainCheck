@@ -447,7 +447,8 @@ export function GateFlow() {
               setSecure(true);
             }}
           >
-            Start assessment <Icon name="arrow" />
+            {/* A running attempt is resumed with its server deadline; starting again never resets it. */}
+            {item.in_progress ? "Resume assessment" : "Start assessment"} <Icon name="arrow" />
           </Btn>
         )}
         <p className="small">You can review your answers before submitting. Unanswered questions receive no marks.</p>

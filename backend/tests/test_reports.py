@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.models import AuditLog, Question
 from app.modules.reports.exports import safe_text
-from tests.conftest import NOW, take
+from tests.conftest import NOW, give_feedback, take
 
 CODES = ["compliance", "pass-fail", "learning-gain", "behaviour", "question-analytics", "employee-history", "scorecard"]
 FORMATS = ["CSV", "XLSX", "PDF"]
@@ -19,9 +19,9 @@ def fixture_data(world, db, client_for):
     passed = world.complete(world.employee, training, NOW - timedelta(days=5))
     failed = world.complete(world.teammate, training, NOW - timedelta(days=5))
     other = world.complete(world.outsider, training, NOW - timedelta(days=5))
-    take(db, client_for(world.employee), passed.id, 9)
-    take(db, client_for(world.teammate), failed.id, 4)
-    take(db, client_for(world.outsider), other.id, 8)
+    for person, obligation, correct in ((world.employee, passed, 9), (world.teammate, failed, 4), (world.outsider, other, 8)):
+        client = client_for(person)
+        give_feedback(client, take(db, client, obligation.id, correct)["attempt_id"])  # Required before the workspace opens.
     return training
 
 
@@ -246,3 +246,57 @@ def test_personal_history_export_and_page_api_are_retired(world, db, client_for)
         client = client_for(person)
         assert client.post("/reports/exports", json={"report_code": "employee-history", "export_format": "CSV", "own_record": True}).status_code == 403
     assert client_for(world.employee).get("/me/history").status_code == 404
+
+
+def test_scorecard_list_and_filter_options_do_not_load_every_record(world, db, client_for, monkeypatch):
+    """Dropdowns and the scorecard list need names only, not every enrolment and attempt (audit F-12)."""
+    from app.modules.reports import router as reports_router
+
+    fixture_data(world, db, client_for)
+    admin = client_for(world.admin)
+    expected_options = admin.get("/reports/filter-options").json()["data"]
+    expected_cards = admin.get("/scorecards").json()["data"]
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("loaded every enrolment and attempt")
+
+    monkeypatch.setattr(reports_router, "load_rows", refuse)
+    assert admin.get("/reports/filter-options").json()["data"] == expected_options
+    assert admin.get("/scorecards").json()["data"] == expected_cards
+
+
+def test_employee_pages_do_not_query_once_per_training(world, db, client_for):
+    """The employee's own pages cost the same number of queries for 3 trainings as for 6 (audit F-22)."""
+    from sqlalchemy import event
+
+    from app.core import db as database
+    from app.models import TrainingMaterial
+
+    def add_trainings(codes):
+        for code in codes:
+            training = world.training(code)
+            db.add(TrainingMaterial(training_id=training.id, kind="LINK", title=f"Guide {code}", url="https://example.com/guide"))
+            db.commit()
+            obligation = world.complete(world.employee, training)
+            obligation.status = "WAIVED"
+            db.commit()
+
+    def statements_for(path: str) -> int:
+        client = client_for(world.employee)
+        seen = {"n": 0}
+
+        def count(*_args, **_kwargs):
+            seen["n"] += 1
+
+        event.listen(database.get_engine(), "before_cursor_execute", count)
+        try:
+            assert client.get(path).status_code == 200
+        finally:
+            event.remove(database.get_engine(), "before_cursor_execute", count)
+        return seen["n"]
+
+    add_trainings(["N1", "N2", "N3"])
+    small = {path: statements_for(path) for path in ("/me/trainings", "/me/scorecard", "/me/dashboard")}
+    add_trainings(["N4", "N5", "N6"])
+    large = {path: statements_for(path) for path in ("/me/trainings", "/me/scorecard", "/me/dashboard")}
+    assert large == small, (small, large)

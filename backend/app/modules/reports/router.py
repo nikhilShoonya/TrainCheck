@@ -7,25 +7,26 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin, require_gate_clear
-from app.core.enums import Cadence, DeliveryStatus, ExportFormat, ExportStatus, ReportCode, RoleCode
+from app.core.enums import Cadence, DeliveryStatus, EnrolmentStatus, ExportFormat, ExportStatus, ReportCode, RoleCode
 from app.core.errors import forbidden, not_found, validation
 from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
-from app.models import Function, ReportDelivery, ReportExport, ReportSchedule, Training, UserAccount
+from app.core.routing import ReleasingRoute
+from app.models import Department, Employee, Enrolment, Function, Location, ReportDelivery, ReportExport, ReportSchedule, Trainer, Training, TrainingBatch, UserAccount
 from app.modules.notifications.service import notify_account
 from app.modules.reports import exports
 from app.modules.reports.catalogue import BUILDERS, Report
 from app.modules.reports.data import ReportFilters, behaviour_reviews, departments_summary, employee_scope, load_rows, mean, monthly_trend, summary
 from app.modules.reports.scorecard import build_scorecard, question_performance
 
-router = APIRouter(tags=["Reports"])
+router = APIRouter(route_class=ReleasingRoute, tags=["Reports"])
 logger = logging.getLogger("traincheck.reports")
 
 
@@ -98,26 +99,34 @@ def catalogue(user: CurrentUser = Depends(require_gate_clear)) -> dict:
     return ok([{"code": c.value, "title": TITLES[c][0], "description": TITLES[c][1]} for c in codes])
 
 
+def _live_enrolment(*join_on):
+    """Live (not cancelled) assignments, the population every report covers."""
+    return (Enrolment.enrolment_status != EnrolmentStatus.CANCELLED, *join_on)
+
+
 @router.get("/reports/filter-options")
 def filter_options(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    """Dropdown values drawn only from data the caller may see."""
-    rows = load_rows(db, employee_scope(db, user))
-    people = {r.enrolment.employee_id: r.enrolment.employee for r in rows}
-    trainings = {r.enrolment.training_id: r.enrolment.training for r in rows}
-    batches = {r.enrolment.batch_id: r.enrolment.batch for r in rows if r.enrolment.batch_id}
+    """Dropdown values drawn only from data the caller may see: names only, never every record (audit F-12)."""
+    employee_scope(db, user)  # Organisation-wide for L&D Admin; refuses anyone else.
 
-    def unique(items) -> list[dict]:
-        seen = {str(i.id): i.name for i in items if i}
-        return [{"id": k, "name": v} for k, v in sorted(seen.items(), key=lambda kv: kv[1])]
+    def named(model, link) -> list[dict]:
+        rows = db.execute(select(model.id, model.name).join(Employee, link).join(Enrolment, Enrolment.employee_id == Employee.id).where(*_live_enrolment()).distinct()).all()
+        return [{"id": str(i), "name": name} for i, name in sorted(rows, key=lambda r: (r[1], str(r[0])))]
 
+    trainings = db.execute(select(Training.id, Training.title).join(Enrolment, Enrolment.training_id == Training.id).where(*_live_enrolment()).distinct()).all()
+    trainers = db.execute(
+        select(Trainer.id, Trainer.name).join(Training, Training.trainer_id == Trainer.id).join(Enrolment, Enrolment.training_id == Training.id).where(*_live_enrolment()).distinct()
+    ).all()
+    batches = db.execute(select(TrainingBatch.id, TrainingBatch.name).join(Enrolment, Enrolment.batch_id == TrainingBatch.id).where(*_live_enrolment()).distinct()).all()
+    grades = db.scalars(select(Employee.grade).join(Enrolment, Enrolment.employee_id == Employee.id).where(*_live_enrolment(), Employee.grade.is_not(None)).distinct()).all()
     return ok(
         {
-            "departments": unique(p.department for p in people.values()),
-            "locations": unique(p.location for p in people.values()),
-            "trainings": [{"id": str(k), "name": v.title} for k, v in sorted(trainings.items(), key=lambda kv: kv[1].title)],
-            "trainers": unique(t.trainer for t in trainings.values()),
-            "batches": [{"id": str(k), "name": v.name} for k, v in sorted(batches.items(), key=lambda kv: kv[1].name)],
-            "grades": sorted({p.grade for p in people.values() if p.grade}),
+            "departments": named(Department, Department.id == Employee.department_id),
+            "locations": named(Location, Location.id == Employee.location_id),
+            "trainings": [{"id": str(i), "name": t} for i, t in sorted(trainings, key=lambda r: (r[1], str(r[0])))],
+            "trainers": [{"id": str(i), "name": n} for i, n in sorted(trainers, key=lambda r: (r[1], str(r[0])))],
+            "batches": [{"id": str(i), "name": n} for i, n in sorted(batches, key=lambda r: (r[1], str(r[0])))],
+            "grades": sorted(g for g in grades if g),
         }
     )
 
@@ -137,9 +146,11 @@ def _training_in_scope(db: Session, training_id: uuid.UUID) -> Training:
 
 @router.get("/scorecards")
 def list_scorecards(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    rows = load_rows(db, employee_scope(db, user))
-    seen = {r.enrolment.training_id: r.enrolment.training for r in rows}
-    return ok([{"id": str(k), "title": v.title, "code": v.training_code} for k, v in sorted(seen.items(), key=lambda kv: kv[1].title)])
+    employee_scope(db, user)
+    rows = db.execute(
+        select(Training.id, Training.title, Training.training_code).join(Enrolment, Enrolment.training_id == Training.id).where(*_live_enrolment()).distinct()
+    ).all()
+    return ok([{"id": str(i), "title": title, "code": code} for i, title, code in sorted(rows, key=lambda r: (r[1], str(r[0])))])
 
 
 @router.get("/scorecards/{training_id}", dependencies=[expensive("report")])
@@ -311,7 +322,16 @@ def run_due_schedules(db: Session, now: datetime | None = None) -> int:
     delivered = 0
     for schedule in db.scalars(select(ReportSchedule).where(ReportSchedule.is_active, ReportSchedule.next_run_at <= now)).all():
         run_at = schedule.next_run_at
-        schedule.next_run_at = next_run(schedule.cadence, run_at)
+        following = next_run(schedule.cadence, run_at)
+        # Claim this run: only the process whose update still finds the run time it read gets it, so two backend
+        # processes (each with its own scheduler) never deliver the same report twice. Committed before the work.
+        claimed = db.execute(
+            update(ReportSchedule).where(ReportSchedule.id == schedule.id, ReportSchedule.next_run_at == run_at).values(next_run_at=following).execution_options(synchronize_session=False)
+        ).rowcount
+        db.commit()
+        if claimed != 1:
+            continue
+        db.refresh(schedule)
         account = db.get(UserAccount, schedule.owner_user_id)
         roles = {link.role.code for link in account.role_links}
         actor = Actor(account, account.employee, None, roles)  # type: ignore[arg-type]

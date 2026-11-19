@@ -2,7 +2,7 @@
 from sqlalchemy import func, select
 
 from app.models import AssessmentFeedback
-from tests.conftest import relogin, start, take
+from tests.conftest import refresher_then_approval, start, take
 
 GOOD = {"ratings": {"relevance": 5, "clarity": 4, "alignment": 4, "fairness": 3, "confidence": 5}, "comment": "  Useful session.  "}
 
@@ -34,8 +34,7 @@ def test_retake_does_not_ask_again(world, client_for, db):
     client = client_for(email)
     first = take(db, client, obligation.id, 5)
     assert client.post(f"/attempts/{first['attempt_id']}/feedback", json=GOOD).status_code == 200
-    assert client.post(f"/assessment-obligations/{obligation.id}/refresher-acknowledgement").status_code == 200
-    relogin(client, email)
+    refresher_then_approval(client, client_for(world.admin), obligation.id)
     second = take(db, client, obligation.id, 8)
     assert client.get(f"/attempts/{second['attempt_id']}/feedback").json()["data"]["required"] is False
 
@@ -73,3 +72,67 @@ def test_admin_sees_feedback_and_employee_cannot(world, client_for, db):
     assert all(r["score_percent"] == 80.0 and r["result_status"] == "PASSED" for r in data["responses"])
     filtered = client_for(world.admin).get(f"/admin/feedback?training_id={world.training('T2').id}").json()["data"]
     assert filtered["summary"]["responses"] == 0
+
+
+# ---------- Feedback cutoff (decision of 19 Nov 2026) ----------
+
+def test_assessments_before_the_feedback_cutoff_are_not_asked(world, client_for, db, monkeypatch):
+    """Feedback became required on 14 Nov 2026. Results from before then must not block anyone."""
+    from datetime import timedelta
+
+    from app.core import clock
+    from app.core.config import get_settings
+    from tests.conftest import NOW
+
+    monkeypatch.setattr(get_settings(), "feedback_required_from", "2026-11-14")
+    old = world.complete(world.employee, world.training("TOLD"), NOW - timedelta(days=2))
+    client = client_for(world.employee)
+    before = take(db, client, old.id, 8)  # Submitted 4 Nov 2026, before the cutoff.
+    assert before["access_state"]["access_status"] == "DASHBOARD_ALLOWED"
+    assert client.get(f"/attempts/{before['attempt_id']}/feedback").json()["data"]["required"] is False
+    assert client.get("/me/dashboard").status_code == 200
+
+    later = NOW + timedelta(days=16)  # 20 Nov 2026, after the cutoff.
+    clock.freeze(later)
+    new = world.complete(world.teammate, world.training("TNEW"), later - timedelta(hours=1))
+    teammate = client_for(world.teammate)
+    after = take(db, teammate, new.id, 8)
+    assert after["access_state"]["access_status"] == "FEEDBACK_REQUIRED"
+    assert teammate.get(f"/attempts/{after['attempt_id']}/feedback").json()["data"]["required"] is True
+
+
+def test_empty_cutoff_means_always_required(world, client_for, db, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "feedback_required_from", "")
+    obligation = world.complete(world.employee, world.training())
+    client = client_for(world.employee)
+    assert take(db, client, obligation.id, 8)["access_state"]["access_status"] == "FEEDBACK_REQUIRED"
+
+
+def test_oldest_owed_feedback_is_asked_first(world, client_for, db):
+    from datetime import timedelta
+
+    from app.core import clock
+    from tests.conftest import NOW
+
+    first_obligation = world.complete(world.employee, world.training("TA"), NOW - timedelta(days=3))
+    second_obligation = world.complete(world.employee, world.training("TB"), NOW - timedelta(days=2))
+    client = client_for(world.employee)
+    first = take(db, client, first_obligation.id, 8)
+    clock.freeze(NOW + timedelta(minutes=30))
+    second = take(db, client, second_obligation.id, 8)
+    assert second["access_state"]["feedback_due"]["attempt_id"] == first["attempt_id"]
+
+
+def test_feedback_audit_names_the_feedback(world, client_for, db):
+    from app.models import AuditLog
+
+    obligation = world.complete(world.employee, world.training())
+    client = client_for(world.employee)
+    attempt_id = take(db, client, obligation.id, 8)["attempt_id"]
+    saved = client.post(f"/attempts/{attempt_id}/feedback", json=GOOD)
+    assert saved.status_code == 200
+    feedback_id = db.scalar(select(AssessmentFeedback.id))
+    audit = db.scalar(select(AuditLog).where(AuditLog.action == "ASSESSMENT_FEEDBACK_SUBMITTED"))
+    assert audit.target_id == str(feedback_id)

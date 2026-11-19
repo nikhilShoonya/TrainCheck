@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Icon } from "@/components/icons";
 import { Art } from "@/components/shell/Art";
 import { FormError } from "@/components/ui";
@@ -46,13 +46,16 @@ function rememberedEmail(): string {
 export function LoginPage() {
   // The first render must match the server's HTML, which cannot see browser storage.
   // The remembered email is applied after mount, so the server and browser agree (no hydration mismatch).
-  const [email, setEmail] = useState(DEMO_MODE ? ROLES[0][3] : "");
+  const initialEmail = DEMO_MODE ? ROLES[0][3] : "";
+  const [email, setEmail] = useState(initialEmail);
+  const emailInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    const saved = rememberedEmail();
-    // Reading browser storage after mount is the purpose of this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // Someone may have typed before the page became interactive (slow connection or device): keep what they typed.
+    const typed = emailInput.current?.value ?? "";
+    const saved = typed && typed !== initialEmail ? typed : rememberedEmail();
+    // Reading the field and browser storage after mount is the purpose of this effect.
     if (saved) setEmail(saved);
-  }, []);
+  }, [initialEmail]);
   const [password, setPassword] = useState(DEMO_MODE ? DEMO_PASSWORD : "");
   const [show, setShow] = useState(false);
   const [remember, setRemember] = useState(true);
@@ -176,10 +179,9 @@ export function LoginPage() {
           </h1>
           <p>An integrated training evaluation platform that confirms employees learn after training and apply that learning in their actual work.</p>
         </div>
-        <div className="login-levels two-level">
+        <div className="login-levels one-level">
           {[
             ["cap", "Learning", "Did the employee acquire the required knowledge?"],
-            ["users", "Behaviour", "Is the employee applying it in daily work?"],
           ].map(([icon, label, description]) => (
             <div key={label}>
               <span>
@@ -220,7 +222,7 @@ export function LoginPage() {
             Email address
             <span>
               <Icon name="mail" />
-              <input name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" />
+              <input ref={emailInput} name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" />
             </span>
           </label>
           <label className="login-input-field">

@@ -22,10 +22,11 @@ from app.core import ratelimit
 from app.core.config import get_settings
 from app.core.errors import ApiError, not_found
 from app.core.responses import ok
+from app.core.routing import ReleasingRoute
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/demo", tags=["Demo"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/demo", tags=["Demo"])
 
 
 class ResetIn(BaseModel):

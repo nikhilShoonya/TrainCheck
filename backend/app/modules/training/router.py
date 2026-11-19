@@ -28,6 +28,7 @@ from app.core.enums import (
 from app.core.errors import ApiError, conflict, not_found, validation
 from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
+from app.core.routing import ReleasingRoute
 from app.models import (
     AssessmentAttempt,
     AssessmentConfig,
@@ -45,13 +46,13 @@ from app.models import (
     TrainingSession,
 )
 from app.modules.assessment.gate import obligation_startable
-from app.modules.assessment.scheduling import load_calendar
-from app.modules.assessment.service import PoolData, active_config, next_config_version, pool_message, pool_problem, pool_report
+from app.modules.assessment.scheduling import CalendarView, fixed_instant, load_calendar
+from app.modules.assessment.service import PoolData, active_config, counted_attempts, next_config_version, pool_message, pool_problem, pool_report
 from app.modules.behaviour.service import FOLLOWUP_DAYS
 from app.modules.notifications.service import notify_employee
 from app.modules.training import service
 
-router = APIRouter(prefix="/admin", tags=["L&D Administration"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["L&D Administration"])
 
 MIN_ATTEMPTS, MAX_ATTEMPTS = 1, 10
 MIN_MINUTES, MAX_MINUTES = 1, 240
@@ -151,7 +152,10 @@ class ConfigIn(Strict):
     schedule_mode: ScheduleMode = ScheduleMode.NEXT_WORKING_DAY
     schedule_delay_days: int = Field(default=0, ge=0, le=365)
     schedule_uses_working_days: bool = False
-    schedule_date: date | None = None  # FIXED_DATE only.
+    schedule_date: date | None = None  # FIXED_DATE only: the local date in the organisation timezone.
+    schedule_time: time | None = None  # FIXED_DATE only: the local opening time (HH:MM) on that date.
+    # Also apply these rules to employees already waiting (post-test only). Off: prospective only (BR §3.1).
+    apply_to_waiting: bool = False
     difficulty_mix: dict[Difficulty, int] | None = None
     show_explanations: bool = False
     shuffle_questions: bool = True
@@ -161,9 +165,12 @@ class ConfigIn(Strict):
     assessment_type: AssessmentType = AssessmentType.POST_TEST
 
 
-def config_view(config: AssessmentConfig | None) -> dict | None:
+def config_view(config: AssessmentConfig | None, calendar: CalendarView | None = None) -> dict | None:
+    """With a calendar, a custom date also reads as its exact UTC moment and the local time in the
+    organisation timezone, so the form reopens with what was chosen."""
     if config is None:
         return None
+    opens = fixed_instant(calendar, config) if calendar and config.schedule_mode == ScheduleMode.FIXED_DATE else None
     return {
         "id": str(config.id),
         "assessment_type": config.assessment_type,
@@ -176,7 +183,12 @@ def config_view(config: AssessmentConfig | None) -> dict | None:
         "schedule_mode": config.schedule_mode,
         "schedule_delay_days": config.schedule_delay_days,
         "schedule_uses_working_days": config.schedule_uses_working_days,
-        "schedule_date": config.schedule_date.isoformat() if config.schedule_date else None,
+        # Date and time both come from the one stored moment, in the timezone now in force. The stored local date
+        # belongs to the timezone it was chosen in; pairing it with a time in another one would move the moment.
+        "schedule_date": calendar.local_date(opens).isoformat() if opens and calendar else (config.schedule_date.isoformat() if config.schedule_date else None),
+        "schedule_time": calendar.local_time(opens).strftime("%H:%M") if opens and calendar else None,
+        "schedule_at": iso(opens) if opens else None,
+        "timezone": calendar.timezone if calendar else None,
         "difficulty_mix": config.difficulty_mix,
         "show_explanations": config.show_explanations,
         "shuffle_questions": config.shuffle_questions,
@@ -204,6 +216,7 @@ class TrainingData:
         self.post: dict[uuid.UUID, AssessmentConfig] = {}
         self.unavailable: dict[uuid.UUID, list[AssessmentObligation]] = {i: [] for i in ids}
         self.pools = PoolData(db, ids)
+        self.calendar = load_calendar(db)
         if not ids:
             return
         for e in db.scalars(
@@ -256,7 +269,8 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
         "refresher_url": t.refresher_url,
         "assigned_count": len(enrolments),
         "completed_count": sum(1 for e in enrolments if e.completion),
-        "config": config_view(post),
+        "config": config_view(post, loaded.calendar),
+        "timezone": loaded.calendar.timezone,
         "eligible_questions": pool["eligible"],
         "config_ready": bool(pool["ready"]),
         "assessment_readiness": readiness.view(),
@@ -267,7 +281,7 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
         data["pending_scheduling"] = [{"employee_code": e.employee.employee_code, "employee_name": e.employee.full_name, "completed_at": iso(e.completion.completed_at)} for e in pending]
         data["unavailable_assessments"] = [{"employee_code": o.employee.employee_code, "employee_name": o.employee.full_name, "due_at": iso(o.due_at)} for o in unavailable]
         data["materials"] = [{"id": str(m.id), "kind": m.kind, "title": m.title, "url": m.url} for m in t.materials]
-        data["pre_test_config"] = config_view(active_config(db, t.id, AssessmentType.PRE_TEST))
+        data["pre_test_config"] = config_view(active_config(db, t.id, AssessmentType.PRE_TEST), loaded.calendar)
         data["question_pool"] = pool
         data["pool_problem"] = None if pool["ready"] else pool
     return data
@@ -459,19 +473,31 @@ def question_pool(
 @router.post("/trainings/{training_id}/assessment-configs")
 def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Every change is a new version: past attempts keep their snapshot and obligations keep their config."""
-    training = _training(db, training_id)
+    training = _locked(db, _training(db, training_id))  # Two saves at once take turns; the second builds on the first.
     if body.schedule_mode == ScheduleMode.DELAY_DAYS and body.schedule_delay_days < 1:
         raise validation("Enter a delay of at least 1 day.")
-    schedule_date = body.schedule_date if body.schedule_mode == ScheduleMode.FIXED_DATE else None
+    calendar = load_calendar(db)
+    now = utcnow()
+    current = active_config(db, training.id, body.assessment_type)
+    schedule_date = schedule_at = None
     if body.schedule_mode == ScheduleMode.FIXED_DATE:
-        if schedule_date is None:
-            raise validation("Choose the date the assessment is held.")
-        if schedule_date < load_calendar(db).local_date(utcnow()):
-            raise validation("The assessment date has passed. Choose today or a later date.")
+        # The date and time are read in the organisation timezone and stored as one UTC moment. Nothing is
+        # assumed: a missing time is an error, never midnight.
+        if body.schedule_date is None:
+            raise validation("Choose the date the assessment opens.")
+        if body.schedule_time is None:
+            raise validation(f"Choose the time the assessment opens ({calendar.timezone}).")
+        try:
+            schedule_at = calendar.to_utc(body.schedule_date, body.schedule_time)
+        except ValueError as exc:
+            raise validation(f"That time does not exist in {calendar.timezone} (the clocks change then). Choose another time.") from exc
+        schedule_date = body.schedule_date
+        unchanged = current is not None and current.schedule_mode == ScheduleMode.FIXED_DATE and fixed_instant(calendar, current) == schedule_at
+        if schedule_at < now and not unchanged:  # Re-saving other settings keeps an opening moment already passed.
+            raise validation(f"That date and time has passed. It is now {now.astimezone(calendar.tz):%Y-%m-%d %H:%M} in {calendar.timezone}. Choose a later time.")
     mix = {k.value: v for k, v in body.difficulty_mix.items()} if body.difficulty_mix else None
     if mix and (any(v < 0 for v in mix.values()) or sum(mix.values()) != body.question_count):
         raise validation("Difficulty counts must total the questions per attempt.")
-    current = active_config(db, training.id, body.assessment_type)
     candidate = AssessmentConfig(
         training_id=training.id,
         assessment_type=body.assessment_type,
@@ -484,6 +510,7 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
         schedule_delay_days=body.schedule_delay_days,
         schedule_uses_working_days=body.schedule_uses_working_days,
         schedule_date=schedule_date,
+        schedule_at=schedule_at,
         difficulty_mix=mix,
         show_explanations=body.show_explanations,
         shuffle_questions=body.shuffle_questions,
@@ -496,15 +523,22 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
     problem = pool_problem(db, candidate)
     if problem:
         raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", pool_message(problem, training.title), problem)
-    if current is not None:
-        current.is_active = False
+    try:
+        if current is not None:
+            current.is_active = False
+            db.flush()
+        candidate.is_active = True
+        db.add(candidate)
         db.flush()
-    candidate.is_active = True
-    db.add(candidate)
-    db.flush()
-    record_audit(db, user.id, "ASSESSMENT_CONFIG_CHANGED", "training", training.id, before=config_view(current), after=config_view(candidate))
-    db.commit()
-    return ok(config_view(candidate))
+        record_audit(db, user.id, "ASSESSMENT_CONFIG_CHANGED", "training", training.id, before=config_view(current, calendar), after=config_view(candidate, calendar))
+        applied = None
+        if body.apply_to_waiting and body.assessment_type == AssessmentType.POST_TEST:
+            applied = service.apply_schedule(db, training, candidate, user.id, now)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise conflict("CONFIG_CHANGED_MEANWHILE", "These assessment rules were saved by someone else at the same moment. Reload the page and save again.") from exc
+    return ok({**config_view(candidate, calendar), "applied": applied})
 
 
 # ---------- Batches and sessions ----------
@@ -592,7 +626,7 @@ def assessment_state(obligations: list[AssessmentObligation], now: datetime, una
     if unavailable:
         return "Unavailable"
     if current.status == ObligationStatus.RETAKE_PENDING:
-        return "Retake pending"
+        return "Awaiting approval" if current.refresher_acknowledged_at else "Awaiting refresher"
     if current.status == ObligationStatus.IN_PROGRESS:
         return "In progress"
     if current.due_at and current.due_at > now:
@@ -643,11 +677,17 @@ def enrolment_view(e: Enrolment, now: datetime, issues: IssueFinder | None = Non
         "completed_at": iso(e.completion.completed_at) if e.completion else None,
         "completion_source": e.completion.completion_source if e.completion else None,
         "due_at": iso(current.due_at) if current else None,
-        "assessment_state": assessment_state(e.obligations, now, bool(issue and issue["code"] == "UNAVAILABLE")),
+        # Completion is the trigger (BR §4.1): before it is recorded there is nothing to schedule yet.
+        "assessment_state": "Awaiting completion" if e.completion is None and current is None else assessment_state(e.obligations, now, bool(issue and issue["code"] == "UNAVAILABLE")),
         "assessment_issue": issue,
         "outcome": current.outcome if current else None,
         "retraining_flag": current.retraining_flag if current else "NOT_REQUIRED",
         "obligation_id": str(current.id) if current else None,
+        # Attempts in the current cycle; each approved re-training opens a new cycle with fresh attempts.
+        "attempts_used": counted_attempts(current) if current else 0,
+        "max_attempts": current.config.max_attempts if current else None,
+        "retrainings": len(post) - 1 if post else 0,
+        "refresher_acknowledged_at": iso(current.refresher_acknowledged_at) if current and current.status == ObligationStatus.RETAKE_PENDING else None,
     }
 
 
@@ -668,7 +708,7 @@ def list_enrolments(
             joinedload(Enrolment.training),
             joinedload(Enrolment.batch),
             joinedload(Enrolment.completion),
-            selectinload(Enrolment.obligations),
+            selectinload(Enrolment.obligations).options(selectinload(AssessmentObligation.attempts), joinedload(AssessmentObligation.config)),
         )
         .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
         .order_by(Employee.full_name)
@@ -714,6 +754,17 @@ def assign(body: AssignIn, user: CurrentUser = Depends(require_admin), db: Sessi
     return ok(result)
 
 
+def _locked(db: Session, record):
+    """Takes the record's row lock and reads it again from the database, relationships included.
+
+    The record was read without a lock, so another request (a double click, a second admin, the employee starting an
+    attempt) may have changed it since. Holding the lock until commit makes the next such request wait and see this
+    one's result. The same pattern as service.lock_if_not_started and the attempt lock in the assessment engine."""
+    model = type(record)
+    db.expire(record)
+    return db.scalar(select(model).where(model.id == record.id).with_for_update().execution_options(populate_existing=True))
+
+
 def _enrolment(db: Session, enrolment_id: uuid.UUID) -> Enrolment:
     enrolment = db.get(Enrolment, enrolment_id)
     if enrolment is None:
@@ -745,22 +796,26 @@ def set_attendance(enrolment_id: uuid.UUID, body: AttendanceIn, user: CurrentUse
 @router.post("/enrolments/{enrolment_id}/completion")
 def mark_completed(enrolment_id: uuid.UUID, body: CompletionIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Records completion and reports, truthfully, whether the assessment was scheduled."""
-    enrolment = _enrolment(db, enrolment_id)
+    enrolment = _locked(db, _enrolment(db, enrolment_id))
     calendar = load_calendar(db)
     moment = datetime.combine(body.completion_date, time.min, calendar.tz)
     if body.completion_date == calendar.local_date(utcnow()):
         moment = utcnow()
-    outcome = service.complete_enrolment(db, enrolment, moment.astimezone(UTC), "MANUAL", user.id, attendance=body.attendance_status)
-    scheduling = service.scheduling_view(outcome.scheduling)
-    record_audit(
-        db,
-        user.id,
-        "COMPLETION_RECORDED",
-        "enrolment",
-        enrolment.id,
-        after={"date": body.completion_date.isoformat(), "attendance": enrolment.attendance_status, "employee": enrolment.employee.employee_code, "training": enrolment.training.training_code, "assessment": scheduling["status"], "assessment_reason": scheduling["reason"]},
-    )
-    db.commit()
+    try:
+        outcome = service.complete_enrolment(db, enrolment, moment.astimezone(UTC), "MANUAL", user.id, attendance=body.attendance_status)
+        scheduling = service.scheduling_view(outcome.scheduling)
+        record_audit(
+            db,
+            user.id,
+            "COMPLETION_RECORDED",
+            "enrolment",
+            enrolment.id,
+            after={"date": body.completion_date.isoformat(), "attendance": enrolment.attendance_status, "employee": enrolment.employee.employee_code, "training": enrolment.training.training_code, "assessment": scheduling["status"], "assessment_reason": scheduling["reason"]},
+        )
+        db.commit()
+    except IntegrityError as exc:  # Recorded by another request at the same moment (the completion is unique).
+        db.rollback()
+        raise conflict("COMPLETION_EXISTS", "Completion was just recorded for this assignment by another request. Reload to see it.") from exc
     db.refresh(enrolment)
     return ok({**enrolment_view(enrolment, utcnow(), IssueFinder(db)), "assessment_scheduling": scheduling})
 
@@ -777,7 +832,7 @@ def schedule_assessments(training_id: uuid.UUID, user: CurrentUser = Depends(req
 
 @router.post("/enrolments/{enrolment_id}/cancel")
 def cancel_enrolment(enrolment_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    enrolment = _enrolment(db, enrolment_id)
+    enrolment = _locked(db, _enrolment(db, enrolment_id))  # Same lock as recording completion.
     if enrolment.completion is not None:
         raise conflict("ENROLMENT_COMPLETED", "A completed assignment cannot be cancelled. Its evidence is kept.")
     enrolment.enrolment_status = EnrolmentStatus.CANCELLED
@@ -799,7 +854,7 @@ def _obligation(db: Session, obligation_id: uuid.UUID) -> AssessmentObligation:
 @router.post("/obligations/{obligation_id}/waive")
 def waive(obligation_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """An authorised exemption with a reason. It never marks the assessment as passed (BR §5.9)."""
-    obligation = _obligation(db, obligation_id)
+    obligation = _locked(db, _obligation(db, obligation_id))  # The lock start_attempt takes: never waive a started attempt.
     if obligation.status in (ObligationStatus.COMPLETED, ObligationStatus.WAIVED, ObligationStatus.CANCELLED):
         raise conflict("OBLIGATION_CLOSED", "This assessment is already closed.")
     if obligation.status == ObligationStatus.IN_PROGRESS:
@@ -812,10 +867,37 @@ def waive(obligation_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(
     return ok({"status": obligation.status})
 
 
+@router.post("/obligations/{obligation_id}/approve-retake")
+def approve_retake(obligation_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Opens the next attempt after a failure that left attempts, once the employee has acknowledged the refresher."""
+    obligation = _locked(db, _obligation(db, obligation_id))
+    if obligation.status != ObligationStatus.RETAKE_PENDING:
+        raise conflict("NO_RETAKE_PENDING", "This assessment has no re-attempt waiting for approval.")
+    if obligation.refresher_acknowledged_at is None:
+        raise conflict("REFRESHER_NOT_ACKNOWLEDGED", "The employee has not acknowledged the refresher yet.")
+    now = utcnow()
+    used = counted_attempts(obligation)
+    obligation.status = ObligationStatus.DUE
+    obligation.due_at = now
+    notify_employee(
+        db,
+        obligation.employee_id,
+        "RETAKE_APPROVED",
+        f"Re-attempt approved: {obligation.training.title}",
+        f"L&D has approved your re-attempt. You have used {used} of {obligation.config.max_attempts} attempts.",
+        "/employee/assessments",
+        f"retake-approved:{obligation.id}:{used}",
+        now,
+    )
+    record_audit(db, user.id, "RETAKE_APPROVED", "assessment_obligation", obligation.id, after={"attempts_used": used})
+    db.commit()
+    return ok({"status": obligation.status})
+
+
 @router.post("/obligations/{obligation_id}/retraining-cycle")
 def start_retraining_cycle(obligation_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """After re-training, opens a new assessment cycle. The original failure record is kept (BR §9.6)."""
-    obligation = _obligation(db, obligation_id)
+    obligation = _locked(db, _obligation(db, obligation_id))
     if obligation.retraining_flag != RetrainingFlag.NEEDS_RETRAINING:
         raise conflict("NOT_FLAGGED", "This record is not flagged Needs Re-training.")
     readiness = service.assessment_readiness(db, obligation.training)
@@ -837,8 +919,12 @@ def start_retraining_cycle(obligation_id: uuid.UUID, body: ReasonIn, user: Curre
         due_at=now,
     )
     db.add(new_cycle)
-    db.flush()
-    notify_employee(db, obligation.employee_id, "RETAKE_ASSIGNED", f"New assessment cycle: {obligation.training.title}", "L&D has opened a new assessment after your re-training.", "/employee/assessments", f"retraining:{new_cycle.id}", now)
+    try:
+        db.flush()
+    except IntegrityError as exc:  # Opened by another request at the same moment (cycles are unique per enrolment).
+        db.rollback()
+        raise conflict("NOT_FLAGGED", "A new assessment cycle was just opened for this record by another request.") from exc
+    notify_employee(db, obligation.employee_id, "RETAKE_ASSIGNED", f"Re-training approved: {obligation.training.title}", "L&D has approved your re-training. A new assessment is open with fresh attempts.", "/employee/assessments", f"retraining:{new_cycle.id}", now)
     record_audit(db, user.id, "RETRAINING_CYCLE_STARTED", "assessment_obligation", new_cycle.id, reason=body.reason, before={"cycle": obligation.cycle_number}, after={"cycle": new_cycle.cycle_number})
     db.commit()
     return ok({"obligation_id": str(new_cycle.id), "cycle_number": new_cycle.cycle_number})

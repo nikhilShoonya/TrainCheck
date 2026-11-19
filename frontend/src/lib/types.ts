@@ -58,6 +58,10 @@ export interface AccessState {
   queue: QueueItem[];
   /** The assessment whose required feedback is still owed (FEEDBACK_REQUIRED only). */
   feedback_due?: { attempt_id: string; obligation_id: string } | null;
+  /** When the next scheduled assessment opens: the gate decision changes by itself then. */
+  next_change_at?: string | null;
+  /** The server's clock when this was decided, for timing next_change_at without trusting the device clock. */
+  server_now?: string;
 }
 
 export interface Summary {
@@ -112,6 +116,10 @@ export interface TrainingCard {
   latest_attempt_id: string | null;
   obligation_id: string | null;
   due_at: string | null;
+  /** Before completion is recorded: the earliest moment a custom-date assessment can open. */
+  planned_at?: string | null;
+  /** The organisation timezone for showing these moments. */
+  timezone?: string | null;
   retake_pending: boolean;
   refresher_acknowledged: boolean;
   question_count: number | null;
@@ -120,6 +128,14 @@ export interface TrainingCard {
   max_attempts: number | null;
   pre_test_available: boolean;
   pre_test_score: number | null;
+  /** Whether the assessment can be entered now, by the server's rules (see backend assessment/entry.py). */
+  entry_state?: "OPEN" | "IN_PROGRESS" | "NOT_YET_OPEN" | "UNAVAILABLE";
+  /** Why it cannot be entered (UNAVAILABLE only), with the server's message for the employee. */
+  entry_reason?: string | null;
+  entry_message?: string | null;
+  /** Pending-first grouping; /me/trainings is already ordered by it. */
+  pending_group?: "DUE" | "UPCOMING" | "UNFINISHED" | "FINISHED";
+  feedback_required?: boolean;
   materials: { id: string; kind: string; title: string; url: string }[];
   refresher_text?: string | null;
   refresher_url?: string | null;
@@ -136,6 +152,10 @@ export interface AttemptQuestionView {
   marks: number;
   options: { option_id: string; label: string; text: string }[];
   selected_option_ids: string[];
+  /** The saved answer's revision, for compare-and-set saves. */
+  revision?: number;
+  /** The operation ID of the save that wrote the answer (tells this page's own lost save from anyone else's). */
+  op_id?: string | null;
   marked_for_review: boolean;
   saved_at: string | null;
 }
@@ -174,7 +194,7 @@ export interface ResultView {
   obtained_marks: number;
   total_marks: number;
   submitted_at: string;
-  submission_reason: "MANUAL" | "TIME_EXPIRED" | "VIOLATION_LIMIT";
+  submission_reason: "MANUAL" | "TIME_EXPIRED" | "VIOLATION_LIMIT" | "TRAINING_COMPLETED";
   time_taken_seconds: number;
   question_count: number;
   answered_count: number;
@@ -314,8 +334,14 @@ export interface ConfigView {
   schedule_mode: string;
   schedule_delay_days: number;
   schedule_uses_working_days: boolean;
-  /** FIXED_DATE only: the day the assessment is held (YYYY-MM-DD). */
+  /** FIXED_DATE only: the local day the assessment opens (YYYY-MM-DD, organisation timezone). */
   schedule_date: string | null;
+  /** FIXED_DATE only: the local opening time (HH:MM, organisation timezone). */
+  schedule_time?: string | null;
+  /** FIXED_DATE only: the exact opening moment (UTC, ISO 8601). */
+  schedule_at?: string | null;
+  /** The organisation timezone the date and time are read in. */
+  timezone?: string | null;
   difficulty_mix: Record<string, number> | null;
   show_explanations: boolean;
   shuffle_questions: boolean;
@@ -348,6 +374,8 @@ export interface TrainingAdmin {
   assigned_count: number;
   completed_count: number;
   config: ConfigView | null;
+  /** The organisation timezone (working calendar). */
+  timezone?: string;
   materials?: { id: string; kind: string; title: string; url: string }[];
   pre_test_config?: ConfigView | null;
   pool_problem?: PoolReport | null;

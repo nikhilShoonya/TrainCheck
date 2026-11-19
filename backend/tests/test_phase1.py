@@ -19,7 +19,7 @@ from app.models import (
     TrainingCompletion,
 )
 from app.modules.scheduler.jobs import behaviour_reminders, build_scheduler, pending_assessment_reminders
-from tests.conftest import NOW, start, submit, take
+from tests.conftest import NOW, refresher_then_approval, start, submit, take
 
 
 def count(db, model, *where) -> int:
@@ -305,6 +305,7 @@ def test_reconfiguration_moves_stuck_obligation_onto_a_valid_config(world, db, c
     assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={"question_count": 7, "duration_minutes": 15}).status_code == 200
     moved = admin.post(f"/admin/trainings/{training.id}/schedule-assessments").json()["data"]
     assert [m["employee_code"] for m in moved["reconfigured"]] == ["E1"]
+    db.expire_all()  # The API changed it in its own session; read the stored row, not this session's cached copy.
     assert db.get(AssessmentObligation, obligation.id).config.question_count == 7
     state = client_for(world.employee).get("/me/access-state").json()["data"]
     assert state["access_status"] == "ASSESSMENT_REQUIRED" and state["queue"][0]["question_count"] == 7
@@ -338,9 +339,8 @@ def test_attempts_first_best_and_outcome_notifications(world, db, client_for):
     first = take(db, client, obligation.id, 6)
     assert first["result_status"] == "NOT_PASSED" and first["refresher"] is not None
     assert len(notices(db, "ASSESSMENT_NOT_PASSED")) == 1
-    client.post(f"/assessment-obligations/{obligation.id}/refresher-acknowledgement")
-    client.post("/auth/logout")
-    client = client_for(world.employee)  # A retake opens at the next sign-in.
+    refresher_then_approval(client, client_for(world.admin), obligation.id)  # A retake opens once L&D approves it.
+    assert len(notices(db, "RETAKE_APPROVAL_REQUIRED")) == 1 and len(notices(db, "RETAKE_APPROVED")) == 1
     second = take(db, client, obligation.id, 8)
     assert second["result_status"] == "PASSED"
     assert (second["first_score"], second["best_score"]) == (60.0, 80.0)
@@ -386,7 +386,7 @@ def test_behaviour_writes_are_refused_but_history_is_readable(world, db, client_
     admin = client_for(world.admin)
     assert admin.post("/admin/behaviour-templates", json={"name": "New", "training_id": str(training.id), "questions": []}).status_code in (400, 409)
     assert admin.get(f"/scorecards/{training.id}").status_code == 200  # Reports still load.
-    assert count(db, BehaviourReviewCycle) == 3  # Historical records are kept.
+    assert count(db, BehaviourReviewCycle) == 1  # Historical records are kept (one 30-day follow-up per completion).
 
 
 def test_l3_switch_off_does_not_affect_the_learning_flow(world, db, client_for):

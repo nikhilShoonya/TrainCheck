@@ -4,10 +4,13 @@
 .level-tiles.two-level{grid-template-columns:repeat(2,minmax(0,1fr))}
 .green-impact-login .login-levels.two-level{grid-template-columns:repeat(2,minmax(0,1fr));max-width:460px}
 .green-impact-login .login-levels.two-level p{max-width:210px}
+.green-impact-login .login-levels.one-level{grid-template-columns:minmax(0,1fr);max-width:230px}
+.green-impact-login .login-levels.one-level p{max-width:210px}
 .scorecard-grid.two-level{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:900px){.scorecard-grid.two-level{grid-template-columns:1fr}}
-.scorecard-grid.two-level .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
-@media(max-width:560px){.scorecard-grid.two-level .metrics{grid-template-columns:1fr}}
+.scorecard-grid.one-level{grid-template-columns:1fr}
+.scorecard-grid.two-level .metrics,.scorecard-grid.one-level .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:560px){.scorecard-grid.two-level .metrics,.scorecard-grid.one-level .metrics{grid-template-columns:1fr}}
 
 /* The prototype styled a native <dialog>. These rules give the Radix dialog the same appearance. */
 .tc-dialog-overlay{position:fixed;inset:0;z-index:60;background:#0b152c66}
@@ -298,3 +301,19 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
   .gate-panel>p.small{margin:6px 0 0;font-size:12px}
   .gate-panel details{margin-top:6px}
 }
+
+/* Assessment entry: a My Trainings card's assessment step, and the countdown screen before an assessment opens. */
+.course-next{display:grid;gap:4px;margin:4px 0 0;padding:12px 14px;border-radius:7px;background:var(--blue-bg);color:var(--primary);font-size:14px;line-height:1.5}
+.course-next small{font-size:13px;color:var(--secondary)}
+.waiting-countdown{display:inline-block;font-variant-numeric:tabular-nums;white-space:nowrap}
+.assessment-waiting>.notice{display:flex;gap:10px;align-items:flex-start;text-align:left}
+.assessment-waiting>.btn{margin:4px 6px 0}
+
+/* Training Completion cards: the My Trainings course card, plus the three training-completion counts. */
+.completion-card .completion-counts-title{margin:14px 0 8px;font-size:13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--secondary)}
+.completion-counts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0}
+.completion-counts>div{display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:2px;padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--muted)}
+.completion-counts dt{font-size:12px;line-height:1.35;color:var(--secondary)}
+.completion-counts dd{margin:0;font-size:20px;font-weight:700;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
+.completion-card .completion-note{display:block;margin:8px 0 4px;font-size:12px;line-height:1.45;color:var(--secondary)}
+@media(max-width:420px){.completion-counts{grid-template-columns:1fr}.completion-counts>div{flex-direction:row-reverse;justify-content:space-between;align-items:center}}

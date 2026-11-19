@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     database_url_direct: str = ""
     test_database_url: str = ""
 
+    # Database connections per backend process. Total across processes must stay within the Neon pooler's limit.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    # Seconds a request waits for a free connection before the API answers 503 with Retry-After.
+    db_pool_timeout: int = 10
+
     cors_origins: str = "http://localhost:3000"
 
     session_cookie_secure: bool = False
@@ -35,6 +41,10 @@ class Settings(BaseSettings):
     # Scope controls. Level 3 Behaviour is outside the approved scope: when off, no follow-up cycles,
     # behaviour tasks, reminders or submissions are created, and existing records stay readable.
     behaviour_enabled: bool = False
+    # Post-test feedback is required only for assessments whose first result came on or after this date (YYYY-MM-DD,
+    # midnight in DEFAULT_TIMEZONE): the date the feedback form arrived. Older results never block anyone.
+    # Empty: required for every graded post-test. Decision of 19 Nov 2026.
+    feedback_required_from: str = "2026-11-14"
     # Business decision pending: may PARTIAL attendance count as training completion? Off until approved.
     completion_allows_partial_attendance: bool = False
 
@@ -46,7 +56,10 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_store: str = "memory"  # "memory" for one backend instance, "database" for several
     rate_limit_user_per_minute: int = 600  # Each signed-in user; the previous single-bucket limit
-    rate_limit_anonymous_per_minute: int = 600  # Each verified client IP without a valid session
+    # Each verified client IP without a valid session. A whole office can share one address, and a sign-in page costs
+    # about four signed-out requests per person, so this fits a 500-person rush. Password guessing is limited
+    # separately per account and per address (LOGIN_MAX_FAILURES).
+    rate_limit_anonymous_per_minute: int = 3000
     rate_limit_import_per_minute: int = 20
     rate_limit_export_per_minute: int = 30
     rate_limit_bulk_per_minute: int = 30

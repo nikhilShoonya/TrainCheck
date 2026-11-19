@@ -27,6 +27,33 @@ export const day = (iso: string | null | undefined, missing = "Not recorded") =>
 /** Today's date in the organisation timezone, for date inputs (defaults, min and max). */
 export const todayInOrg = () => orgDate.format(new Date());
 
+const zoned = new Map<string, Intl.DateTimeFormat>();
+function partsIn(timezone: string, moment: Date): Record<string, string> {
+  let format = zoned.get(timezone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    zoned.set(timezone, format);
+  }
+  return Object.fromEntries(format.formatToParts(moment).map((p) => [p.type, p.value]));
+}
+
+/** A moment as local date and time with the timezone named, e.g. "2026-11-19 15:30 (Asia/Kolkata)". The timezone
+    is the one the server reports (the organisation's working calendar), falling back to ORG_TIMEZONE. */
+export const dateTimeIn = (iso: string | null | undefined, timezone?: string | null, missing = "Not recorded") => {
+  if (!iso) return missing;
+  const moment = new Date(iso);
+  if (Number.isNaN(moment.getTime())) return iso;
+  const zone = timezone || ORG_TIMEZONE;
+  const p = partsIn(zone, moment);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} (${zone})`;
+};
+
+/** Today (YYYY-MM-DD) and the current time (HH:MM) in a timezone, for date and time inputs. */
+export const nowIn = (timezone?: string | null, at: Date = new Date()) => {
+  const p = partsIn(timezone || ORG_TIMEZONE, at);
+  return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
+};
+
 export const dateTime = (iso: string | null | undefined, missing = "—") => (iso ? `${iso.slice(0, 16).replace("T", " ")} UTC` : missing);
 
 export const firstName = (name: string) => name.split(" ")[0];

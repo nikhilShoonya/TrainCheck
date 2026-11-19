@@ -1,6 +1,6 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { Badge, Btn, BtnLink, DataTable, Empty, ErrorPanel, Field, fieldErrors, FormError, Loaded, Loading, Metrics, PageTitle, SelectField, TextField, useToast } from "@/components/ui";
@@ -9,19 +9,18 @@ import { MonthlyTrend } from "@/features/dashboard/charts";
 import { ActionItem, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, ViewAll, Welcome } from "@/features/dashboard/widgets";
 import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
+import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref } from "@/features/admin/completionView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
 import type { ConfigView, Named, OrgUnit, Summary, TrainingAdmin, TrendPoint } from "@/lib/types";
-import { dateTime, day, firstName, percent, todayInOrg } from "@/lib/utils";
+import { dateTime, dateTimeIn, day, firstName, nowIn, ORG_TIMEZONE, percent, todayInOrg } from "@/lib/utils";
 import Link from "next/link";
 
 const EYEBROW = "L&D ADMIN";
 const SCOPE_LABEL: Record<string, string> = { COMMON: "Common (all departments)", DEPARTMENT: "Department-specific", FUNCTION: "Function-specific", COMBINED: "Department and function" };
 const TYPE_LABEL: Record<string, string> = { MCQ_SINGLE: "Single choice", MCQ_MULTIPLE: "Multiple choice", TRUE_FALSE: "True / False", SCENARIO: "Scenario" };
-const SCHEDULE_LABEL: Record<string, string> = { SAME_DAY: "Same day", NEXT_WORKING_DAY: "Next working day", DELAY_DAYS: "After a delay", FIXED_DATE: "On a specific date" };
-/** Today's date in the browser, as the YYYY-MM-DD a date input uses. */
-const todayInput = () => todayInOrg();
+const SCHEDULE_LABEL: Record<string, string> = { SAME_DAY: "Same day", NEXT_WORKING_DAY: "Next working day", DELAY_DAYS: "After a delay", FIXED_DATE: "Custom date and time" };
 /** The one behaviour follow-up: a self-assessment 30 days after training completion (no 60- or 90-day cycles). */
 const FOLLOWUP_DAYS = 30;
 
@@ -903,6 +902,10 @@ interface EnrolmentRow {
   outcome: string | null;
   retraining_flag: string;
   obligation_id: string | null;
+  attempts_used: number;
+  max_attempts: number | null;
+  retrainings: number;
+  refresher_acknowledged_at: string | null;
 }
 
 interface SchedulingOutcome {
@@ -1051,6 +1054,8 @@ function AssignmentsInner() {
   const [assigning, setAssigning] = useState(false);
   const [outcome, setOutcome] = useState<AssignmentResult | null>(null);
   const [cancel, setCancel] = useState<EnrolmentRow | null>(null);
+  const [retake, setRetake] = useState<EnrolmentRow | null>(null);
+  const [retraining, setRetraining] = useState<EnrolmentRow | null>(null);
   const toast = useToast();
   return (
     <>
@@ -1075,14 +1080,14 @@ function AssignmentsInner() {
           }}
         >
           <TextField label="Search" name="search" placeholder="Employee name or ID" defaultValue={searchFromLink} />
-          <SelectField label="Stage" name="stage" placeholder="All assignments" options={[{ value: "pending", label: "Awaiting completion" }, { value: "completed", label: "Completed" }]} />
+          <SelectField label="Stage" name="stage" placeholder="All assignments" options={[{ value: "pending", label: "Awaiting completion" }, { value: "completed", label: "Completed" }, { value: "approval", label: "Needs approval" }]} />
           <button className="btn secondary" type="submit">
             Apply filters
           </button>
         </form>
         <Loaded state={state}>
           {(all) => {
-            const rows = stage === "pending" ? all.filter((e) => !e.completed_at) : stage === "completed" ? all.filter((e) => e.completed_at) : all;
+            const rows = stage === "pending" ? all.filter((e) => !e.completed_at) : stage === "completed" ? all.filter((e) => e.completed_at) : stage === "approval" ? all.filter(needsApproval) : all;
             return (
             <>
             <Metrics
@@ -1093,7 +1098,7 @@ function AssignmentsInner() {
               ]}
             />
             <DataTable
-              headers={["Employee", "Training / Batch", "Assigned", "Completion", "Assessment", "Result", ""]}
+              headers={["Employee", "Training / Batch", "Assigned", "Completion", "Assessment", "Attempts", "Re-trainings", "Result", ""]}
               emptyTitle="No assignments match."
               rows={rows.map((e) => [
                 <div key="p" data-sort={e.employee_name}>
@@ -1106,13 +1111,30 @@ function AssignmentsInner() {
                 </div>,
                 day(e.assigned_at),
                 day(e.completed_at),
-                e.assessment_state,
+                <div key="s" data-sort={e.assessment_state}>
+                  {e.assessment_state}
+                  {e.refresher_acknowledged_at ? <small>Refresher done {day(e.refresher_acknowledged_at)}</small> : null}
+                </div>,
+                e.max_attempts ? `${e.attempts_used} of ${e.max_attempts}` : "—",
+                e.retrainings,
                 resultOf(e),
-                e.completed_at ? null : (
-                  <Btn key="c" kind="text" tone="danger" onClick={() => setCancel(e)}>
-                    Cancel
-                  </Btn>
-                ),
+                <div className="row wrap" key="x">
+                  {e.assessment_state === "Awaiting approval" && e.obligation_id ? (
+                    <Btn kind="text" tone="attention" onClick={() => setRetake(e)}>
+                      Approve re-attempt
+                    </Btn>
+                  ) : null}
+                  {e.retraining_flag === "NEEDS_RETRAINING" && e.obligation_id ? (
+                    <Btn kind="text" tone="attention" onClick={() => setRetraining(e)}>
+                      Approve re-training
+                    </Btn>
+                  ) : null}
+                  {e.completed_at ? null : (
+                    <Btn kind="text" tone="danger" onClick={() => setCancel(e)}>
+                      Cancel
+                    </Btn>
+                  )}
+                </div>,
               ])}
             />
             </>
@@ -1149,9 +1171,47 @@ function AssignmentsInner() {
           }}
         />
       ) : null}
+      {retake ? (
+        <ConfirmDialog
+          title="Approve re-attempt?"
+          confirmLabel="Approve re-attempt"
+          body={
+            <p>
+              {retake.employee_name} · {retake.training_title}. Attempt {retake.attempts_used} of {retake.max_attempts} was not passed and the refresher is acknowledged. The next attempt opens for the employee now.
+            </p>
+          }
+          onClose={() => setRetake(null)}
+          onConfirm={async () => {
+            await api.post(`/admin/obligations/${retake.obligation_id}/approve-retake`);
+            toast("Re-attempt approved. The employee has been notified.");
+            void state.reload();
+          }}
+        />
+      ) : null}
+      {retraining ? (
+        <ConfirmDialog
+          title="Approve re-training?"
+          needsReason
+          confirmLabel="Approve re-training"
+          body={
+            <p>
+              {retraining.employee_name} · {retraining.training_title}. All {retraining.attempts_used} attempts were used. Approving opens a new assessment with fresh attempts. Earlier attempts and the failure record are kept.
+            </p>
+          }
+          onClose={() => setRetraining(null)}
+          onConfirm={async (reason) => {
+            await api.post(`/admin/obligations/${retraining.obligation_id}/retraining-cycle`, { reason });
+            toast("Re-training approved. The employee has been notified.");
+            void state.reload();
+          }}
+        />
+      ) : null}
     </>
   );
 }
+
+/** Rows where L&D must decide: a re-attempt after the refresher, or re-training after the last failed attempt. */
+const needsApproval = (e: EnrolmentRow) => e.assessment_state === "Awaiting approval" || e.retraining_flag === "NEEDS_RETRAINING";
 
 const ATTENDANCE = ["PENDING", "PRESENT", "PARTIAL", "ABSENT", "EXCUSED"];
 const today = () => todayInOrg();
@@ -1203,12 +1263,160 @@ function SchedulingAttention({ rows, onChanged }: { rows: EnrolmentRow[]; onChan
   );
 }
 
+/* Training Completion: training cards (/lnd/completion) → one training's assigned employees
+   (/lnd/completion/[trainingId]). Card counts come from the one /admin/trainings request; the employee table is
+   filtered by training on the server. Both searches are in the URL, so refresh, links and Back keep them. */
+
+const completionDescription = (behaviour?: boolean) =>
+  `Record attendance and completion. Only Present attendance counts as completion. Completion schedules the assessment when the training's configuration and question pool are ready${behaviour ? ", and the 30-day follow-up" : ""}.`;
+
+const importAttendance = (
+  <BtnLink href="/lnd/imports" tone="data">
+    Import Attendance
+  </BtnLink>
+);
+
 export function Completion() {
-  const state = useApi<EnrolmentRow[]>("/admin/enrolments");
+  return (
+    <Suspense fallback={<Loading />}>
+      <CompletionCards />
+    </Suspense>
+  );
+}
+
+function CompletionCards() {
+  const [search, setSearch] = useState(useSearchParams().get("q") ?? "");
+  const state = useApi<TrainingAdmin[]>("/admin/trainings");
+  const changeSearch = (value: string) => {
+    setSearch(value);
+    // Replace, not push: typing is not navigation, so Back still leaves the page in one step. The native
+    // History API (integrated with the Next.js router) updates the entry at once; router.replace would start a
+    // navigation per keystroke, and opening a card mid-way could leave an older search in the history entry.
+    window.history.replaceState(window.history.state, "", trainingsHref(value));
+  };
+  return (
+    <>
+      <PageTitle eyebrow={EYEBROW} title="Training Completion" description="Choose a training to record its employees' attendance and completion. Training completion is separate from assessment results." action={importAttendance} />
+      <form className="filters" role="search" aria-label="Trainings" onSubmit={(e) => e.preventDefault()}>
+        <TextField label="Search trainings" name="q" type="search" placeholder="Training name" autoComplete="off" value={search} onChange={(e) => changeSearch(e.target.value)} />
+      </form>
+      <Loaded state={state}>
+        {(all) => {
+          const shown = filterTrainings(all, search);
+          if (!all.length) return <Empty title="No trainings yet." hint="Create a training in Training Management, then assign employees to record their completion here." />;
+          return (
+            <>
+              <p className="small" role="status" aria-live="polite">
+                {search.trim() ? `${shown.length} of ${all.length} trainings match.` : `${all.length} trainings.`}
+              </p>
+              {shown.length ? (
+                <section className="course-grid personal-courses completion-cards" aria-label="Trainings">
+                  {shown.map((t, i) => {
+                    const counts = completionCounts(t);
+                    const attention = t.pending_scheduling_count + t.unavailable_count;
+                    return (
+                      <article className="panel course-card completion-card" key={t.id} aria-labelledby={`completion-${t.id}`}>
+                        <div className="row between">
+                          <Glyph index={i} />
+                          <Badge status={t.status} />
+                        </div>
+                        <h2 id={`completion-${t.id}`}>{t.title}</h2>
+                        <p>{shortDescription(t.description) || "No description."}</p>
+                        <h3 className="completion-counts-title">Training completion</h3>
+                        <dl className="completion-counts">
+                          <div>
+                            <dt>Assigned employees</dt>
+                            <dd>{counts.assigned}</dd>
+                          </div>
+                          <div>
+                            <dt>Completion recorded</dt>
+                            <dd>{counts.recorded}</dd>
+                          </div>
+                          <div>
+                            <dt>Completion awaiting</dt>
+                            <dd>{counts.awaiting}</dd>
+                          </div>
+                        </dl>
+                        <small className="completion-note">Attendance-based. Assessment status and results are shown per employee.</small>
+                        {attention ? (
+                          <div className="course-next">
+                            <strong>Assessment needs attention for {attention} employee(s)</strong>
+                            <small>Open the training to see who is affected.</small>
+                          </div>
+                        ) : null}
+                        <div className="row wrap">
+                          <BtnLink href={trainingCompletionHref(t.id, search)} kind="primary">
+                            View Employees<span className="sr-only"> for {t.title}</span> <Icon name="arrow" />
+                          </BtnLink>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </section>
+              ) : (
+                <>
+                  <Empty title={`No training name matches “${search.trim()}”.`} hint="Check the spelling, or clear the search to see every training." />
+                  <div className="row">
+                    <Btn onClick={() => changeSearch("")}>Clear search</Btn>
+                  </div>
+                </>
+              )}
+            </>
+          );
+        }}
+      </Loaded>
+    </>
+  );
+}
+
+export function TrainingCompletion() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <TrainingCompletionInner />
+    </Suspense>
+  );
+}
+
+function TrainingCompletionInner() {
+  const { trainingId } = useParams<{ trainingId: string }>();
+  const cardSearch = useSearchParams().get("q") ?? "";
+  const valid = isTrainingId(trainingId);
+  // The list is usually cached already (the cards page and sign-in prefetch it); it names the training and tells
+  // an unknown ID apart from a training without employees. The employees load at the same time.
+  const trainings = useApi<TrainingAdmin[]>(valid ? "/admin/trainings" : null);
+  const training = valid ? trainings.data?.find((t) => t.id.toLowerCase() === trainingId.toLowerCase()) : undefined;
+  const back = (
+    <BtnLink href={trainingsHref(cardSearch)}>
+      <Icon name="back" /> Back to Trainings
+    </BtnLink>
+  );
+  const eyebrow = `${EYEBROW} · TRAINING COMPLETION`;
+  if (!valid || (trainings.data && !training)) {
+    return (
+      <>
+        <PageTitle eyebrow={eyebrow} title="Training not found" description="This training does not exist or was removed." action={back} />
+        <Empty title="No training has this link." hint="Go back to the trainings and choose one from the list." />
+      </>
+    );
+  }
+  if (!trainings.data) {
+    return (
+      <>
+        <PageTitle eyebrow={eyebrow} title="Training Completion" description={trainings.error ? "The training could not be loaded." : "Loading the training…"} action={back} />
+        {trainings.error ? <ErrorPanel error={trainings.error} retry={() => void trainings.reload()} /> : <Loading />}
+      </>
+    );
+  }
+  return <TrainingEmployees training={training!} eyebrow={eyebrow} back={back} />;
+}
+
+function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmin; eyebrow: string; back: ReactNode }) {
+  // Only this training's enrolments, filtered on the server.
+  const state = useApi<EnrolmentRow[]>(`/admin/enrolments${toQuery({ training_id: training.id })}`);
   const { user } = useSession();
+  const [search, setSearch] = useState("");
   const [completing, setCompleting] = useState<EnrolmentRow | null>(null);
   const [waiving, setWaiving] = useState<EnrolmentRow | null>(null);
-  const [cycle, setCycle] = useState<EnrolmentRow | null>(null);
   const [lastOutcome, setLastOutcome] = useState<SchedulingOutcome | null>(null);
   const toast = useToast();
   // An attendance change shows at once (and is what the completion dialog starts from), so nothing acts on
@@ -1234,10 +1442,15 @@ export function Completion() {
   return (
     <>
       <PageTitle
-        eyebrow={EYEBROW}
-        title="Training Completion"
-        description={`Record attendance and completion. Only Present attendance counts as completion. Completion schedules the assessment when the training's configuration and question pool are ready${user?.features?.behaviour ? ", and the 30-day follow-up" : ""}.`}
-        action={<BtnLink href="/lnd/imports" tone="data">Import Attendance</BtnLink>}
+        eyebrow={eyebrow}
+        title={training.title}
+        description={completionDescription(user?.features?.behaviour)}
+        action={
+          <div className="row wrap">
+            {back}
+            {importAttendance}
+          </div>
+        }
       />
       {lastOutcome && lastOutcome.status === "NOT_SCHEDULED" ? (
         <div className="notice danger" role="alert">
@@ -1249,50 +1462,81 @@ export function Completion() {
       {state.data ? <SchedulingAttention rows={state.data} onChanged={() => void state.reload()} /> : null}
       <section className="panel">
         <Loaded state={state}>
-          {(rows) => (
-            <DataTable
-              headers={["Employee", "Training", "Attendance", "Completion", "Assessment Due", "Assessment", "Result", ""]}
-              emptyTitle="No assignments yet."
-              rows={rows.map(latest).map((e) => [
-                <div key="p" data-sort={e.employee_name}>
-                  {e.employee_name}
-                  <small>{e.employee_code}</small>
-                </div>,
-                e.training_title,
-                <select key="a" aria-label={`Attendance for ${e.employee_name}`} value={e.attendance_status} onChange={(ev) => void setAttendance(e, ev.target.value)}>
-                  {ATTENDANCE.map((a) => (
-                    <option key={a} value={a}>
-                      {a.charAt(0) + a.slice(1).toLowerCase()}
-                    </option>
-                  ))}
-                </select>,
-                e.completed_at ? `${day(e.completed_at)} (${e.completion_source === "IMPORT" ? "import" : "manual"})` : "Not recorded",
-                day(e.due_at, "Not scheduled"),
-                <div key="s" data-sort={e.assessment_state}>
-                  {e.assessment_state}
-                  {e.assessment_issue ? <small className="form-error">{e.assessment_issue.code === "UNAVAILABLE" ? "Cannot start: question pool" : "No assessment scheduled"}</small> : null}
-                </div>,
-                resultOf(e),
-                <div className="row wrap" key="x">
-                  {e.completed_at ? null : (
-                    <Btn tone="success" disabled={saving[e.id]} onClick={() => setCompleting(e)}>
-                      Mark Completed
-                    </Btn>
-                  )}
-                  {["Due", "Scheduled", "Retake pending", "Unavailable"].includes(e.assessment_state) && e.obligation_id ? (
-                    <Btn kind="text" onClick={() => setWaiving(e)}>
-                      Waive
-                    </Btn>
-                  ) : null}
-                  {e.retraining_flag === "NEEDS_RETRAINING" ? (
-                    <Btn kind="text" tone="attention" onClick={() => setCycle(e)}>
-                      New Cycle
-                    </Btn>
-                  ) : null}
-                </div>,
-              ])}
-            />
-          )}
+          {(all) => {
+            if (!all.length)
+              return (
+                <>
+                  <Empty title="No employees are assigned to this training." hint="Assign employees in Employee Assignments. They appear here to record attendance and completion." />
+                  <div className="row">
+                    <BtnLink href="/lnd/assignments">Go to Employee Assignments</BtnLink>
+                  </div>
+                </>
+              );
+            const counts = rowCounts(all);
+            const rows = filterEmployees(all.map(latest), search);
+            return (
+              <>
+                <Metrics
+                  items={[
+                    ["Assigned employees", counts.assigned, "Live assignments for this training"],
+                    ["Completion recorded", counts.recorded, "Training completion, not assessment"],
+                    ["Completion awaiting", counts.awaiting, "Attendance not yet recorded as complete"],
+                  ]}
+                />
+                <form className="filters" role="search" aria-label="Employees" onSubmit={(e) => e.preventDefault()}>
+                  <TextField label="Search employees" name="employee_search" type="search" placeholder="Name or employee code" autoComplete="off" value={search} onChange={(e) => setSearch(e.target.value)} />
+                </form>
+                <p className="small" role="status" aria-live="polite">
+                  {search.trim() ? `${rows.length} of ${all.length} employees match.` : `${all.length} employees assigned.`}
+                </p>
+                {rows.length ? (
+                  <DataTable
+                    headers={["Employee", "Attendance", "Completion", "Assessment Due", "Assessment", "Result", ""]}
+                    emptyTitle="No assignments yet."
+                    rows={rows.map((e) => [
+                      <div key="p" data-sort={e.employee_name}>
+                        {e.employee_name}
+                        <small>{e.employee_code}</small>
+                      </div>,
+                      <select key="a" aria-label={`Attendance for ${e.employee_name} (${e.employee_code})`} value={e.attendance_status} onChange={(ev) => void setAttendance(e, ev.target.value)}>
+                        {ATTENDANCE.map((a) => (
+                          <option key={a} value={a}>
+                            {a.charAt(0) + a.slice(1).toLowerCase()}
+                          </option>
+                        ))}
+                      </select>,
+                      e.completed_at ? `${day(e.completed_at)} (${e.completion_source === "IMPORT" ? "import" : "manual"})` : "Not recorded",
+                      day(e.due_at, e.completed_at ? "Not scheduled" : "After completion"),
+                      <div key="s" data-sort={e.assessment_state}>
+                        {e.assessment_state}
+                        {e.assessment_issue ? <small className="form-error">{e.assessment_issue.code === "UNAVAILABLE" ? "Cannot start: question pool" : "No assessment scheduled"}</small> : null}
+                      </div>,
+                      resultOf(e),
+                      <div className="row wrap" key="x">
+                        {e.completed_at ? null : (
+                          <Btn tone="success" disabled={saving[e.id]} onClick={() => setCompleting(e)}>
+                            Mark Completed<span className="sr-only"> for {e.employee_name}</span>
+                          </Btn>
+                        )}
+                        {["Due", "Scheduled", "Awaiting refresher", "Awaiting approval", "Unavailable"].includes(e.assessment_state) && e.obligation_id ? (
+                          <Btn kind="text" onClick={() => setWaiving(e)}>
+                            Waive<span className="sr-only"> assessment for {e.employee_name}</span>
+                          </Btn>
+                        ) : null}
+                      </div>,
+                    ])}
+                  />
+                ) : (
+                  <>
+                    <Empty title={`No assigned employee matches “${search.trim()}”.`} hint="Search by employee name or employee code, or clear the search." />
+                    <div className="row">
+                      <Btn onClick={() => setSearch("")}>Clear search</Btn>
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          }}
         </Loaded>
       </section>
       {completing ? (
@@ -1336,24 +1580,6 @@ export function Completion() {
           onConfirm={async (reason) => {
             await api.post(`/admin/obligations/${waiving.obligation_id}/waive`, { reason });
             toast("Assessment waived.");
-            void state.reload();
-          }}
-        />
-      ) : null}
-      {cycle ? (
-        <ConfirmDialog
-          title="Open a new assessment cycle?"
-          needsReason
-          confirmLabel="Open new cycle"
-          body={
-            <p>
-              {cycle.employee_name} · {cycle.training_title}. Use this after re-training. Earlier attempts and the failure record are kept.
-            </p>
-          }
-          onClose={() => setCycle(null)}
-          onConfirm={async (reason) => {
-            await api.post(`/admin/obligations/${cycle.obligation_id}/retraining-cycle`, { reason });
-            toast("New cycle opened. The employee will see it at their next page load.");
             void state.reload();
           }}
         />
@@ -2106,6 +2332,11 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
   const check = pool.data ? checkPlan(pool.data, count, mix) : null;
   const [mode, setMode] = useState(current?.schedule_mode ?? "NEXT_WORKING_DAY");
   const post = kind === "POST_TEST";
+  // Dates and times are chosen in the organisation timezone (the backend's working calendar) and stored as UTC.
+  const zone = training.timezone ?? current?.timezone ?? ORG_TIMEZONE;
+  const today = nowIn(zone).date;
+  // A saved date already passed stays selectable, so other settings can be changed without moving it.
+  const minDate = current?.schedule_date && current.schedule_date < today ? current.schedule_date : today;
 
   const blocked = !pool.data ? null : pool.data.eligible === 0 ? "Add eligible questions to this training before saving." : !count ? "Enter the questions per attempt." : check && !check.ready ? "Fix the question pool problem shown above before saving." : null;
 
@@ -2117,8 +2348,9 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
       submitBlockedReason={blocked}
       onClose={onClose}
       onSubmit={async (form) => {
+        let applied: { scheduled: unknown[]; rescheduled: unknown[] } | null = null;
         try {
-          await api.post(`/admin/trainings/${training.id}/assessment-configs`, {
+          ({ applied } = await api.post<{ applied: { scheduled: unknown[]; rescheduled: unknown[] } | null }>(`/admin/trainings/${training.id}/assessment-configs`, {
             assessment_type: kind,
             question_count: count,
             duration_minutes: Number(form.get("duration_minutes")),
@@ -2128,6 +2360,8 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
             schedule_delay_days: post ? Number(form.get("schedule_delay_days") ?? 0) : 0,
             schedule_uses_working_days: form.has("schedule_uses_working_days"),
             schedule_date: post && mode === "FIXED_DATE" ? form.get("schedule_date") : null,
+            schedule_time: post && mode === "FIXED_DATE" ? form.get("schedule_time") : null,
+            apply_to_waiting: post && form.has("apply_to_waiting"),
             difficulty_mix: mix,
             show_explanations: form.has("show_explanations"),
             shuffle_questions: form.has("shuffle_questions"),
@@ -2135,13 +2369,18 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
             // Pre-tests run in the same secure environment as the post-training assessment.
             violation_limit: Number(form.get("violation_limit")),
             require_fullscreen: form.has("require_fullscreen"),
-          });
+          }));
         } catch (e) {
           // The server is the authority. Its counts may be newer than ours, so refresh them; the form keeps every value.
           if (e instanceof ApiError && e.code === "QUESTION_POOL_INSUFFICIENT") void reloadPool();
           throw e;
         }
-        toast("Settings saved for new attempts. Existing attempts keep their original settings.");
+        const moved = applied ? applied.rescheduled.length + applied.scheduled.length : 0;
+        toast(
+          moved
+            ? `Settings saved. ${moved} assessment${moved === 1 ? "" : "s"} not yet started now follow${moved === 1 ? "s" : ""} the new rules. Running and submitted attempts are unchanged.`
+            : "Settings saved for new attempts. Existing attempts keep their original settings.",
+        );
         onSaved();
       }}
     >
@@ -2160,14 +2399,23 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
           <div className="form-grid">
             <SelectField label="When the assessment becomes due" name="schedule_mode" value={mode} onChange={(e) => setMode(e.target.value)} options={Object.entries(SCHEDULE_LABEL).map(([value, label]) => ({ value, label }))} />
             {mode === "DELAY_DAYS" ? <TextField label="Delay in days *" name="schedule_delay_days" type="number" required min={1} max={365} defaultValue={current?.schedule_delay_days || 7} /> : null}
-            {mode === "FIXED_DATE" ? <TextField label="Assessment date *" name="schedule_date" type="date" required min={todayInput()} defaultValue={current?.schedule_date ?? ""} /> : null}
+            {mode === "FIXED_DATE" ? <TextField label="Assessment date *" name="schedule_date" type="date" required min={minDate} defaultValue={current?.schedule_date ?? ""} /> : null}
+            {mode === "FIXED_DATE" ? <TextField label={`Opening time (${zone}) *`} name="schedule_time" type="time" required defaultValue={current?.schedule_time ?? ""} /> : null}
           </div>
-          {mode === "FIXED_DATE" ? <p className="small">The assessment opens on this date for everyone whose completion is recorded by then. If completion is recorded after this date, the assessment is due straight away.</p> : null}
+          {mode === "FIXED_DATE" ? (
+            <p className="small">
+              The date and time are in the organisation timezone, <strong>{zone}</strong>. The assessment opens then for everyone whose completion is recorded by then; if completion is recorded later, it is due straight away. It cannot start earlier.
+              {current?.schedule_at ? ` Saved: opens ${dateTimeIn(current.schedule_at, zone)}.` : ""}
+            </p>
+          ) : null}
           {mode === "DELAY_DAYS" ? (
             <label className="checkline">
               <input type="checkbox" name="schedule_uses_working_days" defaultChecked={current?.schedule_uses_working_days} /> Count working days instead of calendar days
             </label>
           ) : null}
+          <label className="checkline">
+            <input type="checkbox" name="apply_to_waiting" defaultChecked /> Also apply to employees already waiting: assessments not yet started are rescheduled from their recorded completion, and completions not yet scheduled get an assessment. Running attempts and submitted results never change; employees whose completion is not recorded get theirs when it is.
+          </label>
         </>
       ) : null}
       <h3>Difficulty mix</h3>
@@ -2241,7 +2489,7 @@ export function AssessmentConfig() {
                 t.config?.question_count ?? "—",
                 t.config ? `${t.config.duration_minutes} min` : "—",
                 t.config?.max_attempts ?? "—",
-                t.config ? (t.config.schedule_mode === "FIXED_DATE" && t.config.schedule_date ? `On ${day(t.config.schedule_date)}` : SCHEDULE_LABEL[t.config.schedule_mode]) : "—",
+                t.config ? (t.config.schedule_mode === "FIXED_DATE" && t.config.schedule_date ? `On ${t.config.schedule_at ? dateTimeIn(t.config.schedule_at, t.config.timezone) : day(t.config.schedule_date)}` : SCHEDULE_LABEL[t.config.schedule_mode]) : "—",
                 <div className="row wrap" key="a">
                   <Btn onClick={() => setEditing({ id: t.id, kind: "POST_TEST" })}>Assessment Rules</Btn>
                   {t.pretest_enabled ? (

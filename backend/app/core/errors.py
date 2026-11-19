@@ -9,6 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("traincheck")
@@ -75,6 +76,17 @@ def install_error_handlers(app: FastAPI) -> None:
         detail = str(getattr(exc, "orig", None) or "").strip().splitlines()[:1]
         logger.error("Database unavailable: %s %s", type(exc).__name__, detail[0] if detail else "")
         return JSONResponse(status_code=503, content=error_body("SERVICE_UNAVAILABLE", "TrainCheck is temporarily unavailable. Please try again shortly."))
+
+    @app.exception_handler(PoolTimeoutError)
+    async def _pool_exhausted(_: Request, exc: PoolTimeoutError) -> JSONResponse:
+        # Every database connection stayed busy for DB_POOL_TIMEOUT seconds: an overload, not a bug. Fails closed
+        # like an outage, and tells the browser when to retry (the answer-save queue honours Retry-After).
+        logger.error("Database connection pool exhausted: %s", type(exc).__name__)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("SERVICE_UNAVAILABLE", "TrainCheck is very busy right now. Please try again in a few seconds."),
+            headers={"Retry-After": "5"},
+        )
 
     @app.exception_handler(Exception)
     async def _unexpected(_: Request, exc: Exception) -> JSONResponse:

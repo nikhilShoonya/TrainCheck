@@ -17,12 +17,14 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 def build_engine(url: str) -> Engine:
+    settings = get_settings()
     engine = create_engine(
         normalise_database_url(url),
         pool_pre_ping=True,  # Neon compute may have suspended since the last query.
         pool_recycle=240,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout,
         connect_args={"prepare_threshold": None},  # PgBouncer transaction mode cannot keep prepared statements.
     )
 

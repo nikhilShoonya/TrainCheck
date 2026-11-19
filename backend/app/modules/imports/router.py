@@ -17,10 +17,11 @@ from app.core.enums import ImportStatus, ImportType
 from app.core.errors import conflict, not_found
 from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
+from app.core.routing import ReleasingRoute
 from app.models import ImportJob, Training
 from app.modules.imports import parsing, service
 
-router = APIRouter(prefix="/admin/imports", tags=["Import Centre"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/admin/imports", tags=["Import Centre"])
 
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -87,8 +88,12 @@ def template(import_type: ImportType, format: str = "csv", _: CurrentUser = Depe
     return Response("﻿" + buffer.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
 
 
+# Upload and replace are plain (synchronous) handlers on purpose: FastAPI runs them in its worker thread pool, with
+# their own database session. Parsing and validating a file is slow synchronous work; inside an async handler it
+# would run on the event loop and hold up every other request served by this worker, assessment saves included.
+# The multipart body has already been received when the handler runs, so reading it here does not wait on the network.
 @router.post("", dependencies=[expensive("import")])
-async def upload(
+def upload(
     import_type: ImportType = Form(...),
     file: UploadFile = File(...),
     training_id: str | None = Form(default=None),
@@ -102,7 +107,7 @@ async def upload(
     """
     training = service.selected_training(db, training_id)
     limit = get_settings().max_upload_bytes
-    content = await file.read(limit + 1)
+    content = file.file.read(limit + 1)
     rows = parsing.read_table(file.filename or "upload", content, limit)
     job = service.create_job(db, import_type, file.filename or "upload", rows, user.id, training)
     record_audit(db, user.id, "IMPORT_VALIDATED", "import_job", job.id, after={"type": import_type, "valid": job.accepted_rows, "rejected": job.rejected_rows, "training": training.training_code if training else None})
@@ -149,7 +154,7 @@ def cancel(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Se
 
 
 @router.post("/{job_id}/replace", dependencies=[expensive("import")])
-async def replace(
+def replace(
     job_id: uuid.UUID,
     file: UploadFile = File(...),
     training_id: str | None = Form(default=None),
@@ -162,7 +167,7 @@ async def replace(
         raise conflict("IMPORT_ALREADY_PROCESSED", "This import has already been imported and can no longer be edited.")
     training = service.selected_training(db, training_id)
     limit = get_settings().max_upload_bytes
-    content = await file.read(limit + 1)
+    content = file.file.read(limit + 1)
     rows = parsing.read_table(file.filename or "upload", content, limit)
     before = {"file": job.file_name, "training": job.training.training_code if job.training else None, "valid": job.accepted_rows, "rejected": job.rejected_rows}
     service.replace_job(db, job, file.filename or "upload", rows, user.id, training)

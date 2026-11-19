@@ -1,5 +1,5 @@
 """Working-calendar arithmetic. The calendar is configuration, not a Finvasia policy (OD-BRD-004)."""
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -49,12 +49,36 @@ class CalendarView:
     def local_date(self, moment: datetime) -> date:
         return moment.astimezone(self.tz).date()
 
+    def local_time(self, moment: datetime) -> time:
+        return moment.astimezone(self.tz).time().replace(second=0, microsecond=0)
+
+    def to_utc(self, day: date, at: time) -> datetime:
+        """A wall-clock date and time in this calendar's timezone, as the UTC instant it names.
+
+        Raises ValueError for a time that does not exist there (skipped by a daylight-saving change). A time that
+        occurs twice is read as its first occurrence."""
+        wall = datetime.combine(day, at.replace(second=0, microsecond=0))
+        instant = wall.replace(tzinfo=self.tz).astimezone(UTC)
+        if instant.astimezone(self.tz).replace(tzinfo=None) != wall:
+            raise ValueError(f"{wall:%Y-%m-%d %H:%M} does not exist in {self.timezone}.")
+        return instant
+
 
 def load_calendar(db: Session) -> CalendarView:
     calendar = db.scalar(select(WorkingCalendar).options(selectinload(WorkingCalendar.holidays)).where(WorkingCalendar.is_default))
     if calendar is None:
         return CalendarView(get_settings().default_timezone, [0, 1, 2, 3, 4], set())
     return CalendarView(calendar.timezone, calendar.working_weekdays, {h.holiday_date for h in calendar.holidays})
+
+
+def fixed_instant(calendar: CalendarView, config: AssessmentConfig) -> datetime | None:
+    """FIXED_DATE: the moment the assessment opens. Configurations saved before a time could be chosen
+    (schedule_at empty) open at the start of their day in the organisation timezone, as they always did."""
+    if config.schedule_at is not None:
+        return config.schedule_at
+    if config.schedule_date is not None:
+        return calendar.start_of_day(config.schedule_date)
+    return None
 
 
 def calculate_due_at(calendar: CalendarView, completed_at: datetime, config: AssessmentConfig) -> datetime:
@@ -64,8 +88,8 @@ def calculate_due_at(calendar: CalendarView, completed_at: datetime, config: Ass
     if config.schedule_mode == ScheduleMode.NEXT_WORKING_DAY:
         return calendar.start_of_day(calendar.next_working_day(day))
     if config.schedule_mode == ScheduleMode.FIXED_DATE:
-        # From the start of the chosen day. Completion recorded on or after it: due at once, never in the past.
-        return max(calendar.start_of_day(config.schedule_date), completed_at)
+        # From the chosen moment. Completion recorded on or after it: due at once, never in the past.
+        return max(fixed_instant(calendar, config), completed_at)
     if config.schedule_uses_working_days:
         return calendar.start_of_day(calendar.add_working_days(day, config.schedule_delay_days))
     return calendar.start_of_day(day + timedelta(days=config.schedule_delay_days))
@@ -77,6 +101,7 @@ def schedule_snapshot(calendar: CalendarView, config: AssessmentConfig) -> dict:
         "mode": config.schedule_mode,
         "delay_days": config.schedule_delay_days,
         "date": config.schedule_date.isoformat() if config.schedule_date else None,
+        "at": opens.isoformat() if (opens := fixed_instant(calendar, config)) else None,
         "working_days": config.schedule_uses_working_days,
         "timezone": calendar.timezone,
         "weekdays": sorted(calendar.weekdays),

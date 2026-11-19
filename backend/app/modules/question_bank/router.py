@@ -14,9 +14,10 @@ from app.core.deps import CurrentUser, require_admin
 from app.core.enums import Difficulty, QuestionStatus, QuestionType
 from app.core.errors import conflict, not_found, validation
 from app.core.responses import num, ok
+from app.core.routing import ReleasingRoute
 from app.models import Competency, Question, QuestionAnswerKey, QuestionOption, QuestionRevision, Training
 
-router = APIRouter(prefix="/admin/questions", tags=["Question Bank"])
+router = APIRouter(route_class=ReleasingRoute, prefix="/admin/questions", tags=["Question Bank"])
 
 LANGUAGES = {"English", "Hindi", "Hinglish"}
 MAX_OPTIONS = 12

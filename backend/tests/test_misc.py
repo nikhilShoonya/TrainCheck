@@ -120,8 +120,9 @@ def test_pre_test_offered_only_once_its_rules_are_saved(world, db, client_for):
 # ---------- Scheduling ----------
 
 class Config:
-    def __init__(self, mode, delay=0, working=False, on=None):
+    def __init__(self, mode, delay=0, working=False, on=None, at=None):
         self.schedule_mode, self.schedule_delay_days, self.schedule_uses_working_days, self.schedule_date = mode, delay, working, on
+        self.schedule_at = at  # FIXED_DATE with a chosen time (UTC); None for configurations saved before times.
 
 
 CALENDAR = CalendarView("UTC", [0, 1, 2, 3, 4], {date(2026, 11, 9)})
@@ -138,6 +139,9 @@ FRIDAY = datetime(2026, 11, 6, 15, 0, tzinfo=UTC)
         (Config("FIXED_DATE", on=date(2026, 11, 12)), datetime(2026, 11, 12, tzinfo=UTC)),  # The start of the chosen day.
         (Config("FIXED_DATE", on=date(2026, 11, 6)), FRIDAY),  # Completed on the chosen day: due at once.
         (Config("FIXED_DATE", on=date(2026, 11, 2)), FRIDAY),  # Completed after the chosen day: due at once, never in the past.
+        (Config("FIXED_DATE", on=date(2026, 11, 12), at=datetime(2026, 11, 12, 9, 45, tzinfo=UTC)), datetime(2026, 11, 12, 9, 45, tzinfo=UTC)),  # The chosen time.
+        (Config("FIXED_DATE", on=date(2026, 11, 6), at=datetime(2026, 11, 6, 18, 0, tzinfo=UTC)), datetime(2026, 11, 6, 18, 0, tzinfo=UTC)),  # Later the same day.
+        (Config("FIXED_DATE", on=date(2026, 11, 6), at=datetime(2026, 11, 6, 9, 0, tzinfo=UTC)), FRIDAY),  # Completed after the time: due at once.
     ],
 )
 def test_due_date_policies(config, expected):  # MVP-009
@@ -150,11 +154,13 @@ def test_fixed_date_rule_needs_a_date_that_has_not_passed(world, client_for):
     rules = {"question_count": 10, "duration_minutes": 20, "pass_mark_percent": 70, "schedule_mode": "FIXED_DATE"}
     assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json=rules).status_code == 400
     past = (NOW - timedelta(days=3)).date().isoformat()
-    assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": past}).status_code == 400
+    assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": past, "schedule_time": "10:00"}).status_code == 400
     future = (NOW + timedelta(days=3)).date().isoformat()
-    saved = admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": future})
+    # A date alone is not enough: the time is never assumed (it used to mean midnight).
+    assert admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": future}).status_code == 400
+    saved = admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={**rules, "schedule_date": future, "schedule_time": "10:00"})
     assert saved.status_code == 200, saved.text
-    assert (saved.json()["data"]["schedule_mode"], saved.json()["data"]["schedule_date"]) == ("FIXED_DATE", future)
+    assert (saved.json()["data"]["schedule_mode"], saved.json()["data"]["schedule_date"], saved.json()["data"]["schedule_time"]) == ("FIXED_DATE", future, "10:00")
 
 
 def test_timezone_decides_the_local_day():  # OD-BRD-004 is configuration, not hard-coded.
@@ -691,17 +697,25 @@ def test_answer_keys_are_not_written_to_the_audit_log(world, db, client_for):
 # ---------- Scope change (TC-SCOPE-001) ----------
 
 REMOVED = ("reaction", "feedback", "kpi", "roi", "nps", "l1_", "l4_", "monetis", "business_impact")
+# The post-assessment feedback form is part of the approved Level 2 scope (required after each post-test).
+APPROVED_FEEDBACK_TABLES = {"assessment_feedback"}
+APPROVED_FEEDBACK_ROUTES = {"/api/v1/attempts/{attempt_id}/feedback", "/api/v1/admin/feedback"}
 
 
 def test_no_level_1_or_level_4_tables_exist():
     live = inspect(database.get_engine()).get_table_names()
-    assert set(Base.metadata.tables) | {"alembic_version"} == set(live)
-    assert [t for t in live if any(word in t for word in REMOVED)] == []
+    assert set(live) - {"alembic_version"} == set(Base.metadata.tables)  # The version table exists only after Alembic ran.
+    assert [t for t in live if any(word in t for word in REMOVED) and t not in APPROVED_FEEDBACK_TABLES] == []
 
 
 def test_no_level_1_or_level_4_routes_exist():
-    paths = [r.path for r in app.routes if hasattr(r, "methods")]
-    assert [p for p in paths if any(word in p.lower() for word in ("reaction", "feedback", "kpi", "/roi", "nps", "business"))] == []
+    from fastapi.routing import APIRoute, iter_route_contexts
+
+    # app.routes holds one wrapper per included router (FastAPI 0.162), so walk the effective routes.
+    paths = {r.path for r in iter_route_contexts(app.routes) if isinstance(r.original_route, APIRoute)}
+    assert len(paths) > 50, "the route walk is broken"
+    words = ("reaction", "feedback", "kpi", "/roi", "nps", "business")
+    assert sorted(p for p in paths if any(word in p.lower() for word in words) and p not in APPROVED_FEEDBACK_ROUTES) == []
 
 
 def test_every_table_is_in_the_migration():
@@ -732,12 +746,60 @@ def test_missing_url_gives_clear_message():
 
 
 def test_engine_disables_prepared_statements_for_the_pooler():
-    engine = database.build_engine("postgresql://u:p@ep-x-pooler.region.aws.neon.tech/db")
+    engine = database.build_engine("postgresql://u:p@ep-x-pooler.region.aws.neon.tech/db")  # Never connects.
     assert engine.pool._pre_ping is True
-    assert engine.dialect.create_connect_args(engine.url) is not None
+    # connect_args reach the driver through the pool's creator; PgBouncer transaction mode needs this switched off.
+    params = next(cell.cell_contents for cell in engine.pool._creator.__closure__ if isinstance(cell.cell_contents, dict))
+    assert "prepare_threshold" in params and params["prepare_threshold"] is None
     engine.dispose()
 
 
 def test_clock_is_restored():
     clock.freeze(None)
     assert clock.utcnow().tzinfo is not None
+
+
+@pytest.mark.parametrize("route", ["upload", "replace"])
+def test_an_import_being_processed_does_not_hold_up_other_requests(world, db, client_for, monkeypatch, route):
+    """Validating an import is synchronous work (file parsing, database checks). It must run outside the server's
+    event loop, or a large file delays every other request handled by that worker, assessment saves included."""
+    import asyncio
+    import time as clock_time
+
+    import httpx
+
+    from app.main import app
+    from app.modules.imports import parsing
+
+    training = world.training()
+    admin = client_for(world.admin)
+    template = admin.get("/admin/imports/templates/QUESTIONS?format=csv").content  # The real template file.
+    job_id = None
+    if route == "replace":
+        created = admin.post("/admin/imports", files={"file": ("q.csv", template)}, data={"import_type": "QUESTIONS", "training_id": str(training.id)})
+        assert created.status_code == 200, created.text
+        job_id = created.json()["data"]["id"]
+    read_table = parsing.read_table
+
+    def slow_read_table(*args, **kwargs):
+        clock_time.sleep(1.5)  # A large file.
+        return read_table(*args, **kwargs)
+
+    monkeypatch.setattr(parsing, "read_table", slow_read_table)
+    cookies, csrf = dict(admin.http.cookies), admin.csrf
+
+    async def scenario() -> tuple[float, int]:
+        transport = httpx.ASGITransport(app=app, client=("testclient", 50000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver", cookies=cookies, headers={"X-CSRF-Token": csrf}) as http:
+            path = "/api/v1/admin/imports" if route == "upload" else f"/api/v1/admin/imports/{job_id}/replace"
+            began = clock_time.perf_counter()
+            importing = asyncio.create_task(http.post(path, files={"file": ("q.csv", template)}, data={"import_type": "QUESTIONS", "training_id": str(training.id)}))
+            await asyncio.sleep(0.3)  # The import is now being processed. (A blocked event loop delays this too.)
+            ping = await http.get("/api/v1/system/ping")
+            waited = clock_time.perf_counter() - began - 0.3  # Measured from the start: blocking cannot hide.
+            assert ping.status_code == 200
+            return waited, (await importing).status_code
+
+    waited, status = asyncio.run(scenario())
+    assert status == 200
+    assert waited < 0.5, f"a ping waited {waited:.2f} s for the import to finish"

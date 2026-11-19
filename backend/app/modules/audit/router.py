@@ -1,18 +1,21 @@
 """Read-only audit log, the L&D dashboard and scoped search."""
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin, require_gate_clear, require_withdrawn
-from app.core.enums import AssessmentType, ImportStatus, RoleCode, TrainingStatus
+from app.core.enums import AssessmentType, EnrolmentStatus, ImportStatus, RoleCode, TrainingStatus
 from app.core.responses import iso, ok
-from app.models import AssessmentConfig, AuditLog, Employee, ImportJob, Training, UserAccount
+from app.core.routing import ReleasingRoute
+from app.models import AssessmentConfig, AuditLog, Employee, Enrolment, ImportJob, Training, UserAccount
 from app.modules.assessment.service import PoolData, pool_problem
 from app.modules.reports.data import departments_summary, load_rows, monthly_trend, summary
 
-router = APIRouter(tags=["Administration"])
+router = APIRouter(route_class=ReleasingRoute, tags=["Administration"])
+SEARCH_LIMIT = 20
+LIKE_ESCAPE = "!"
 
 
 # The Audit Logs reader is withdrawn from L&D Admin. Audit events are still recorded by app.core.audit.
@@ -79,15 +82,35 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
 
 @router.get("/search")
 def search(q: str = Query(min_length=1, max_length=120), user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    """Scoped search. L&D Admin searches the organisation; an employee finds only assigned training."""
-    scope = None if user.has_role(RoleCode.LD_ADMIN) else [user.employee_id]
-    needle = q.lower()
-    seen: dict[str, dict] = {}
-    for r in load_rows(db, scope):
-        title = r.enrolment.training.title
-        if needle in title.lower():
-            seen.setdefault(title, {"type": "training", "title": title, "subtitle": r.enrolment.training.category})
-        employee = r.enrolment.employee
-        if employee.id != user.employee_id and (needle in employee.full_name.lower() or needle in employee.employee_code.lower()):
-            seen.setdefault(employee.employee_code, {"type": "employee", "title": employee.full_name, "subtitle": employee.employee_code, "employee_id": str(employee.id)})
-    return ok(list(seen.values())[:20])
+    """Scoped search. L&D Admin searches the organisation; an employee finds only assigned training.
+
+    Two narrow queries over live assignments in scope, instead of loading every enrolment and attempt (audit F-12).
+    """
+    escaped = q.lower().replace(LIKE_ESCAPE, LIKE_ESCAPE * 2).replace("%", LIKE_ESCAPE + "%").replace("_", LIKE_ESCAPE + "_")
+    needle = f"%{escaped}%"  # The search text is matched literally: % and _ are not wildcards.
+    live = (Enrolment.enrolment_status != EnrolmentStatus.CANCELLED,)
+    scope = () if user.has_role(RoleCode.LD_ADMIN) else (Enrolment.employee_id == user.employee_id,)
+    trainings = db.execute(
+        select(Training.title, Training.category)
+        .join(Enrolment, Enrolment.training_id == Training.id)
+        .where(*live, *scope, func.lower(Training.title).like(needle, escape=LIKE_ESCAPE))
+        .group_by(Training.title, Training.category)
+        .order_by(Training.title)
+        .limit(SEARCH_LIMIT)
+    ).all()
+    people = db.execute(
+        select(Employee.id, Employee.full_name, Employee.employee_code)
+        .join(Enrolment, Enrolment.employee_id == Employee.id)
+        .where(
+            *live,
+            *scope,
+            Employee.id != user.employee_id,
+            or_(func.lower(Employee.full_name).like(needle, escape=LIKE_ESCAPE), func.lower(Employee.employee_code).like(needle, escape=LIKE_ESCAPE)),
+        )
+        .group_by(Employee.id, Employee.full_name, Employee.employee_code)
+        .order_by(Employee.full_name)
+        .limit(SEARCH_LIMIT)
+    ).all()
+    results = [{"type": "training", "title": title, "subtitle": category} for title, category in trainings]
+    results += [{"type": "employee", "title": name, "subtitle": code, "employee_id": str(employee_id)} for employee_id, name, code in people]
+    return ok(results[:SEARCH_LIMIT])

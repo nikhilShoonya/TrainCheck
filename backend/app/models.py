@@ -404,7 +404,10 @@ class AssessmentConfig(Base):
     schedule_mode: Mapped[str] = mapped_column(String(20), default="NEXT_WORKING_DAY")
     schedule_delay_days: Mapped[int] = mapped_column(Integer, default=0)
     schedule_uses_working_days: Mapped[bool] = mapped_column(Boolean, default=False)
-    schedule_date: Mapped[date | None] = mapped_column(Date)  # FIXED_DATE only: the day the post-test is due.
+    schedule_date: Mapped[date | None] = mapped_column(Date)  # FIXED_DATE only: the day the post-test is due (local).
+    # FIXED_DATE only: the exact opening moment, in UTC, converted from the organisation timezone. Empty for
+    # configurations saved before a time could be chosen: they open at the start of schedule_date.
+    schedule_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     difficulty_mix: Mapped[dict[str, int] | None] = mapped_column(JSON)  # {"EASY": 4, "MEDIUM": 4, "HARD": 2}
     show_explanations: Mapped[bool] = mapped_column(Boolean, default=False)
     shuffle_questions: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -515,6 +518,12 @@ class AttemptAnswer(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     attempt_question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("attempt_questions.id"), unique=True)
     selected_option_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Bumped by every accepted change of selection. A save names the revision it was made against, so a stale
+    # window, device or delayed request can never overwrite a newer answer (compare-and-set).
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # The operation ID of the save that produced this revision: lets a page recognise its own save whose reply was
+    # lost, instead of guessing from the selected options (which another window or device may choose too).
+    last_op_id: Mapped[str | None] = mapped_column(String(64))
     marked_for_review: Mapped[bool] = mapped_column(Boolean, default=False)
     saved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     is_correct: Mapped[bool | None] = mapped_column(Boolean)  # Set only at finalisation.

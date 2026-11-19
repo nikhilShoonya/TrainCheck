@@ -1,12 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { ACCOUNTS, answerAll, giveFeedback, signIn, startSecureAssessment, startSecurePreTest, submitAssessment } from "./helpers";
 
+/** The dashboard greeting follows the time of day, so a test must accept any of the three. */
+const GREETING = (name = "") => new RegExp(`Good (morning|afternoon|evening)${name ? `, ${name}` : ""}`, "i");
+
 /* The order matters: the first test uses up the employee's first assessment in the seeded data. */
 
 test("no-pending employee reaches the dashboard with two-level evidence only", async ({ page }) => {
   await signIn(page, ACCOUNTS.clear);
   await expect(page).toHaveURL(/\/employee$/);
-  await expect(page.getByRole("heading", { name: /Good Morning, Isha/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: GREETING("Isha") })).toBeVisible();
   await expect(page.getByText("L2 Learning")).toBeVisible();
   await expect(page.getByText("L3 Behaviour")).toHaveCount(0); // Level 3 is switched off (outside the approved scope).
   for (const removed of ["L1 Reaction", "L4 Results", "Feedback (L1)", "Results (L4)", "ROI"]) await expect(page.getByText(removed, { exact: false })).toHaveCount(0);
@@ -15,7 +18,7 @@ test("no-pending employee reaches the dashboard with two-level evidence only", a
 test("gate blocks direct URLs and APIs, then the secure flow produces a server result", async ({ page }) => {
   await signIn(page, ACCOUNTS.employee);
   await expect(page).toHaveURL(/\/access\/assessment-required/);
-  await expect(page.getByRole("heading", { name: /Good morning, Aarav/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: GREETING("Aarav") })).toBeVisible();
   await expect(page.getByText("2 ASSESSMENTS REMAINING")).toBeVisible();
   await expect(page.getByRole("heading", { name: "KYC & AML Compliance" })).toBeVisible();
 
@@ -58,9 +61,9 @@ test("gate blocks direct URLs and APIs, then the secure flow produces a server r
   await answerAll(page);
   await submitAssessment(page);
   await expect(page.locator(".score-circle")).toBeVisible();
+  await giveFeedback(page); // Required once per assessment before continuing; its dialog covers the result until then.
   await expect(page.getByRole("heading", { name: "Topic performance" })).toBeVisible();
   await expect(page.getByText(/Reaction/i)).toHaveCount(0);
-  await giveFeedback(page); // Required once per assessment before continuing.
 
   // TC-GATE-005: the next assessment in the queue still blocks the workspace.
   await page.getByRole("button", { name: /Continue to next assessment/ }).click();
@@ -110,7 +113,7 @@ test("leaving full screen is a violation, and offline is not", async ({ page, co
   await page.getByRole("button", { name: /Continue to my workspace/ }).click();
   await page.waitForURL(/\/employee$/);
   await expect(page.locator(".sidebar")).toBeVisible();
-  await expect(page.getByRole("heading", { name: /Good Morning, Aarav/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: GREETING("Aarav") })).toBeVisible();
 });
 
 test("after his assessments the employee takes the two new pre-tests, each offered once", async ({ page }) => {
@@ -208,7 +211,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
 
   await page.goto("/lnd/scorecards");
   await expect(page.getByRole("heading", { name: "Section 1 · Learning" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Section 2 · Behaviour" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Section 2 · Behaviour" })).toHaveCount(0); // Level 3 is out of scope.
   await expect(page.getByText(/Section 3|Reaction|Business Results/)).toHaveCount(0);
 
   // Batches & Sessions and Audit Logs are withdrawn from L&D Admin: not in the sidebar, refused by URL and by the API.
@@ -288,7 +291,7 @@ test("a phone-sized employee dashboard has no sideways scrolling", async ({ brow
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   await signIn(page, ACCOUNTS.clear);
-  await expect(page.getByRole("heading", { name: /Good Morning/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: GREETING() })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
   await page.getByRole("button", { name: "Open navigation" }).click();

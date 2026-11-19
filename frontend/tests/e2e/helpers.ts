@@ -5,6 +5,8 @@ export const PASSWORD = "TrainCheck123!";
 export const ACCOUNTS = {
   employee: "employee@traincheck.demo",
   clear: "clear@traincheck.demo",
+  /** Assigned only (nothing due); used by assessment-schedule.spec.ts, which records a completion for her. */
+  scheduled: "e010@traincheck.demo",
   manager: "manager@traincheck.demo",
   manager2: "manager2@traincheck.demo",
   admin: "admin@traincheck.demo",
