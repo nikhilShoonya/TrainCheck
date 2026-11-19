@@ -183,7 +183,12 @@ export function AdminDashboard() {
               </div>
             </Panel>
           </div>
-          <ScorecardCta heading="Organisation Learning & Behaviour Scorecard" description="View learning gain and behaviour evidence for each training." href="/lnd/scorecards" label="View Scorecards" />
+          {user?.features?.behaviour ? (
+            <ScorecardCta heading="Organisation Learning & Behaviour Scorecard" description="View learning gain and behaviour evidence for each training." href="/lnd/scorecards" label="View Scorecards" />
+          ) : (
+            // Level 3 Behaviour is switched off (outside the approved scope), so the scorecard is Learning only.
+            <ScorecardCta heading="Organisation Learning Scorecard" description="View learning gain for each training." href="/lnd/scorecards" label="View Scorecards" />
+          )}
         </div>
       )}
     </Loaded>

@@ -297,7 +297,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
         <footer>
           <span>TrainCheck · Finvasia L&D Evaluation</span>
-          <span>Learning and behaviour evidence</span>
+          <span>{user.features?.behaviour ? "Learning and behaviour evidence" : "Learning evidence"}</span>
         </footer>
       </div>
       {search !== null ? <SearchDialog query={search} role={role} onClose={() => setSearch(null)} /> : null}
