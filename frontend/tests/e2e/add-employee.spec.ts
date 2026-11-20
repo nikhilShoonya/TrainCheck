@@ -17,7 +17,8 @@ async function openAddEmployee(page: Page) {
 }
 
 function csv(rows: string[][]): { name: string; mimeType: string; buffer: Buffer } {
-  const lines = [["Name", " Employee ID ", "Email", "JoiningDate", "Departement"], ...rows];
+  // Finvasia's HR headings (Employee Number first); each row below is given in the same order.
+  const lines = [["Employee Number", "Full Name", "Email", "Date of Joining", "Department"], ...rows.map(([name, code, ...rest]) => [code, name, ...rest])];
   return { name: "employees.csv", mimeType: "text/csv", buffer: Buffer.from(lines.map((l) => l.join(",")).join("\n"), "utf-8") };
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { Badge, Btn, BtnLink, DataTable, Empty, ErrorPanel, Field, fieldErrors, FormError, Loaded, Loading, Metrics, PageTitle, SelectField, TextField, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
@@ -11,8 +11,8 @@ import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
 import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref } from "@/features/admin/completionView";
 import { allShownSelected, filterPeople, toggleOne, toggleShown } from "@/features/admin/assignView";
-import { activeDepartments, confirmBlockedReason, createdMessage, departmentShown, EMPLOYEE_COLUMNS, EMPLOYEE_FILE_TYPES, joiningShown, PASSWORD_RULE, plural, previewSummary, rowProblems, type AddEmployeeMode, type EmployeeImportResult, type EmployeePreview } from "@/features/admin/employeeView";
-import { acceptedFiles, commitSelection, fileTypesLabel, importFields, needsRevalidation, selectionChanged, selectionProblem, TEST_TYPE_HELP, TEST_TYPE_LABEL, TEST_TYPE_OPTIONS, testTypeLabel, type ImportSelection } from "@/features/admin/importView";
+import { activeDepartments, assignmentCounts, assignmentsHref, confirmBlockedReason, createdMessage, departmentOptions, departmentShown, EMPLOYEE_COLUMNS, EMPLOYEE_FILE_TYPES, filterEmployeeList, findEmployee, isEmployeeId, isInactive, joiningShown, NO_TRAINING_ASSIGNED, PASSWORD_RULE, plural, previewSummary, rowProblems, STATUS_OPTIONS, type AddEmployeeMode, type EmployeeImportResult, type EmployeeListItem, type EmployeePreview } from "@/features/admin/employeeView";
+import { acceptedFiles, commitSelection, fileTypesLabel, importFields, importSummary, needsRevalidation, selectionChanged, selectionProblem, templatePath, TEST_TYPE_HELP, TEST_TYPE_LABEL, TEST_TYPE_OPTIONS, testTypeLabel, type ImportCounts, type ImportSelection } from "@/features/admin/importView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
@@ -1191,7 +1191,7 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
             <Icon name="back" /> Choose another way
           </Btn>
           <p className="small">
-            Columns: {EMPLOYEE_COLUMNS.join(", ")}. Departments must already exist and be active (code or exact name). Joining dates are read day first: 19 Nov 2026, 19/11/2026, 19-11-2026, 2026-11-19 or 19112026. Keep employee IDs as text so leading zeros stay.
+            Columns: {EMPLOYEE_COLUMNS.join(", ")}. Departments must already exist and be active (code or exact name). Dates of joining are read day first: 19 Nov 2026, 19/11/2026, 19-11-2026, 2026-11-19 or 19112026 (Excel date cells work too). Keep employee numbers as text so leading zeros stay.
           </p>
           <div className="row wrap">
             <Btn tone="data" onClick={() => void download("csv")}>
@@ -1279,18 +1279,53 @@ export function Assignments() {
 }
 
 function AssignmentsInner() {
-  // ?search= lets other pages (such as the global search) open this list filtered to one employee.
-  const searchFromLink = useSearchParams().get("search") ?? "";
-  const [search, setSearch] = useState(searchFromLink);
-  const [stage, setStage] = useState("");
-  const state = useApi<EnrolmentRow[]>(`/admin/enrolments${toQuery({ search })}`);
+  // The address holds the page's state: ?search= (the employee search; also how the global search opens this page)
+  // and ?employee=<id> (the selected employee, by ID only). Refresh, direct links and the browser's Back keep it.
+  const params = useSearchParams();
+  const selected = params.get("employee");
+  const linkSearch = params.get("search") ?? "";
+  const [search, setSearch] = useState(linkSearch);
+  // Department and Status filters live only in the address (?department=, ?status=), so Back and refresh keep them.
+  const filters = { department: params.get("department") ?? "", status: params.get("status") ?? "" };
+  const employees = useApi<EmployeeListItem[]>("/admin/employees");
   const [assigning, setAssigning] = useState(false);
   const [adding, setAdding] = useState(false);
   const [outcome, setOutcome] = useState<AssignmentResult | null>(null);
-  const [cancel, setCancel] = useState<EnrolmentRow | null>(null);
-  const [retake, setRetake] = useState<EnrolmentRow | null>(null);
-  const [retraining, setRetraining] = useState<EnrolmentRow | null>(null);
-  const toast = useToast();
+  // Where the list was scrolled when an employee was opened from it; null when the page opened on an employee.
+  const listScroll = useRef<number | null>(null);
+
+  // A new ?search= from a link (or the browser's Back) replaces the search box. Adjusted while rendering, as React
+  // recommends for state that follows a changing value; typing keeps the address equal to the box, so it is untouched.
+  const [seenLinkSearch, setSeenLinkSearch] = useState(linkSearch);
+  if (linkSearch !== seenLinkSearch) {
+    setSeenLinkSearch(linkSearch);
+    if (search.trim() !== linkSearch.trim()) setSearch(linkSearch);
+  }
+  // Back on the list: return to where the person was. The list stays mounted, so its page and sort are kept.
+  useEffect(() => {
+    if (!selected && listScroll.current !== null) {
+      window.scrollTo(0, listScroll.current);
+      listScroll.current = null;
+    }
+  }, [selected]);
+
+  const changeSearch = (value: string) => {
+    setSearch(value);
+    // Kept in the address without a new history entry, so Back and refresh return to the same search.
+    window.history.replaceState(null, "", assignmentsHref({ search: value, ...filters }));
+  };
+  const changeFilter = (change: { department?: string; status?: string }) => window.history.replaceState(null, "", assignmentsHref({ search, ...filters, ...change }));
+  const open = (id: string) => {
+    listScroll.current = window.scrollY;
+    window.history.pushState(null, "", assignmentsHref({ employee: id, search, ...filters }));
+    window.scrollTo(0, 0);
+  };
+  const back = () => {
+    // Opened from the list: step back to that entry. Opened from a link: go to the list with the same search.
+    if (listScroll.current !== null) window.history.back();
+    else window.history.pushState(null, "", assignmentsHref({ search, ...filters }));
+  };
+
   return (
     <>
       <PageTitle
@@ -1308,17 +1343,115 @@ function AssignmentsInner() {
           </div>
         }
       />
-      <section className="panel">
+      {/* Hidden, not removed, while an employee is open, so Back to employees finds it exactly as it was left. */}
+      <section className="panel" hidden={Boolean(selected)} aria-label="Employees">
+        <div className="filters">
+          <TextField label="Search" name="employee_search" type="search" placeholder="Employee name, ID or email" value={search} onChange={(e) => changeSearch(e.target.value)} />
+          <SelectField label="Department" name="employee_department" placeholder="All departments" value={filters.department} onChange={(e) => changeFilter({ department: e.target.value })} options={departmentOptions(employees.data)} />
+          <SelectField label="Status" name="employee_status" placeholder="All statuses" value={filters.status} onChange={(e) => changeFilter({ status: e.target.value })} options={STATUS_OPTIONS} />
+          {search.trim() || filters.department || filters.status ? (
+            <Btn
+              onClick={() => {
+                setSearch("");
+                window.history.replaceState(null, "", assignmentsHref({}));
+              }}
+            >
+              Clear filters
+            </Btn>
+          ) : null}
+        </div>
+        <Loaded state={employees}>
+          {(list) => {
+            const shown = filterEmployeeList(list, search, filters);
+            const narrowed = Boolean(search.trim() || filters.department || filters.status);
+            const ids = new Map<ReactNode[], string>();
+            const rows = shown.map((p) => {
+              const row: ReactNode[] = [
+                <div key="n" data-sort={p.full_name}>
+                  <Btn kind="text" className="employee-open" onClick={() => open(p.id)} aria-label={`Open ${p.full_name}'s trainings`}>
+                    {p.full_name}
+                  </Btn>
+                  {isInactive(p) ? <span className="badge warning">Inactive</span> : null}
+                </div>,
+                p.employee_code,
+                p.work_email,
+                p.department ?? "Not recorded",
+              ];
+              ids.set(row, p.id);
+              return row;
+            });
+            return (
+              <>
+                <p className="small" role="status">
+                  {narrowed ? `${plural(shown.length, "employee")} of ${list.length.toLocaleString("en-IN")} match.` : `${plural(list.length, "employee")}.`} Select an employee to see their trainings.
+                </p>
+                <DataTable headers={["Name", "Employee ID", "Email", "Department"]} emptyTitle={narrowed ? "No employee matches this search and filters." : "No employees yet."} emptyHint={narrowed ? "Search by name, Employee ID or email, or clear the filters." : "Use Add Employee to add people."} rows={rows} onRowClick={(row) => open(ids.get(row)!)} />
+              </>
+            );
+          }}
+        </Loaded>
+      </section>
+      {selected ? <SelectedEmployee key={selected} id={selected} employees={employees} onBack={back} /> : null}
+      {adding ? <AddEmployeeDialog onClose={() => setAdding(false)} /> : null}
+      {assigning ? <AssignDialog onClose={() => setAssigning(false)} onSaved={(result) => setOutcome(result)} /> : null}
+      {outcome ? <AssignmentOutcome result={outcome} onClose={() => setOutcome(null)} /> : null}
+    </>
+  );
+}
+
+/** One employee's details and assignments. Keyed by the employee ID, so switching people starts from a clean state
+ *  and never shows the previous person's rows. Saved changes refresh it (and the list) through the shared cache. */
+function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { data: EmployeeListItem[] | null; error: ApiError | null; reload: () => Promise<void> }; onBack: () => void }) {
+  const employee = findEmployee(employees.data, id);
+  const state = useApi<EnrolmentRow[]>(employee ? `/admin/enrolments${toQuery({ employee_id: employee.id })}` : null);
+  const [stage, setStage] = useState("");
+  const [cancel, setCancel] = useState<EnrolmentRow | null>(null);
+  const [retake, setRetake] = useState<EnrolmentRow | null>(null);
+  const [retraining, setRetraining] = useState<EnrolmentRow | null>(null);
+  const toast = useToast();
+  const backButton = (
+    <Btn onClick={onBack}>
+      <Icon name="back" /> Back to employees
+    </Btn>
+  );
+  if (!employee) {
+    return (
+      <section className="panel" aria-label="Selected employee">
+        {backButton}
+        {employees.error ? <ErrorPanel error={employees.error} retry={() => void employees.reload()} /> : !employees.data && isEmployeeId(id) ? <Loading label="Loading the employee…" /> : <Empty title="Employee not found." hint="This employee does not exist. Go back to the employees and choose one from the list." />}
+      </section>
+    );
+  }
+  const facts: [string, ReactNode][] = [
+    ["Name", employee.full_name],
+    ["Employee ID", employee.employee_code],
+    ["Email", employee.work_email],
+    ["Department", employee.department ?? "Not recorded"],
+  ];
+  return (
+    <>
+      <section className="panel" aria-label="Selected employee">
+        {backButton}
+        <h2 className="employee-heading">
+          {employee.full_name} {isInactive(employee) ? <span className="badge warning">Inactive</span> : null}
+        </h2>
+        <div className="detail-grid">
+          {facts.map(([label, value]) => (
+            <div key={label}>
+              <small>{label}</small>
+              <strong>{value}</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="panel" aria-label={`${employee.full_name}'s trainings`}>
         <form
           className="filters"
           onSubmit={(e) => {
             e.preventDefault();
-            const v = new FormData(e.currentTarget);
-            setSearch(String(v.get("search")));
-            setStage(String(v.get("stage") ?? ""));
+            setStage(String(new FormData(e.currentTarget).get("stage") ?? ""));
           }}
         >
-          <TextField label="Search" name="search" placeholder="Employee name or ID" defaultValue={searchFromLink} />
           <SelectField label="Stage" name="stage" placeholder="All assignments" options={[{ value: "pending", label: "Awaiting completion" }, { value: "completed", label: "Completed" }, { value: "approval", label: "Needs approval" }]} />
           <button className="btn secondary" type="submit">
             Apply filters
@@ -1327,71 +1460,65 @@ function AssignmentsInner() {
         <Loaded state={state}>
           {(all) => {
             const rows = stage === "pending" ? all.filter((e) => !e.completed_at) : stage === "completed" ? all.filter((e) => e.completed_at) : stage === "approval" ? all.filter(needsApproval) : all;
+            const counts = assignmentCounts(all);
             return (
-            <>
-            <Metrics
-              items={[
-                ["Assigned", all.length, "Live assignments"],
-                ["Awaiting completion", all.filter((e) => !e.completed_at).length, "Completion not yet recorded"],
-                ["Completed", all.filter((e) => e.completed_at).length, "Completion recorded"],
-              ]}
-            />
-            <DataTable
-              headers={["Employee", "Training / Batch", "Assigned", "Completion", "Assessment", "Attempts", "Re-trainings", "Result", ""]}
-              emptyTitle="No assignments match."
-              rows={rows.map((e) => [
-                <div key="p" data-sort={e.employee_name}>
-                  {e.employee_name}
-                  <small>{e.employee_code}</small>
-                </div>,
-                <div key="t" data-sort={e.training_title}>
-                  {e.training_title}
-                  <small>{e.batch_name ?? "No batch"}</small>
-                </div>,
-                day(e.assigned_at),
-                day(e.completed_at),
-                <div key="s" data-sort={e.assessment_state}>
-                  {e.assessment_state}
-                  {e.refresher_acknowledged_at ? <small>Refresher done {day(e.refresher_acknowledged_at)}</small> : null}
-                </div>,
-                e.max_attempts ? `${e.attempts_used} of ${e.max_attempts}` : "—",
-                e.retrainings,
-                resultOf(e),
-                <div className="row wrap" key="x">
-                  {e.assessment_state === "Awaiting approval" && e.obligation_id ? (
-                    <Btn kind="text" tone="attention" onClick={() => setRetake(e)}>
-                      Approve re-attempt
-                    </Btn>
-                  ) : null}
-                  {e.retraining_flag === "NEEDS_RETRAINING" && e.obligation_id ? (
-                    <Btn kind="text" tone="attention" onClick={() => setRetraining(e)}>
-                      Approve re-training
-                    </Btn>
-                  ) : null}
-                  {e.completed_at ? null : (
-                    <Btn kind="text" tone="danger" onClick={() => setCancel(e)}>
-                      Cancel
-                    </Btn>
-                  )}
-                </div>,
-              ])}
-            />
-            </>
+              <>
+                <Metrics
+                  items={[
+                    ["Assigned", counts.assigned, "Live assignments"],
+                    ["Awaiting completion", counts.pending, "Completion not yet recorded"],
+                    ["Completed", counts.completed, "Completion recorded"],
+                  ]}
+                />
+                {!all.length ? (
+                  <Empty title={NO_TRAINING_ASSIGNED} hint="Use Assign Employees to assign a training." />
+                ) : (
+                  <DataTable
+                    headers={["Employee", "Training / Batch", "Assigned", "Completion", "Assessment", "Attempts", "Re-trainings", "Result", ""]}
+                    emptyTitle="No assignments match."
+                    rows={rows.map((e) => [
+                      <div key="p" data-sort={e.employee_name}>
+                        {e.employee_name}
+                        <small>{e.employee_code}</small>
+                      </div>,
+                      <div key="t" data-sort={e.training_title}>
+                        {e.training_title}
+                        <small>{e.batch_name ?? "No batch"}</small>
+                      </div>,
+                      day(e.assigned_at),
+                      day(e.completed_at),
+                      <div key="s" data-sort={e.assessment_state}>
+                        {e.assessment_state}
+                        {e.refresher_acknowledged_at ? <small>Refresher done {day(e.refresher_acknowledged_at)}</small> : null}
+                      </div>,
+                      e.max_attempts ? `${e.attempts_used} of ${e.max_attempts}` : "—",
+                      e.retrainings,
+                      resultOf(e),
+                      <div className="row wrap" key="x">
+                        {e.assessment_state === "Awaiting approval" && e.obligation_id ? (
+                          <Btn kind="text" tone="attention" onClick={() => setRetake(e)}>
+                            Approve re-attempt
+                          </Btn>
+                        ) : null}
+                        {e.retraining_flag === "NEEDS_RETRAINING" && e.obligation_id ? (
+                          <Btn kind="text" tone="attention" onClick={() => setRetraining(e)}>
+                            Approve re-training
+                          </Btn>
+                        ) : null}
+                        {e.completed_at ? null : (
+                          <Btn kind="text" tone="danger" onClick={() => setCancel(e)}>
+                            Cancel
+                          </Btn>
+                        )}
+                      </div>,
+                    ])}
+                  />
+                )}
+              </>
             );
           }}
         </Loaded>
       </section>
-      {adding ? <AddEmployeeDialog onClose={() => setAdding(false)} /> : null}
-      {assigning ? (
-        <AssignDialog
-          onClose={() => setAssigning(false)}
-          onSaved={(result) => {
-            setOutcome(result);
-            void state.reload();
-          }}
-        />
-      ) : null}
-      {outcome ? <AssignmentOutcome result={outcome} onClose={() => setOutcome(null)} /> : null}
       {cancel ? (
         <ConfirmDialog
           title="Cancel this assignment?"
@@ -2099,6 +2226,12 @@ interface ImportJob {
   rows?: { row: number; record: string; status: string; errors: { field: string; message: string }[] }[];
   assessments_not_scheduled?: number;
   assignments_created?: number;
+  /** Rows by outcome: VALID (preview), IMPORTED, DUPLICATE, CONFLICT, INVALID. Present when the rows are loaded. */
+  counts?: ImportCounts;
+  /** A question preview validated with the old template: it must be validated again. */
+  needs_revalidation?: boolean;
+  /** Imported questions are Easy: set when the selected test's difficulty mix needs Medium or Hard questions it lacks. */
+  difficulty_notice?: string | null;
 }
 
 /** What accepted completion rows will do (preview) or did (after import). Rule failures are listed per row below. */
@@ -2117,6 +2250,7 @@ const ROW_STATUS: Record<string, [string, string]> = {
   VALID: ["Valid", "success"],
   IMPORTED: ["Imported", "success"],
   DUPLICATE: ["Duplicate · skipped", "warning"],
+  CONFLICT: ["Conflict · needs review", "danger"],
   INVALID: ["Rejected", "danger"],
 };
 
@@ -2146,6 +2280,7 @@ function ImportTrainingLinks({ job }: { job: ImportJob }) {
             ? " · validated before test types existed. Edit this import and choose the training and test type before importing."
             : " · imported before test types existed. Its questions stay eligible for both the pre-test and the post-test of their training."}
       </p>
+      {job.needs_revalidation ? <p className="import-training">This preview was validated with the old question template. Edit this import and validate a file made from the new template before importing.</p> : null}
     </>
   );
 }
@@ -2200,7 +2335,7 @@ export function ImportCentre() {
       // The server imports with the training and test type saved at validation; these are only compared with them.
       const done = await api.post<ImportJob>(`/admin/imports/${job.id}/commit`, commitSelection(job, formSnapshot()));
       setJob(done);
-      toast(`${rows(done.accepted_rows)} imported; ${rows(done.rejected_rows)} rejected or skipped as duplicates.`);
+      toast(importSummary(done));
       void recent.reload();
     } catch (e) {
       setError(fieldErrors(e));
@@ -2341,7 +2476,7 @@ export function ImportCentre() {
           </div>
           {kind === "QUESTIONS" ? (
             <div className="import-training-select" id="import-selection-help">
-              <p className="small">{TEST_TYPE_HELP} The file&apos;s training column can be left blank; a code in it must match this training.</p>
+              <p className="small">{TEST_TYPE_HELP} The file does not name a training: every question goes to the training selected here.</p>
               {trainings.data && !importable.length ? <p className="small form-error">No draft or active training exists. Create one in Training Management first.</p> : null}
               {trainings.error ? <p className="small form-error">Trainings could not be loaded. {trainings.error.message}</p> : null}
             </div>
@@ -2373,17 +2508,18 @@ export function ImportCentre() {
               <input type="file" name="file" accept={acceptedFiles(kind)} required />
             </label>
             <small>The first worksheet is read as plain values. Formulas, macros and external links are rejected.</small>
-            {kind === "QUESTIONS" ? <small>PDFs must use the TrainCheck PDF template: each question is a block of labelled lines starting with &quot;ID:&quot;. Only text is read; scanned and password-protected PDFs cannot be imported.</small> : null}
+            {kind === "QUESTIONS" ? <small>Question files have exactly these fields: question, option_a, option_b, option_c, option_d, correct, topic. Four different options and one correct letter (A, B, C or D). TrainCheck sets the ID, 1 mark, Easy difficulty and Single choice; there is no competency or explanation until you add one in the Question Bank.</small> : null}
+            {kind === "QUESTIONS" ? <small>PDFs must use the TrainCheck PDF template: each question is a block of &quot;field: value&quot; lines starting with &quot;question:&quot;, separated by ---. Only text is read; scanned, free-form and password-protected PDFs cannot be imported.</small> : null}
           </div>
           <div className="row wrap">
-            <Btn tone="data" onClick={() => void download(`/admin/imports/templates/${kind}`, "template.csv")}>
+            <Btn tone="data" onClick={() => void download(templatePath(kind, "csv"), "template.csv")}>
               Download CSV template
             </Btn>
-            <Btn tone="data" onClick={() => void download(`/admin/imports/templates/${kind}?format=xlsx`, "template.xlsx")}>
+            <Btn tone="data" onClick={() => void download(templatePath(kind, "xlsx"), "template.xlsx")}>
               Download Excel template
             </Btn>
             {kind === "QUESTIONS" ? (
-              <Btn tone="data" onClick={() => void download(`/admin/imports/templates/${kind}?format=pdf`, "template.pdf")}>
+              <Btn tone="data" onClick={() => void download(templatePath(kind, "pdf"), "template.pdf")}>
                 Download PDF template
               </Btn>
             ) : null}
@@ -2396,9 +2532,14 @@ export function ImportCentre() {
         {job ? (
           <div id="import-preview">
             <div className="notice" id="import-summary" tabIndex={-1}>
-              {job.status === "READY" ? `${job.file_name} validated. ${job.accepted_rows} valid, ${job.rejected_rows} rejected or duplicate. Nothing has been imported yet.` : `Import finished. ${rows(job.accepted_rows)} imported, ${rows(job.rejected_rows)} rejected or skipped as duplicates.`}
+              {importSummary(job)}
               {importNotes(job)}
               <ImportTrainingLinks job={job} />
+              {job.difficulty_notice ? (
+                <p className="import-training" id="import-difficulty-notice">
+                  {job.difficulty_notice}
+                </p>
+              ) : null}
             </div>
             <DataTable
               headers={["Row", "Record", "Status", "Problem"]}
@@ -2428,7 +2569,7 @@ export function ImportCentre() {
             </div>
             {job.status === "READY" && job.import_type === "QUESTIONS" && job.accepted_rows && !needsRevalidation(job) ? (
               <p className="small" id="import-confirm-summary">
-                Importing adds {rows(job.accepted_rows, "new question")} to <strong>{job.training?.title}</strong> ({job.training?.code}) for the <strong>{testTypeLabel(job).toLowerCase()}</strong> only. Duplicate question IDs are skipped; existing questions and their links are not changed.
+                Importing adds {rows(job.accepted_rows, "new question")} (the rows marked Valid) to <strong>{job.training?.title}</strong> ({job.training?.code}) for the <strong>{testTypeLabel(job).toLowerCase()}</strong> only, as Single choice questions worth 1 mark at Easy difficulty, with no competency or explanation. They are saved as Active, so they become eligible for this assessment as soon as you confirm; change their details or deactivate them in the Question Bank. Duplicate, conflict and rejected rows are skipped; existing questions, answer keys and links are not changed. Imported questions are recorded as English: correct the language of Hindi or Hinglish questions in the Question Bank.
               </p>
             ) : null}
           </div>

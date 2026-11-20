@@ -734,7 +734,7 @@ class ImportJobRow(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     import_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("import_jobs.id", ondelete="CASCADE"), index=True)
     row_number: Mapped[int] = mapped_column(Integer)
-    row_status: Mapped[str] = mapped_column(String(20))  # VALID, INVALID, DUPLICATE, IMPORTED
+    row_status: Mapped[str] = mapped_column(String(20))  # VALID, INVALID, DUPLICATE, CONFLICT (question imports), IMPORTED
     record_label: Mapped[str | None] = mapped_column(String(200))
     errors: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)

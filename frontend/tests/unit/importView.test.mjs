@@ -2,7 +2,7 @@
    previews and history. Run: npm run test:unit */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptedFiles, commitSelection, fileTypesLabel, importFields, needsRevalidation, selectionChanged, selectionProblem, TEST_TYPE_HELP, TEST_TYPE_OPTIONS, testTypeLabel } from "@/features/admin/importView";
+import { acceptedFiles, commitSelection, fileTypesLabel, importFields, importSummary, needsRevalidation, selectionChanged, selectionProblem, templatePath, TEST_TYPE_HELP, TEST_TYPE_OPTIONS, testTypeLabel } from "@/features/admin/importView";
 import { exclusionNotes } from "@/lib/pool";
 
 const TRAINING = "3f2b8c1e-9a4d-4e6f-8b1a-2c3d4e5f6a7b";
@@ -78,4 +78,35 @@ test("question imports also accept PDF; completion imports stay CSV and Excel", 
   assert.equal(fileTypesLabel("QUESTIONS"), "CSV, Excel or PDF");
   assert.equal(acceptedFiles("COMPLETIONS"), ".csv,.xlsx");
   assert.equal(fileTypesLabel("COMPLETIONS"), "CSV or Excel");
+});
+
+test("a question preview validated with the old template must be validated again", () => {
+  const job = { import_type: "QUESTIONS", training: { id: TRAINING }, test_type: "PRE_TEST" };
+  assert.equal(needsRevalidation({ ...job, needs_revalidation: true }), true);
+  assert.equal(needsRevalidation({ ...job, needs_revalidation: false }), false);
+});
+
+test("templates name no training: it is chosen on the import screen", () => {
+  assert.equal(templatePath("QUESTIONS", "csv"), "/admin/imports/templates/QUESTIONS");
+  assert.equal(templatePath("QUESTIONS", "pdf"), "/admin/imports/templates/QUESTIONS?format=pdf");
+  assert.equal(templatePath("COMPLETIONS", "xlsx"), "/admin/imports/templates/COMPLETIONS?format=xlsx");
+});
+
+test("the summary counts imported, duplicate, conflict and error rows separately", () => {
+  const base = { import_type: "QUESTIONS", file_name: "q.csv", accepted_rows: 3, rejected_rows: 4 };
+  assert.equal(
+    importSummary({ ...base, status: "READY", counts: { VALID: 3, IMPORTED: 0, DUPLICATE: 2, CONFLICT: 1, INVALID: 1 } }),
+    "q.csv validated. 3 rows will be imported; 2 duplicates skipped, 1 conflict skipped for review, 1 row with errors. Nothing has been imported yet.",
+  );
+  assert.equal(
+    importSummary({ ...base, status: "COMPLETED_WITH_ERRORS", counts: { VALID: 0, IMPORTED: 1, DUPLICATE: 0, CONFLICT: 0, INVALID: 0 } }),
+    "Import finished. 1 row imported; 0 duplicates skipped, 0 conflicts skipped for review, 0 rows with errors.",
+  );
+  // Completion imports have no conflicts to report.
+  assert.equal(
+    importSummary({ ...base, import_type: "COMPLETIONS", status: "READY", counts: { VALID: 2, DUPLICATE: 1, INVALID: 0 } }),
+    "q.csv validated. 2 rows will be imported; 1 duplicate skipped, 0 rows with errors. Nothing has been imported yet.",
+  );
+  // An entry listed without its rows: only the totals are known.
+  assert.equal(importSummary({ ...base, status: "COMPLETED" }), "Import finished. 3 rows imported, 4 rows rejected or skipped.");
 });

@@ -74,12 +74,11 @@ def _csv(rows: list[list[str]]) -> bytes:
 def test_validating_a_large_question_file_does_not_query_per_row(world, client_for, size):
     """Validation reads what it needs once per file: on Neon each round trip costs milliseconds (audit F-13)."""
     from app.core import db as database
-    from app.modules.imports.service import QUESTION_HEADERS
+    from app.modules.imports.question_format import FIELDS
 
     training = world.training()
-    header = QUESTION_HEADERS + ["department", "function"]
-    body = [header] + [
-        [f"BULK-{i:04d}", training.training_code, "Topic", "Applies the documented process", "single", f"Question {i}?", "A", "B", "C", "D", "", "B", "", "Easy", "1", "L2", "English", "Active", "OPS", "COMPLIANCE"]
+    body = [FIELDS] + [
+        [f"Question {i}?", "A", "B", "C", "D", "B", "Topic"]
         for i in range(size)
     ]
     admin = client_for(world.admin)

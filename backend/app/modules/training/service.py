@@ -35,6 +35,7 @@ from app.modules.assessment.scheduling import CalendarView, calculate_due_at, lo
 from app.modules.assessment.service import active_config, counted_attempts, finalise_attempt, pool_message, pool_report
 from app.modules.behaviour.service import create_cycles
 from app.modules.notifications.service import notify_employee, notify_roles
+from app.modules.organisation.people import is_learner
 
 # Post-test obligations that are still waiting for the employee.
 OPEN_OBLIGATION_STATUSES = (ObligationStatus.SCHEDULED, ObligationStatus.DUE, ObligationStatus.RETAKE_PENDING)
@@ -68,7 +69,8 @@ def audience_text(training: Training) -> str:
 
 
 def targeted_employees(db: Session, training: Training) -> list[Employee]:
-    active = db.scalars(select(Employee).where(Employee.employment_status != EmploymentStatus.INACTIVE)).all()
+    # "Everyone in the audience" never includes the designated L&D Admin sign-in record.
+    active = db.scalars(select(Employee).where(Employee.employment_status != EmploymentStatus.INACTIVE, is_learner())).all()
     return [e for e in active if in_target(training, e)]
 
 

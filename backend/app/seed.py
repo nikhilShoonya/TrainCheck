@@ -1,4 +1,4 @@
-"""Load synthetic development data.  Usage:  python -m app.seed  [--reset]
+"""Load synthetic development data.  Usage:  python -m app.seed --confirm-database <name> [--reset]
 
 Results are produced by the real services, so they carry genuine snapshots and scores.
 Refuses to run in production. `--reset` replaces every table's contents (see reset_and_seed).
@@ -395,6 +395,13 @@ def main() -> None:
     settings = get_settings()
     if settings.is_production:
         sys.exit("Refusing to load synthetic data in production.")
+    # Loading demo data is never automatic, and it may sit beside or (with --reset) replace real records. So the
+    # operator types the target database's name, which an accidental run or a copied command will not match.
+    confirm = sys.argv[sys.argv.index("--confirm-database") + 1] if "--confirm-database" in sys.argv[:-1] else None
+    with get_engine().connect() as connection:
+        actual = connection.exec_driver_sql("SELECT current_database()").scalar()
+    if confirm != actual:
+        sys.exit("Add --confirm-database <name of the database in DATABASE_URL> to load synthetic demo data. With --reset it ERASES every record first.")
     if "--reset" in sys.argv:
         reset_and_seed()
         print("Synthetic data loaded. Sign in with the demo accounts; the password is in app/seed_data.py.")

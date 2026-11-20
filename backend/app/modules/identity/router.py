@@ -63,6 +63,12 @@ def _set_cookies(response: Response, token: str, csrf: str) -> None:
     response.set_cookie(CSRF_COOKIE, csrf, max_age=lifetime, httponly=False, secure=settings.session_cookie_secure, samesite="lax", path="/")
 
 
+def may_change_own_password(user: CurrentUser) -> bool:
+    """L&D Admins always may. Employees only when EMPLOYEE_PASSWORD_CHANGE_ENABLED=true; otherwise their password
+    stays Fin@ + joining date (DDMMYYYY), and only an authorised operator can reset it."""
+    return user.has_role(RoleCode.LD_ADMIN) or get_settings().employee_password_change_enabled
+
+
 def user_payload(user: CurrentUser, db: Session) -> dict:
     e = user.employee
     return {
@@ -78,7 +84,7 @@ def user_payload(user: CurrentUser, db: Session) -> dict:
         "roles": sorted(user.roles),
         "primary_role": user.primary_role,
         # Lets the interface hide switched-off workflows. The server still enforces them.
-        "features": {"behaviour": get_settings().behaviour_enabled},
+        "features": {"behaviour": get_settings().behaviour_enabled, "password_change": may_change_own_password(user)},
     }
 
 
@@ -155,9 +161,10 @@ def me(user: CurrentUser = Depends(require_session), db: Session = Depends(get_d
 
 @router.post("/change-password")
 def change_password(body: ChangePasswordIn, response: Response, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
-    # Employees keep the password L&D set for them (Fin@ + joining date); only L&D Admin accounts may change their
-    # own. Refused before the current password is checked, so this endpoint cannot be used to test guesses either.
-    if not user.has_role(RoleCode.LD_ADMIN):
+    # Unless EMPLOYEE_PASSWORD_CHANGE_ENABLED=true, employees keep the password L&D set for them (Fin@ + joining
+    # date); L&D Admin accounts may always change their own. Refused before the current password is checked, so
+    # this endpoint cannot be used to test guesses either.
+    if not may_change_own_password(user):
         record_audit(db, user.id, "PASSWORD_CHANGE_REFUSED", "user_account", user.id)
         db.commit()
         raise forbidden("Employees cannot change their password. Ask your L&D Admin if you need help signing in.")

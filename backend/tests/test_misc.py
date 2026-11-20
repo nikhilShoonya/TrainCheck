@@ -31,6 +31,7 @@ from app.models import (
 )
 from app.modules.assessment.scheduling import CalendarView, calculate_due_at
 from app.modules.assessment.service import pool_report
+from app.modules.imports.question_format import FIELDS
 from app.modules.reports.scorecard import gain_values
 from app.modules.scheduler.jobs import pending_assessment_reminders
 from tests.conftest import NOW, take
@@ -382,7 +383,7 @@ def test_department_and_function_categorisation(world, client_for):
 
 # ---------- Imports ----------
 
-HEADERS = "id,training,topic,competency,type,question,option_a,option_b,option_c,option_d,options_extra,correct,explanation,difficulty,marks,level,language,active"
+HEADERS = ",".join(FIELDS)
 
 
 def upload(client, kind, name, content, training_id=None, test_type="POST_TEST"):
@@ -395,46 +396,52 @@ def upload(client, kind, name, content, training_id=None, test_type="POST_TEST")
     return client.post("/admin/imports", files={"file": (name, content)}, data=data)
 
 
-def valid_row(code="IMP-1", training="T1", **changes):
-    row = {"id": code, "training": training, "topic": "Topic", "competency": "New competency", "type": "single", "question": "Which is right?", "option_a": "Right", "option_b": "Wrong", "option_c": "", "option_d": "", "options_extra": "", "correct": "A", "explanation": "Because.", "difficulty": "Easy", "marks": "1", "level": "L2", "language": "English", "active": "Active"}
+def valid_row(question="Which is right?", **changes):
+    """An MCQ-format row: the training is selected on the import screen and the ID is generated on confirmation."""
+    row = {"question": question, "option_a": "Right", "option_b": "Wrong", "option_c": "Maybe", "option_d": "Never", "correct": "A", "topic": "Topic"}
     row.update(changes)
-    return ",".join(row[h] for h in HEADERS.split(","))
+    return ",".join(row[h] for h in FIELDS)
 
 
 def test_question_import_validates_previews_then_commits(world, db, client_for):  # TC-IMP-001, -002, -005
     training = world.training(questions=0, count=1)
     admin = client_for(world.admin)
-    text = "\n".join([HEADERS, valid_row(), valid_row("IMP-2", training="NOPE"), valid_row("IMP-3", correct="Z"), valid_row("IMP-4", marks="-1"), valid_row("IMP-5", type="essay")])
+    text = "\n".join([HEADERS, valid_row(), valid_row("Second?", correct="Z"), valid_row("Third?", option_d=""), valid_row("Fourth?", option_b="right"), valid_row("Fifth?", topic="")])
     job = upload(admin, "QUESTIONS", "questions.csv", text.encode(), training.id).json()["data"]
     assert (job["status"], job["accepted_rows"], job["rejected_rows"]) == ("READY", 1, 4)
+    assert job["counts"] == {"VALID": 1, "IMPORTED": 0, "DUPLICATE": 0, "CONFLICT": 0, "INVALID": 4}
     statuses = {r["row"]: r for r in job["rows"]}
-    assert statuses[2]["status"] == "VALID"
-    assert statuses[3]["errors"][0]["field"] == "training"
-    assert statuses[4]["errors"][0]["field"] == "correct"
+    assert statuses[2]["status"] == "VALID" and statuses[2]["record"] == "Which is right?"
+    assert [statuses[n]["errors"][0]["field"] for n in (3, 4, 5, 6)] == ["correct", "option_d", "option_b", "topic"]
     assert db.scalar(select(func.count()).select_from(Question)) == 0  # Nothing is applied before commit.
 
     report = admin.get(f"/admin/imports/{job['id']}/error-report")
-    assert report.status_code == 200 and "training" in report.text
+    assert report.status_code == 200 and "option_d" in report.text
 
     done = admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]
     assert done["status"] == "COMPLETED_WITH_ERRORS" and done["accepted_rows"] == 1
+    assert done["counts"]["IMPORTED"] == 1 and done["counts"]["INVALID"] == 4
     db.expire_all()
     assert db.scalar(select(func.count()).select_from(Question)) == 1
     assert admin.post(f"/admin/imports/{job['id']}/commit").status_code == 409
 
 
-def test_duplicate_question_id_is_never_overwritten(world, db, client_for):  # TC-IMP-003
+def test_existing_question_is_never_overwritten(world, db, client_for):  # TC-IMP-003
     training = world.training(questions=1, count=1)
     admin = client_for(world.admin)
     original = db.scalar(select(Question))
-    text = "\n".join([HEADERS, valid_row(original.question_code, question="Overwrite attempt?"), valid_row("IMP-A"), valid_row("IMP-A")])
+    key_before = set(db.scalars(select(QuestionAnswerKey.option_id).where(QuestionAnswerKey.question_id == original.id)))
+    same = {"question": original.question_text, "topic": original.topic, "option_a": "T1-Q01 option 0", "option_b": "T1-Q01 option 1", "option_c": "T1-Q01 option 2", "option_d": "T1-Q01 option 3", "correct": "A"}
+    text = "\n".join([HEADERS, valid_row(**same), valid_row(**{**same, "correct": "B"}), valid_row("New?"), valid_row("New?")])
     job = upload(admin, "QUESTIONS", "q.csv", text.encode(), training.id).json()["data"]
-    assert [r["status"] for r in job["rows"]] == ["DUPLICATE", "VALID", "DUPLICATE"]
-    assert "already exists in the Question Bank" in job["rows"][0]["errors"][0]["message"]  # Explained, not silent.
-    assert "more than once in this file" in job["rows"][2]["errors"][0]["message"]
+    assert [r["status"] for r in job["rows"]] == ["DUPLICATE", "CONFLICT", "VALID", "DUPLICATE"]
+    assert f"already in this training's Post-test pool as {original.question_code}" in job["rows"][0]["errors"][0]["message"]  # Explained, not silent.
+    assert "correct answer" in job["rows"][1]["errors"][0]["message"] and f"edit {original.question_code} in the Question Bank" in job["rows"][1]["errors"][0]["message"]
+    assert "Same question as row 4" in job["rows"][3]["errors"][0]["message"]
     admin.post(f"/admin/imports/{job['id']}/commit")
     db.expire_all()
-    assert db.get(Question, original.id).question_text != "Overwrite attempt?"
+    assert db.get(Question, original.id).version == 1
+    assert set(db.scalars(select(QuestionAnswerKey.option_id).where(QuestionAnswerKey.question_id == original.id))) == key_before
 
 
 @pytest.mark.parametrize(
@@ -470,7 +477,7 @@ def test_formula_cells_and_macros_are_rejected(world, client_for):  # TC-IMP-004
         target.writestr("xl/vbaProject.bin", b"macro")
     assert "macros" in upload(admin, "COMPLETIONS", "m.xlsx", macro.getvalue()).json()["error"]["message"]
 
-    csv_formula = "\n".join([HEADERS, valid_row("IMP-F", question="=HYPERLINK('x')")]).encode()
+    csv_formula = "\n".join([HEADERS, valid_row(question="=HYPERLINK('x')")]).encode()
     job = upload(admin, "QUESTIONS", "f.csv", csv_formula, training.id).json()["data"]
     assert job["rows"][0]["status"] == "INVALID"
 
@@ -499,29 +506,26 @@ def test_completion_import_is_idempotent(world, db, client_for):  # BR §4.5, PR
 def test_templates_download_and_import_cleanly(world, db, client_for):
     training = world.training("ANY-CODE", questions=0, count=1)
     admin = client_for(world.admin)
-    csv_template = admin.get("/admin/imports/templates/QUESTIONS")
-    xlsx_template = admin.get("/admin/imports/templates/QUESTIONS?format=xlsx")
-    assert xlsx_template.content.startswith(b"PK")
-    assert b"T001" not in csv_template.content  # No hard-coded training code.
-    job = upload(admin, "QUESTIONS", "template.csv", csv_template.content, training.id).json()["data"]
-    assert job["accepted_rows"] == 1, job
-    job = upload(admin, "QUESTIONS", "template.xlsx", xlsx_template.content, training.id).json()["data"]
-    assert job["accepted_rows"] == 1, job
+    for fmt in ("csv", "xlsx"):
+        template = admin.get(f"/admin/imports/templates/QUESTIONS?format={fmt}")
+        assert template.status_code == 200
+        if fmt == "csv":
+            assert template.content.decode("utf-8-sig").splitlines()[0] == "question,option_a,option_b,option_c,option_d,correct,topic"
+        job = upload(admin, "QUESTIONS", f"template.{fmt}", template.content, training.id).json()["data"]
+        assert job["accepted_rows"] == 3, job
+    assert admin.get("/admin/imports/templates/QUESTIONS?format=xlsx").content.startswith(b"PK")
 
 
 @pytest.mark.skipif(not (SAMPLES / "questions-valid.xlsx").exists(), reason="Prototype samples not present")
 @pytest.mark.parametrize("name", ["questions-valid.csv", "questions-valid.xlsx"])
-def test_prototype_sample_question_files_import(world, db, client_for, name):  # "Use the existing import template"
-    trainings = [world.training(code, questions=0, count=1) for code in ("T001", "T002", "T003")]
-    admin = client_for(world.admin)
-    accepted = 0
-    # The sample names three trainings. Each import selects one: its rows import, the others are refused as mismatches.
-    for training in trainings:
-        job = upload(admin, "QUESTIONS", name, (SAMPLES / name).read_bytes(), training.id).json()["data"]
-        assert all(e["field"] == "training" for r in job["rows"] if r["status"] == "INVALID" for e in r["errors"]), job["rows"]
-        accepted += job["accepted_rows"]
-        assert admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]["accepted_rows"] == job["accepted_rows"]
-    assert accepted >= 10
+def test_old_prototype_question_files_are_refused(world, db, client_for, name):
+    """The prototype samples use an old template (ID, type, level, language, active). They are refused with an
+    explanation instead of having those columns silently ignored."""
+    training = world.training("T001", questions=0, count=1)
+    response = upload(client_for(world.admin), "QUESTIONS", name, (SAMPLES / name).read_bytes(), training.id)
+    assert response.status_code == 400 and response.json()["error"]["code"] == "INVALID_HEADERS"
+    assert "old question template" in response.json()["error"]["message"]
+    assert db.scalar(select(func.count()).select_from(ImportJob)) == 0
 
 
 def test_employee_cannot_import(world, client_for):
@@ -533,20 +537,12 @@ def test_employee_cannot_import(world, client_for):
 
 # ---------- Imports into a selected training ----------
 
-NO_TRAINING_HEADERS = HEADERS.replace("id,training,", "id,")
-
-
-def no_training_row(code, **changes):
-    values = valid_row(code, **changes).split(",")
-    return ",".join(values[:1] + values[2:])
-
-
-def test_import_into_draft_training_without_training_column(world, db, client_for):
+def test_import_into_draft_training(world, db, client_for):
     training = world.training("DRAFT-1", questions=0, count=1)
     training.status = "DRAFT"
     db.commit()
     admin = client_for(world.admin)
-    text = "\n".join([NO_TRAINING_HEADERS, no_training_row("SEL-1"), no_training_row("SEL-2"), no_training_row("SEL-3", active="Inactive")])
+    text = "\n".join([HEADERS, valid_row("First?"), valid_row("Second?"), valid_row("Third?")])
     job = upload(admin, "QUESTIONS", "q.csv", text.encode(), training.id).json()["data"]
     assert (job["status"], job["accepted_rows"], job["rejected_rows"]) == ("READY", 3, 0), job["rows"]
     assert job["training"] == {"id": str(training.id), "code": "DRAFT-1", "title": training.title, "status": "DRAFT"}
@@ -556,10 +552,11 @@ def test_import_into_draft_training_without_training_column(world, db, client_fo
     done = admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]
     assert done["status"] == "COMPLETED" and done["training"]["code"] == "DRAFT-1"
     db.expire_all()
-    linked = db.scalars(select(QuestionTrainingTag.training_id).join(Question, Question.id == QuestionTrainingTag.question_id).where(Question.question_code.in_(["SEL-1", "SEL-2", "SEL-3"]))).all()
+    linked = db.scalars(select(QuestionTrainingTag.training_id).join(Question, Question.id == QuestionTrainingTag.question_id).where(Question.question_text.in_(["First?", "Second?", "Third?"]))).all()
     assert linked == [training.id] * 3
     assert set(db.scalars(select(QuestionTrainingTag.test_type))) == {"POST_TEST"}
-    assert pool_report(db, training.id, assessment_type="POST_TEST")["eligible"] == 2  # Active questions count; the inactive one does not.
+    assert set(db.scalars(select(Question.status))) == {"ACTIVE"}  # Confirmed by L&D Admin: Active.
+    assert pool_report(db, training.id, assessment_type="POST_TEST")["eligible"] == 3
     assert pool_report(db, training.id, assessment_type="PRE_TEST")["eligible"] == 0  # Post-test questions only.
     assert db.get(Training, training.id).status == "DRAFT"  # Importing never activates the training.
     assert admin.get(f"/admin/imports/{job['id']}").json()["data"]["training"]["code"] == "DRAFT-1"
@@ -572,11 +569,12 @@ def test_unapplied_import_can_be_edited_and_deleted(world, db, client_for):
     right = world.training("RIGHT", questions=0, count=1)
     wrong = world.training("WRONG", questions=0, count=1)
     admin = client_for(world.admin)
-    text = "\n".join([HEADERS, valid_row("ED-1", training="RIGHT"), valid_row("ED-2", training="RIGHT")]).encode()
-    job = upload(admin, "QUESTIONS", "q.csv", text, wrong.id).json()["data"]
-    assert (job["accepted_rows"], job["rejected_rows"]) == (0, 2)  # Rows name another training.
+    broken = "\n".join([HEADERS, valid_row("Edit one?", correct="E"), valid_row("Edit two?", correct="AB")]).encode()
+    text = "\n".join([HEADERS, valid_row("Edit one?"), valid_row("Edit two?")]).encode()
+    job = upload(admin, "QUESTIONS", "q.csv", broken, wrong.id).json()["data"]
+    assert (job["accepted_rows"], job["rejected_rows"]) == (0, 2)
 
-    # Edit: the same file into the training the rows name, validated into the same entry.
+    # Edit: a corrected file, for the right training, validated into the same entry.
     edited = admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("fixed.csv", text)}, data={"training_id": str(right.id), "test_type": "POST_TEST"}).json()["data"]
     assert (edited["id"], edited["status"], edited["file_name"], edited["accepted_rows"], edited["rejected_rows"]) == (job["id"], "READY", "fixed.csv", 2, 0)
     assert edited["training"]["code"] == "RIGHT" and len(edited["rows"]) == 2
@@ -599,27 +597,25 @@ def test_unapplied_import_can_be_edited_and_deleted(world, db, client_for):
     assert admin.get(f"/admin/imports/{other['id']}").status_code == 404
 
 
-def test_selected_training_blank_matching_and_conflicting_codes(world, db, client_for):
+def test_questions_go_only_to_the_selected_training(world, db, client_for):
+    """The file names no training: every question is linked to the selected one, and a training column is refused
+    rather than read."""
     training = world.training("SEL", questions=0, count=1)
     world.training("OTHER", questions=0, count=1)
     admin = client_for(world.admin)
-    text = "\n".join([HEADERS, valid_row("C-1", training=""), valid_row("C-2", training="SEL"), valid_row("C-3", training="sel"), valid_row("C-4", training="OTHER"), valid_row("C-5", training="NOPE")])
-    job = upload(admin, "QUESTIONS", "q.csv", text.encode(), training.id).json()["data"]
-    rows = {r["row"]: r for r in job["rows"]}
-    assert [rows[n]["status"] for n in (2, 3, 4)] == ["VALID", "VALID", "VALID"]
-    for n, code in ((5, "OTHER"), (6, "NOPE")):
-        assert rows[n]["status"] == "INVALID"
-        assert rows[n]["errors"][0]["field"] == "training"
-        assert f"is for training {code}, but the selected training is SEL" in rows[n]["errors"][0]["message"]
+    with_training = "\n".join(["training," + HEADERS, "OTHER," + valid_row("Moved?")]).encode()
+    refused = upload(admin, "QUESTIONS", "q.csv", with_training, training.id)
+    assert refused.status_code == 400 and "column training" in refused.json()["error"]["message"]
+    job = upload(admin, "QUESTIONS", "q.csv", "\n".join([HEADERS, valid_row("One?"), valid_row("Two?")]).encode(), training.id).json()["data"]
     admin.post(f"/admin/imports/{job['id']}/commit")
     db.expire_all()
-    assert db.scalar(select(func.count()).select_from(Question)) == 3
-    assert set(db.scalars(select(QuestionTrainingTag.training_id))) == {training.id}  # Never silently moved to OTHER.
+    assert set(db.scalars(select(QuestionTrainingTag.training_id))) == {training.id}  # Never another training.
+    assert db.scalar(select(func.count()).select_from(Question)) == 2
 
 
 def test_invalid_or_archived_training_selection_is_rejected(world, db, client_for):
     admin = client_for(world.admin)
-    text = "\n".join([NO_TRAINING_HEADERS, no_training_row("X-1")]).encode()
+    text = "\n".join([HEADERS, valid_row("X?")]).encode()
     missing = upload(admin, "QUESTIONS", "q.csv", text, "00000000-0000-0000-0000-000000000000")
     assert missing.status_code == 400 and "does not exist" in missing.json()["error"]["message"]
     assert upload(admin, "QUESTIONS", "q.csv", text, "not-a-uuid").status_code == 400
@@ -637,7 +633,7 @@ def test_invalid_or_archived_training_selection_is_rejected(world, db, client_fo
 def test_commit_rechecks_the_saved_training(world, db, client_for):
     training = world.training("RECHECK", questions=0, count=1)
     admin = client_for(world.admin)
-    job = upload(admin, "QUESTIONS", "q.csv", "\n".join([NO_TRAINING_HEADERS, no_training_row("R-1")]).encode(), training.id).json()["data"]
+    job = upload(admin, "QUESTIONS", "q.csv", "\n".join([HEADERS, valid_row("R?")]).encode(), training.id).json()["data"]
     training.status = "ARCHIVED"
     db.commit()
     response = admin.post(f"/admin/imports/{job['id']}/commit")
@@ -647,26 +643,29 @@ def test_commit_rechecks_the_saved_training(world, db, client_for):
     assert db.get(ImportJob, job["id"]).status == "READY"
 
 
-def test_selected_training_keeps_duplicates_skipped_and_never_relinks(world, db, client_for):
+def test_selected_training_never_relinks_an_existing_question(world, db, client_for):
+    """The same question imported into another training becomes that training's own question; the existing one
+    keeps its text and its training link."""
     first = world.training("FIRST", questions=1, count=1)
     second = world.training("SECOND", questions=0, count=1)
     admin = client_for(world.admin)
     existing = db.scalar(select(Question))
-    text = "\n".join([NO_TRAINING_HEADERS, no_training_row(existing.question_code, question="Relink attempt?"), no_training_row("NEW-1"), no_training_row("NEW-1")])
+    text = "\n".join([HEADERS, valid_row(existing.question_text), valid_row("New?"), valid_row("New?")])
     job = upload(admin, "QUESTIONS", "q.csv", text.encode(), second.id).json()["data"]
-    assert [r["status"] for r in job["rows"]] == ["DUPLICATE", "VALID", "DUPLICATE"]
+    assert [r["status"] for r in job["rows"]] == ["VALID", "VALID", "DUPLICATE"]
     admin.post(f"/admin/imports/{job['id']}/commit")
     db.expire_all()
     question = db.get(Question, existing.id)
-    assert question.question_text != "Relink attempt?"
     assert [t.id for t in question.trainings] == [first.id]  # The existing question stays on its training.
+    copies = db.scalars(select(Question).where(Question.question_text == existing.question_text, Question.id != existing.id)).all()
+    assert [[t.id for t in q.trainings] for q in copies] == [[second.id]]
 
 
 def test_question_import_requires_a_training_and_a_test_type(world, db, client_for):
-    """A file naming its trainings is no longer enough: the training and the test type are chosen explicitly."""
+    """The training and the test type are always chosen explicitly on the import screen."""
     training = world.training("FILE-1", questions=0, count=1)
     admin = client_for(world.admin)
-    text = "\n".join([HEADERS, valid_row("F-1", training="FILE-1")]).encode()
+    text = "\n".join([HEADERS, valid_row("F?")]).encode()
     no_training = upload(admin, "QUESTIONS", "q.csv", text)
     assert no_training.status_code == 400 and "Select the training" in no_training.json()["error"]["message"]
     no_test = upload(admin, "QUESTIONS", "q.csv", text, training.id, test_type=None)

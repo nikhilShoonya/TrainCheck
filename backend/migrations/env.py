@@ -1,6 +1,8 @@
-"""Alembic uses Neon's direct endpoint, because migrations should not pass through PgBouncer (ADR-0001)."""
-import os
+"""Alembic migrates the database in DATABASE_URL, the same one the application uses.
 
+For Neon that is the direct (non-pooler) endpoint, because migrations should not pass through PgBouncer (ADR-0001).
+The test suite runs this with DATABASE_URL pointing at its own disposable database, in a child process only.
+"""
 from alembic import context
 from sqlalchemy import create_engine, pool
 
@@ -12,9 +14,7 @@ target_metadata = Base.metadata
 
 
 def database_url() -> str:
-    settings = get_settings()
-    url = os.environ.get("ALEMBIC_DATABASE_URL") or settings.database_url_direct or settings.database_url
-    return normalise_database_url(url)
+    return normalise_database_url(get_settings().database_url)
 
 
 def run_offline() -> None:

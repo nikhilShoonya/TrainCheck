@@ -1,10 +1,19 @@
 """Test harness. Runs against a real PostgreSQL database, migrated with the real Alembic scripts.
 
-The database in TEST_DATABASE_URL is erased. The suite refuses to run against the application database.
+The database is always a disposable one that this harness creates itself: a throwaway PostgreSQL server in a
+temporary folder, listening only on 127.0.0.1 on a free port, deleted when the run ends. The tests erase it freely.
+It is never configured: there is no setting that points the tests at a database, and DATABASE_URL is blanked
+below before the application is imported, so nothing can fall back to the application database.
+
+The PostgreSQL programs (initdb, pg_ctl) come from, in order: `pytest --pg-bin <folder>`, PATH, or the portable
+copy in %LOCALAPPDATA%/TrainCheck/pgsql18/bin. Without them the database tests are refused, not redirected.
 """
 import os
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -15,6 +24,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
+# Blank, so any engine built before the disposable database is ready fails instead of reaching .env's database.
+os.environ["DATABASE_URL"] = ""
 os.environ["APP_ENV"] = "test"
 os.environ["SCHEDULER_ENABLED"] = "false"
 os.environ["RATE_LIMIT_ENABLED"] = "false"  # test_rate_limit.py switches it on for its own tests.
@@ -27,7 +38,7 @@ os.environ["FEEDBACK_REQUIRED_FROM"] = ""
 
 from app.core import clock  # noqa: E402
 from app.core import db as database
-from app.core.config import get_settings, normalise_database_url  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
 from app.core.db import Base  # noqa: E402
 from app.core.enums import AssessmentType, TrainingStatus  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
@@ -64,24 +75,87 @@ NOW = datetime(2026, 11, 4, 6, 0, tzinfo=UTC)
 _password_hash = hash_password(PASSWORD)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def migrated_database() -> Iterator[None]:
-    settings = get_settings()
-    url = settings.test_database_url
-    if not url:
-        pytest.exit("Set TEST_DATABASE_URL in backend/.env. That database will be erased.", returncode=2)
-    if normalise_database_url(url) == normalise_database_url(settings.database_url or "x://none"):
-        pytest.exit("TEST_DATABASE_URL must not be the application database.", returncode=2)
-    settings.file_storage_dir = str(BACKEND_DIR / "var" / "test-files")
+def pytest_addoption(parser) -> None:
+    parser.addoption("--pg-bin", default=None, help="Folder holding PostgreSQL's initdb and pg_ctl, for the disposable test database.")
 
-    engine = create_engine(normalise_database_url(url))
-    with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
-    engine.dispose()
-    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_DIR, check=True, env={**os.environ, "ALEMBIC_DATABASE_URL": url}, capture_output=True)
-    database.configure(url)
-    yield
+
+def _postgres_bin(config) -> Path | None:
+    candidates = [config.getoption("--pg-bin")]
+    on_path = shutil.which("initdb")
+    candidates.append(str(Path(on_path).parent) if on_path else None)
+    candidates.append(str(Path(os.environ.get("LOCALAPPDATA", "")) / "TrainCheck" / "pgsql18" / "bin") if os.environ.get("LOCALAPPDATA") else None)
+    for candidate in candidates:
+        if candidate and all((Path(candidate) / f"{tool}{'.exe' if os.name == 'nt' else ''}").exists() for tool in ("initdb", "pg_ctl")):
+            return Path(candidate)
+    return None
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class DisposablePostgres:
+    """A private PostgreSQL server in a temporary folder. Only this process knows its address."""
+
+    def __init__(self, bin_dir: Path) -> None:
+        self.bin_dir = bin_dir
+        self.root = Path(tempfile.mkdtemp(prefix="traincheck-test-pg-"))
+        self.port = _free_port()
+        # A test that waits on a lock its own session holds fails after 30 s instead of hanging the whole run.
+        self.url = f"postgresql://postgres@127.0.0.1:{self.port}/traincheck_test?options=-c%20lock_timeout%3D30000"
+
+    def _run(self, tool: str, *args: str) -> None:
+        # No pipes: the server pg_ctl starts would inherit them and keep them open, so run() would never return.
+        # Its own messages go to server.log.
+        subprocess.run([str(self.bin_dir / tool), *args], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def start(self) -> None:
+        data = str(self.root / "data")
+        self._run("initdb", "-D", data, "-U", "postgres", "-A", "trust", "-E", "UTF8", "--no-locale")
+        options = f"-p {self.port} -c listen_addresses=127.0.0.1 -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+        self._run("pg_ctl", "-D", data, "-o", options, "-l", str(self.root / "server.log"), "-w", "-t", "60", "start")
+        admin = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{self.port}/postgres", isolation_level="AUTOCOMMIT")
+        with admin.connect() as connection:
+            connection.execute(text("CREATE DATABASE traincheck_test"))
+        admin.dispose()
+
+    def stop(self) -> None:
+        try:
+            self._run("pg_ctl", "-D", str(self.root / "data"), "-m", "immediate", "-w", "stop")
+        except subprocess.CalledProcessError:
+            pass
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated_database(request) -> Iterator[None]:
+    bin_dir = _postgres_bin(request.config)
+    if bin_dir is None:
+        pytest.exit(
+            "Database tests refused: no disposable PostgreSQL is available. Pass --pg-bin <folder with initdb and pg_ctl>, "
+            "put them on PATH, or unpack the portable PostgreSQL 18 binaries to %LOCALAPPDATA%/TrainCheck/pgsql18. "
+            "The tests never use DATABASE_URL.",
+            returncode=2,
+        )
+    server = DisposablePostgres(bin_dir)
+    server.start()
+    try:
+        url = server.url
+        # Belt and braces: the harness made this database itself, on loopback, on a port it chose.
+        assert url.startswith(f"postgresql://postgres@127.0.0.1:{server.port}/traincheck_test")
+        settings = get_settings()
+        settings.database_url = url
+        settings.file_storage_dir = str(BACKEND_DIR / "var" / "test-files")
+        # Alembic reads DATABASE_URL; it is set only in the child process's environment.
+        subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_DIR, check=True, env={**os.environ, "DATABASE_URL": url}, capture_output=True)
+        database.configure(url)
+        yield
+    finally:
+        if database._engine is not None:
+            database._engine.dispose()
+        server.stop()
 
 
 @pytest.fixture(autouse=True)

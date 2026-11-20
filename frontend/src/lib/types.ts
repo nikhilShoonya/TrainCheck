@@ -17,7 +17,7 @@ export interface User {
   roles: RoleCode[];
   primary_role: RoleCode;
   /** Switched-off workflows the interface should hide. The server enforces them regardless. */
-  features?: { behaviour: boolean };
+  features?: { behaviour: boolean; password_change?: boolean };
 }
 
 /** Why an assessment could not be scheduled or started, with what L&D should do next. */

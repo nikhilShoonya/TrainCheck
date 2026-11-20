@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 from openpyxl import Workbook
+from openpyxl.styles import Font
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -21,6 +22,7 @@ from app.core.responses import iso, ok
 from app.core.routing import ReleasingRoute
 from app.models import ImportJob, Training
 from app.modules.imports import parsing, pdf_blocks, service
+from app.modules.imports import question_format as qf
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin/imports", tags=["Import Centre"])
 
@@ -66,7 +68,16 @@ def job_view(job: ImportJob, with_rows: bool = True, db: Session | None = None) 
         accepted = [r for r in job.rows if r.row_status in ("VALID", "IMPORTED")]
         data["assessments_not_scheduled"] = sum(1 for r in accepted if any(e["field"] == "assessment" for e in r.errors))
         data["assignments_created"] = sum(1 for r in accepted if any(e["field"] == "assignment" for e in r.errors))
+        # Every row outcome, so the page can say exactly what will be (or was) imported and what was skipped.
+        data["counts"] = {status: sum(1 for r in job.rows if r.row_status == status) for status in ROW_STATUSES}
+        # A question preview validated with the old template cannot be imported; it must be validated again.
+        data["needs_revalidation"] = job.status == ImportStatus.READY and service.outdated_question_preview(job)
+        # Imported questions are Easy: when the selected test's difficulty mix needs Medium or Hard ones, say so.
+        data["difficulty_notice"] = service.difficulty_notice(db, job) if db is not None else None
     return data
+
+
+ROW_STATUSES = ("VALID", "IMPORTED", "DUPLICATE", "CONFLICT", "INVALID")
 
 
 @router.get("")
@@ -77,16 +88,25 @@ def list_jobs(_: CurrentUser = Depends(require_admin), db: Session = Depends(get
 
 @router.get("/templates/{import_type}")
 def template(import_type: ImportType, format: str = "csv", _: CurrentUser = Depends(require_admin)) -> Response:
-    rows = service.TEMPLATES[import_type]
+    rows = service.template_rows(import_type)
     name = f"traincheck-{import_type.lower()}-template"
     if format == "pdf" and import_type == ImportType.QUESTIONS:
-        sample = dict(zip(rows[0], rows[1], strict=True))
-        return Response(pdf_blocks.template_pdf(sample), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{name}.pdf"'})
+        return Response(pdf_blocks.template_pdf(service.question_samples()), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{name}.pdf"'})
     if format == "xlsx":
         workbook = Workbook()
         sheet = workbook.active
         for row in rows:
             sheet.append(row)
+        if import_type == ImportType.QUESTIONS:
+            # Only the first sheet is imported, so the instructions can sit on a second one.
+            sheet.title = "Questions"
+            for cell in sheet[1]:
+                cell.font = Font(bold=True)
+            notes = workbook.create_sheet("Instructions")
+            for line in qf.SPREADSHEET_INSTRUCTIONS:
+                notes.append([line])
+            notes["A1"].font = Font(bold=True)
+            notes.column_dimensions["A"].width = 120
         buffer = io.BytesIO()
         workbook.save(buffer)
         return Response(buffer.getvalue(), media_type=XLSX_TYPE, headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'})
@@ -118,7 +138,8 @@ def upload(
     service.check_selections(import_type, training, chosen_test)
     limit = get_settings().max_upload_bytes
     content = file.file.read(limit + 1)
-    rows = parsing.read_table(file.filename or "upload", content, limit, allow_pdf=import_type == ImportType.QUESTIONS)
+    questions = import_type == ImportType.QUESTIONS
+    rows = parsing.read_table(file.filename or "upload", content, limit, allow_pdf=questions, typed_cells=questions)
     job = service.create_job(db, import_type, file.filename or "upload", rows, user.id, training, chosen_test)
     record_audit(db, user.id, "IMPORT_VALIDATED", "import_job", job.id, after={"type": import_type, "valid": job.accepted_rows, "rejected": job.rejected_rows, "training": training.training_code if training else None, "test_type": chosen_test})
     db.commit()
@@ -191,7 +212,8 @@ def replace(
     service.check_selections(ImportType(job.import_type), training, chosen_test)
     limit = get_settings().max_upload_bytes
     content = file.file.read(limit + 1)
-    rows = parsing.read_table(file.filename or "upload", content, limit, allow_pdf=job.import_type == ImportType.QUESTIONS)
+    questions = job.import_type == ImportType.QUESTIONS
+    rows = parsing.read_table(file.filename or "upload", content, limit, allow_pdf=questions, typed_cells=questions)
     before = {"file": job.file_name, "training": job.training.training_code if job.training else None, "test_type": job.test_type, "valid": job.accepted_rows, "rejected": job.rejected_rows}
     service.replace_job(db, job, file.filename or "upload", rows, user.id, training, chosen_test)
     record_audit(db, user.id, "IMPORT_EDITED", "import_job", job.id, before=before, after={"file": job.file_name, "training": training.training_code if training else None, "test_type": chosen_test, "valid": job.accepted_rows, "rejected": job.rejected_rows})

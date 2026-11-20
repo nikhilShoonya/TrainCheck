@@ -50,6 +50,7 @@ from app.modules.assessment.scheduling import CalendarView, fixed_instant, load_
 from app.modules.assessment.service import PoolData, active_config, counted_attempts, next_config_version, pool_message, pool_problem, pool_report
 from app.modules.behaviour.service import FOLLOWUP_DAYS
 from app.modules.notifications.service import notify_employee
+from app.modules.organisation.people import is_learner
 from app.modules.training import service
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["L&D Administration"])
@@ -701,6 +702,7 @@ def list_enrolments(
     db: Session = Depends(get_db),
     training_id: uuid.UUID | None = None,
     batch_id: uuid.UUID | None = None,
+    employee_id: uuid.UUID | None = None,
     search: str = Query(default="", max_length=120),
     completed: bool | None = None,
 ) -> dict:
@@ -714,13 +716,15 @@ def list_enrolments(
             joinedload(Enrolment.completion),
             selectinload(Enrolment.obligations).options(selectinload(AssessmentObligation.attempts), joinedload(AssessmentObligation.config)),
         )
-        .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
+        .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED, is_learner())
         .order_by(Employee.full_name)
     )
     if training_id:
         query = query.where(Enrolment.training_id == training_id)
     if batch_id:
         query = query.where(Enrolment.batch_id == batch_id)
+    if employee_id:  # One employee's assignments (Employee Assignments > selected employee). Cancelled stay excluded.
+        query = query.where(Enrolment.employee_id == employee_id)
     if search:
         query = query.where(Employee.full_name.ilike(f"%{search}%") | Employee.employee_code.ilike(f"%{search}%"))
     rows = db.scalars(query).unique().all()
@@ -746,7 +750,8 @@ def assign(body: AssignIn, user: CurrentUser = Depends(require_admin), db: Sessi
     else:
         if not body.employee_ids:
             raise validation("Select at least one employee.")
-        employees = list(db.scalars(select(Employee).where(Employee.id.in_(body.employee_ids))))
+        # The designated L&D Admin sign-in record cannot be assigned: it is reported as not found.
+        employees = list(db.scalars(select(Employee).where(Employee.id.in_(body.employee_ids), is_learner())))
         found = {e.id for e in employees}
         missing = [i for i in body.employee_ids if i not in found]
     result = service.assign_employees(db, training, batch, employees, missing_ids=missing)

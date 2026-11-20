@@ -249,7 +249,9 @@ function renderCell(cell: Cell): ReactNode {
   return typeof cell === "number" ? formatNumber(cell) : cell;
 }
 
-export function DataTable({ headers, rows, all, emptyTitle, emptyHint }: { headers: string[]; rows: Cell[][]; all?: boolean; emptyTitle?: string; emptyHint?: string }) {
+/** `onRowClick` (optional) makes whole rows open something; it receives the row as passed in `rows`. A row should
+ *  also hold a button for keyboard users: clicks on buttons, links and fields inside a row do not trigger it. */
+export function DataTable({ headers, rows, all, emptyTitle, emptyHint, onRowClick }: { headers: string[]; rows: Cell[][]; all?: boolean; emptyTitle?: string; emptyHint?: string; onRowClick?: (row: Cell[]) => void }) {
   const [sort, setSort] = useState<{ index: number; descending: boolean } | null>(null);
   const [page, setPage] = useState(0);
   const sorted = useMemo(() => {
@@ -294,7 +296,18 @@ export function DataTable({ headers, rows, all, emptyTitle, emptyHint }: { heade
           </thead>
           <tbody>
             {visible.map((row, r) => (
-              <tr key={r}>
+              <tr
+                key={r}
+                className={onRowClick ? "clickable-row" : undefined}
+                onClick={
+                  onRowClick
+                    ? (event) => {
+                        if ((event.target as HTMLElement).closest("button, a, input, select, textarea, label")) return;
+                        onRowClick(row);
+                      }
+                    : undefined
+                }
+              >
                 {row.map((cell, c) => (
                   <td key={c} data-label={headers[c] || undefined}>
                     {renderCell(cell)}

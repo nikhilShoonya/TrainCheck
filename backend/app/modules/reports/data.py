@@ -22,6 +22,7 @@ from app.models import (
     Enrolment,
     Training,
 )
+from app.modules.organisation.people import is_learner
 
 
 @dataclass
@@ -107,7 +108,8 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
             joinedload(Enrolment.completion),
             selectinload(Enrolment.obligations).selectinload(AssessmentObligation.attempts),
         )
-        .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED)
+        # Never the designated L&D Admin sign-in record, even if it was assigned before it was excluded.
+        .where(Enrolment.enrolment_status != EnrolmentStatus.CANCELLED, is_learner())
         .order_by(Employee.full_name, Training.title)
     )
     if scope is not None:

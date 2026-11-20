@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -13,11 +14,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", extra="ignore")
 
     app_env: str = "development"
+    # The only database setting. The API, the scheduler, operator commands and Alembic migrations all use it.
+    # For Neon, use the direct (non "-pooler") connection string. Tests never read it (see tests/conftest.py).
     database_url: str = ""
-    database_url_direct: str = ""
-    test_database_url: str = ""
 
-    # Database connections per backend process. Total across processes must stay within the Neon pooler's limit.
+    # Database connections per backend process. Total across processes must stay within the database's limit.
     db_pool_size: int = 5
     db_max_overflow: int = 5
     # Seconds a request waits for a free connection before the API answers 503 with Retry-After.
@@ -51,6 +52,15 @@ class Settings(BaseSettings):
     # Lets anyone who can reach the sign-in page erase every table and reload the synthetic demo data.
     # Only for demo environments. Always refused in production, whatever this is set to.
     demo_reset_enabled: bool = False
+
+    # false: employees cannot change their own password (the UI hides the form and the API refuses it); their
+    # password stays Fin@ + joining date as DDMMYYYY. true: employees may change it. L&D Admins always may.
+    employee_password_change_enabled: bool = False
+
+    # The designated L&D Admin account. Read only by `python -m app.manage sync-admin`, never at startup,
+    # and never sent to the browser. Changing them has no effect until that command is run.
+    admin_email: str = ""
+    admin_password: SecretStr = SecretStr("")
 
     # Rate limiting (see app/core/ratelimit.py). Limits are requests per minute per identity.
     rate_limit_enabled: bool = True

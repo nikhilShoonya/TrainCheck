@@ -11,6 +11,7 @@ from app.core.responses import iso, ok
 from app.core.routing import ReleasingRoute
 from app.models import AssessmentConfig, AuditLog, Employee, Enrolment, ImportJob, Training, UserAccount
 from app.modules.assessment.service import PoolData, pool_problem
+from app.modules.organisation.people import is_learner
 from app.modules.reports.data import departments_summary, load_rows, monthly_trend, summary
 
 router = APIRouter(route_class=ReleasingRoute, tags=["Administration"])
@@ -67,7 +68,7 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
     open_imports = db.scalars(select(ImportJob).where(ImportJob.status == ImportStatus.READY)).all()
     return ok(
         {
-            "total_employees": len(db.scalars(select(Employee.id).where(Employee.employment_status != "INACTIVE")).all()),
+            "total_employees": len(db.scalars(select(Employee.id).where(Employee.employment_status != "INACTIVE", is_learner())).all()),
             "training_programmes": len(trainings),
             "summary": summary(rows),
             "departments": departments_summary(rows),
@@ -105,6 +106,7 @@ def search(q: str = Query(min_length=1, max_length=120), user: CurrentUser = Dep
             *live,
             *scope,
             Employee.id != user.employee_id,
+            is_learner(),
             or_(func.lower(Employee.full_name).like(needle, escape=LIKE_ESCAPE), func.lower(Employee.employee_code).like(needle, escape=LIKE_ESCAPE)),
         )
         .group_by(Employee.id, Employee.full_name, Employee.employee_code)

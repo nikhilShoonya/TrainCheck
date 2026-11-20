@@ -33,25 +33,28 @@ from app.modules.imports.parsing import clip, has_formula
 
 # ---------- File layout ----------
 
-# Canonical column -> heading shown in the template and in messages.
-COLUMNS = {"name": "name", "employeeid": "employee id", "email": "email", "joiningdate": "joiningdate", "department": "department"}
-# Spelling variants accepted for a heading, after normalising (see _heading_key).
-HEADING_ALIASES = {"departement": "department"}
+# Canonical column -> heading shown in the template and in messages (Finvasia's HR export headings).
+COLUMNS = {"employeeid": "Employee Number", "name": "Full Name", "email": "Email", "joiningdate": "Date of Joining", "department": "Department"}
+# Other headings accepted for a column, after normalising (see _heading_key): Finvasia's headings, the first
+# template's headings and a common misspelling.
+HEADING_ALIASES = {"employeenumber": "employeeid", "fullname": "name", "dateofjoining": "joiningdate", "departement": "department"}
 TEMPLATE_ROWS = [
-    ["name", "employee id", "email", "joiningdate", "department"],
-    ["Asha Verma", "00123", "asha.verma@example.com", "19 Nov 2026", "OPS"],
-    ["Rohan Iyer", "E0457", "rohan.iyer@example.com", "05/01/2026", "Customer Experience"],
-    ["Meera Nair", "000789", "meera.nair@example.com", "2026-11-19", "OPS"],
+    ["Employee Number", "Full Name", "Email", "Date of Joining", "Department"],
+    ["00123", "Asha Verma", "asha.verma@example.com", "19 Nov 2026", "OPS"],
+    ["E0457", "Rohan Iyer", "rohan.iyer@example.com", "05/01/2026", "Customer Experience"],
+    ["000789", "Meera Nair", "meera.nair@example.com", "2026-11-19", "OPS"],
 ]
 MAX_NAME = 160
 MAX_CODE = 40
+# The designated L&D Admin's Employee ID, managed only by `python -m app.manage sync-admin`. Never used for employees.
+RESERVED_ADMIN_CODE = "TC-LD-ADMIN"
 MAX_EMAIL = 254
 # Serialises employee creation on PostgreSQL, so two confirmations at once cannot both pass the duplicate checks.
 CREATE_LOCK_KEY = 0x7C_EE_01
 
 
 def _heading_key(heading: str) -> str:
-    """'  Employee ID ', 'employee_id' and 'EmployeeID' all become 'employeeid'."""
+    """'  Employee Number ', 'employee_number' and 'EmployeeNumber' all become 'employeeid' (as do the Employee ID spellings)."""
     key = re.sub(r"[\s_\-]+", "", heading.replace("﻿", "").strip().lower())
     return HEADING_ALIASES.get(key, key)
 
@@ -155,6 +158,14 @@ class Directory:
         return None, f"Unknown department '{clip(value)[:80]}'. Use an existing department code or name."
 
 
+def is_learner():
+    """SQL condition: the employee record is a person who can be trained, not the designated L&D Admin sign-in record
+    (Employee ID TC-LD-ADMIN, created by `manage.py sync-admin`). That record exists only to sign in: it is never listed,
+    counted, searched, assigned, imported or reported. Admins who are also employees are learners and stay visible.
+    Duplicate checks (load_directory) still include it, so no one can take its ID or email."""
+    return func.upper(Employee.employee_code) != RESERVED_ADMIN_CODE
+
+
 def load_directory(db: Session, codes: list[str], emails: list[str]) -> Directory:
     upper_codes = sorted({c.upper() for c in codes if c})
     lower_emails = sorted({e.lower() for e in emails if e})
@@ -205,8 +216,10 @@ def check_values(c: Candidate, directory: Directory, labels: dict[str, str], res
         c.problem(labels["employeeid"], "Required.")
     elif len(c.code) > MAX_CODE:
         c.problem(labels["employeeid"], f"Use at most {MAX_CODE} characters.")
+    elif c.code.upper() == RESERVED_ADMIN_CODE:
+        c.problem(labels["employeeid"], f"Employee ID {RESERVED_ADMIN_CODE} is reserved for the designated L&D Admin. Use another ID.")
     elif c.code.upper() in directory.taken_codes:
-        c.problem(labels["employeeid"], f"Employee ID {c.code} already exists. Existing employees are not changed.")
+        c.problem(labels["employeeid"], f"{c.code} already exists. Existing employees are not changed.")
     c.email, email_problem = normalise_email(c.email)
     if email_problem:
         c.problem(labels["email"], email_problem)
@@ -245,8 +258,8 @@ def validate_file(db: Session, people: list[Candidate]) -> list[Candidate]:
     directory = load_directory(db, [p.code for p in people], [p.email.strip() for p in people])
     for person in people:
         check_values(person, directory, FILE_LABELS)
-    _flag_repeats(people, lambda p: p.code.upper(), "employee id", "Employee ID")
-    _flag_repeats(people, lambda p: p.email, "email", "Email")
+    _flag_repeats(people, lambda p: p.code.upper(), COLUMNS["employeeid"], "Employee Number")
+    _flag_repeats(people, lambda p: p.email, COLUMNS["email"], "Email")
     return people
 
 

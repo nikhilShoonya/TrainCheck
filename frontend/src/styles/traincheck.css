@@ -334,3 +334,11 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .add-employee-choice:hover,.add-employee-choice:focus-visible{border-color:var(--accent);background:var(--muted)}
 .add-employee-choice:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media(max-width:640px){.page-actions{flex-wrap:wrap;justify-content:flex-start}.add-employee-choices{grid-template-columns:1fr}}
+
+/* Employee Assignments: the employee list (kept, hidden, while one employee is open) and the selected employee. */
+.panel[hidden]{display:none}
+.clickable-row{cursor:pointer}
+.clickable-row:hover td{background:var(--muted)}
+.btn.employee-open{padding:0;min-height:0;font-weight:600;text-align:left;justify-content:flex-start}
+td .badge.warning{margin-left:8px}
+.employee-heading{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 0}

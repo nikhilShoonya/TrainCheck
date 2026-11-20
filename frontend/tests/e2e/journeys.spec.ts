@@ -182,14 +182,14 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await page.locator('input[type="file"]').setInputFiles({
     name: "bad.csv",
     mimeType: "text/csv",
-    buffer: Buffer.from("id,training\n1,2\n"),
+    buffer: Buffer.from("question,topic\n1,2\n"),
   });
   await page.getByRole("button", { name: "Validate file" }).click();
   await expect(page.getByRole("alert").first()).toContainText("Missing columns");
 
-  // A file without a training column is linked to the selected (draft) training.
-  const header = "id,topic,competency,type,question,option_a,option_b,option_c,option_d,options_extra,correct,explanation,difficulty,marks,level,language,active";
-  const questions = [1, 2].map((n) => `${code}-Q${n},Topic,Applies the documented process,single,Question ${n}?,Right,Wrong,,,,A,Because.,Easy,1,L2,English,Active`);
+  // MCQ rows go to the selected (draft) training; TrainCheck sets the ID, marks, difficulty, type and status.
+  const header = "question,option_a,option_b,option_c,option_d,correct,topic";
+  const questions = [1, 2].map((n) => `Question ${n} for ${code}?,Right,Wrong,Maybe,Never,A,Topic`);
   const file = { name: "questions.csv", mimeType: "text/csv", buffer: Buffer.from([header, ...questions].join("\n")) };
   await page.locator('input[type="file"]').setInputFiles(file);
   await page.getByRole("button", { name: "Validate file" }).click();

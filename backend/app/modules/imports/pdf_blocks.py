@@ -1,10 +1,11 @@
 """Question-bank PDFs in TrainCheck's labelled-block layout (SECURITY_PRIVACY.md §11).
 
-A PDF has no rows or columns, so question imports accept one predictable layout: every question is a block of
-"Label: value" lines, starting with "ID:". Each block becomes one row with the same columns as the CSV template, and
-then goes through exactly the same validation, duplicate and training/test-type rules. Only text is read: nothing in
-the PDF is run, followed or rendered. Free-form question papers are not interpreted (that would need AI, which is
-out of scope).
+A PDF has no rows or columns, so question imports accept one documented layout: every question is a block of
+"field: value" lines using the same seven field names as the CSV and Excel templates. Each block starts with its
+"question:" line; blocks are separated by a line of ---. Each block becomes one row and then goes through exactly the
+same validation and duplicate rules, for the training and test type selected on the import screen. Only text is read: nothing in the PDF is run, followed or
+rendered. Word documents, scanned papers and free-form question papers are not interpreted (that would need AI,
+which is out of scope).
 """
 import io
 import re
@@ -14,37 +15,21 @@ from pypdf import PdfReader
 from pypdf.errors import FileNotDecryptedError, PyPdfError
 
 from app.core.errors import ApiError
+from app.modules.imports.question_format import FIELDS, RULES
 
 MAX_PAGES = 300
 MAX_TEXT_CHARS = 2_000_000
 
-# Printed label -> template column. Order is the template's order.
-LABELS: dict[str, str] = {
-    "id": "id",
-    "training": "training",
-    "topic": "topic",
-    "competency": "competency",
-    "type": "type",
-    "question": "question",
-    "a": "option_a",
-    "b": "option_b",
-    "c": "option_c",
-    "d": "option_d",
-    "more options": "options_extra",
-    "correct": "correct",
-    "explanation": "explanation",
-    "difficulty": "difficulty",
-    "marks": "marks",
-    "level": "level",
-    "language": "language",
-    "status": "active",
-    "department": "department",
-    "function": "function",
-}
-COLUMNS = list(LABELS.values())
-_LABEL_LINE = re.compile(r"^(more options|[a-z]+)\s*:\s*(.*)$", re.IGNORECASE)
-_OPTION_LINE = re.compile(r"^([a-d])\s*\)\s*(.*)$", re.IGNORECASE)  # "A) text" is accepted for options too.
+COLUMNS = list(FIELDS)
+BLOCK_START = "question"
+# Labels of earlier PDF templates. Finding one means the file was made from an old template.
+OLD_LABELS = {"id", "training", "department", "competency", "type", "options_extra", "explanation", "difficulty", "marks", "level", "language", "status", "active", "function", "a", "b", "c", "d", "more options"}
+_LABEL_LINE = re.compile(r"^(more options|[a-z][a-z_]*)\s*:\s*(.*)$", re.IGNORECASE)
 _SEPARATOR = re.compile(r"^-{3,}$")
+UNSUPPORTED = (
+    "Use the TrainCheck PDF template: each question is a block of \"field: value\" lines that starts with \"question:\", with blocks separated by ---. "
+    "Scanned (image-only) PDFs and question papers in any other layout cannot be imported."
+)
 
 
 def _bad_file(message: str) -> ApiError:
@@ -84,8 +69,9 @@ def read_pdf_text(content: bytes) -> str:
 
 
 def parse_blocks(text: str) -> TableRows:
-    """Turns labelled blocks into template rows. Lines before the first "ID:" (a title or instructions) are ignored.
-    A line without a known label continues the previous value, so wrapped text is joined back together."""
+    """Turns labelled blocks into template rows. A "question:" line starts a question; a --- line ends one.
+    Text before the first question (a title or instructions) is ignored. A line that does not start with a field
+    label continues the previous value, so wrapped text is joined back together."""
     blocks: list[dict[str, str]] = []
     current: dict[str, str] | None = None
     last: str | None = None
@@ -97,28 +83,30 @@ def parse_blocks(text: str) -> TableRows:
             current, last = None, None
             continue
         match = _LABEL_LINE.match(line)
-        column = LABELS.get(match.group(1).lower()) if match else None
+        label = match.group(1).lower() if match else None
+        if label in OLD_LABELS:
+            raise _bad_file(f'This PDF uses an old question template (it has the label "{match.group(1)}:"). Download the new PDF template: each question has only question, option_a, option_b, option_c, option_d, correct and topic.')
+        column = label if label in COLUMNS else None
         value = match.group(2).strip() if match else ""
-        if column is None:
-            option = _OPTION_LINE.match(line)
-            if option:
-                column, value = LABELS[option.group(1).lower()], option.group(2).strip()
-        if column == "id":
-            current = {"id": value}
+        if column == BLOCK_START:
+            current = {BLOCK_START: value}
             blocks.append(current)
-            last = "id"
+            last = column
             continue
         if current is None:
-            continue  # Title, instructions or anything else before the first question.
+            if column is not None:
+                where = f"after question {len(blocks)}" if blocks else "before the first question"
+                raise _bad_file(f'Found "{match.group(1)}:" {where} without a "question:" line. Every question block must start with "question:". {UNSUPPORTED}')
+            continue  # Title, instructions or anything else outside a question.
         if column is not None:
             if column in current:
-                raise _bad_file(f"Question {len(blocks)} ({current.get('id') or 'no ID'}) has the label \"{line.split(':')[0].split(')')[0].strip()}\" twice. Each label can appear once per question.")
+                raise _bad_file(f'Question {len(blocks)} has the label "{match.group(1)}:" twice. Each label can appear once per question.')
             current[column] = value
             last = column
         elif last is not None:
             current[last] = f"{current[last]} {line}".strip()
     if not blocks:
-        raise _bad_file('No questions were found. Use the TrainCheck PDF template: each question starts with a line "ID: ...". Scanned (image-only) PDFs cannot be read.')
+        raise _bad_file(f"No questions were found. {UNSUPPORTED}")
     rows = TableRows([COLUMNS])
     rows.first_data_row = 1
     rows.extend([block.get(c, "") for c in COLUMNS] for block in blocks)
@@ -129,17 +117,16 @@ def parse_blocks(text: str) -> TableRows:
 
 INSTRUCTIONS = [
     "TrainCheck question import template (PDF)",
-    "Write each question as a block of 'Label: value' lines, starting with 'ID:'. Separate questions with a line of ---.",
-    "Required: ID, Topic, Competency, Type, Question, A, B, Correct, Difficulty, Marks, Level, Language, Status.",
-    "Optional: Training (must match the training you select), C, D, More options (separated by |), Explanation,",
-    "Department, Function. Type: single, multiple, boolean or scenario. Correct: option letters, e.g. B or A|C.",
-    "Difficulty: Easy, Medium or Hard. Level: L2. Language: English, Hindi or Hinglish. Status: Active or Inactive.",
+    "Write each question as a block of lines in the form   field: value   using the field names shown in the samples.",
+    "Every question block starts with its question line. Separate the blocks with a line of three dashes (---).",
+    *RULES,
     "Long text may wrap onto the next lines. Problems are reported by question number (Row 1 = first question).",
+    "Only text PDFs laid out like this template can be read. Scanned or free-form question papers cannot be imported.",
 ]
 
 
-def template_pdf(sample: dict[str, str]) -> bytes:
-    """A PDF template in the block layout, with one sample question. Reading it back gives the sample row."""
+def template_pdf(samples: list[dict[str, str]]) -> bytes:
+    """A PDF template in the block layout, with sample questions. Reading it back gives the sample rows."""
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
 
@@ -160,20 +147,16 @@ def template_pdf(sample: dict[str, str]) -> bytes:
 
     write(INSTRUCTIONS[0], "Helvetica-Bold", 13)
     for line in INSTRUCTIONS[1:]:
-        write(line, size=9)
-    y -= 10
-    printed = {column: label for label, column in LABELS.items()}
-    for column in COLUMNS:
-        value = sample.get(column, "")
-        if not value and column not in ("training", "option_c", "option_d", "explanation"):
-            continue
-        label = printed[column]
-        label = label.upper() if len(label) == 1 or label == "id" else label.capitalize()
-        lines = textwrap.wrap(f"{label}: {value}", 95) or [f"{label}:"]
-        write(lines[0])
-        for more in lines[1:]:
-            write(f"    {more}")
-    write("---")
+        for part in textwrap.wrap(line, 112):
+            write(part, size=9)
+    for sample in samples:
+        y -= 10
+        for column in COLUMNS:
+            lines = textwrap.wrap(f"{column}: {sample.get(column, '')}", 95) or [f"{column}:"]
+            write(lines[0])
+            for more in lines[1:]:
+                write(f"    {more}")
+        write("---")
     pdf.showPage()
     pdf.save()
     return buffer.getvalue()

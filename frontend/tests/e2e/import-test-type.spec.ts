@@ -15,11 +15,12 @@ async function call(page: Page, method: string, path: string, body?: unknown) {
   );
 }
 
-const HEADER = "id,topic,competency,type,question,option_a,option_b,option_c,option_d,options_extra,correct,explanation,difficulty,marks,level,language,active";
-const questionFile = (name: string, codes: string[]) => ({
+/* The MCQ format: question, four options, one correct letter and a topic. The training is chosen on the screen. */
+const HEADER = "question,option_a,option_b,option_c,option_d,correct,topic";
+const questionFile = (name: string, questions: string[]) => ({
   name,
   mimeType: "text/csv",
-  buffer: Buffer.from([HEADER, ...codes.map((c) => `${c},Topic,Applies the documented process,single,${c}?,Right,Wrong,,,,A,Because.,Easy,1,L2,English,Active`)].join("\n")),
+  buffer: Buffer.from([HEADER, ...questions.map((q) => `${q}?,Right,Wrong,Maybe,Never,A,Topic`)].join("\n")),
 });
 
 async function draftTraining(page: Page) {
@@ -126,6 +127,9 @@ test("a question PDF in the TrainCheck template is validated and imported like a
   const { label } = await draftTraining(page);
   await page.goto("/lnd/imports");
   await expect(page.locator('input[type="file"]')).toHaveAttribute("accept", ".csv,.xlsx,.pdf");
+  // The template names no training: the questions go to the training selected here.
+  await page.getByLabel("Select training *").selectOption({ label });
+  await page.getByLabel("Test type *").selectOption("POST_TEST");
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download PDF template" }).click();
   const saved = await download;
@@ -133,14 +137,20 @@ test("a question PDF in the TrainCheck template is validated and imported like a
   // Playwright stores downloads without their extension, so upload the bytes under the downloaded name.
   const pdf = { name: saved.suggestedFilename(), mimeType: "application/pdf", buffer: await readFile(await saved.path()) };
 
-  await page.getByLabel("Select training *").selectOption({ label });
-  await page.getByLabel("Test type *").selectOption("POST_TEST");
   await page.locator('input[type="file"]').setInputFiles(pdf);
   await page.getByRole("button", { name: "Validate file" }).click();
-  await expect(page.locator("#import-summary")).toContainText("1 valid, 0 rejected");
+  await expect(page.locator("#import-summary")).toContainText("3 rows will be imported; 0 duplicates skipped, 0 conflicts skipped for review, 0 rows with errors");
   await expect(page.locator("#import-preview")).toContainText("Test type: Post-test");
-  await page.getByRole("button", { name: "Import 1 valid row" }).click();
-  await expect(page.locator("#import-summary")).toContainText("Import finished. 1 row imported");
+  await expect(page.locator("#import-confirm-summary")).toContainText("1 mark at Easy difficulty");
+  await expect(page.locator("#import-confirm-summary")).toContainText("saved as Active");
+  await page.getByRole("button", { name: "Import 3 valid rows" }).click();
+  await expect(page.locator("#import-summary")).toContainText("Import finished. 3 rows imported");
+
+  // The same file again: every question is already in this pool, so nothing would be imported.
+  await page.locator('input[type="file"]').setInputFiles(pdf);
+  await page.getByRole("button", { name: "Validate file" }).click();
+  await expect(page.locator("#import-summary")).toContainText("0 rows will be imported; 3 duplicates skipped");
+  await expect(page.locator("#import-preview")).toContainText("Duplicate · skipped");
 
   // Completion imports keep to CSV and Excel.
   await page.getByLabel("Import type").selectOption("COMPLETIONS");

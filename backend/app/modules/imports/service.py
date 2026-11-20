@@ -1,10 +1,9 @@
 """Question-bank and completion imports. Validate, preview, then commit only valid rows."""
-import re
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
-from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -12,33 +11,38 @@ from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.enums import AssessmentType, AttendanceStatus, EnrolmentStatus, ImportStatus, ImportType, QuestionStatus, TrainingStatus
 from app.core.errors import ApiError, conflict, validation
-from app.models import Competency, Department, Employee, Enrolment, Function, ImportJob, ImportJobRow, Question, QuestionRevision, QuestionTrainingTag, Training, TrainingCompletion
+from app.models import Employee, Enrolment, ImportJob, ImportJobRow, Question, QuestionRevision, QuestionTrainingTag, Training, TrainingCompletion
 from app.modules.assessment.scheduling import load_calendar
+from app.modules.assessment.service import active_config, pool_report
+from app.modules.imports import question_format as qf
 from app.modules.imports.parsing import clip, has_formula
-from app.modules.question_bank.router import question_problem, revision_snapshot, set_content
+from app.modules.organisation.people import is_learner
+from app.modules.question_bank.router import revision_snapshot, set_content
 from app.modules.training import service as training_service
 
-QUESTION_HEADERS = ["id", "training", "topic", "competency", "type", "question", "option_a", "option_b", "option_c", "option_d", "options_extra", "correct", "explanation", "difficulty", "marks", "level", "language", "active"]
-QUESTION_OPTIONAL_HEADERS = ["department", "function"]
 COMPLETION_HEADERS = ["employee", "training", "completion_date"]
 COMPLETION_OPTIONAL_HEADERS = ["attendance", "source_event_id"]
 # PENDING is not an attendance outcome, so a file cannot import it. Blank means Present.
 IMPORT_ATTENDANCE = {a.value for a in AttendanceStatus} - {AttendanceStatus.PENDING.value}
-TYPE_MAP = {"single": "MCQ_SINGLE", "multiple": "MCQ_MULTIPLE", "boolean": "TRUE_FALSE", "scenario": "SCENARIO"}
-DIFFICULTY_MAP = {"Easy": "EASY", "Medium": "MEDIUM", "Hard": "HARD"}
 # Questions can be prepared before activation, so Draft trainings are accepted; Archived ones are not.
 IMPORTABLE_TRAINING_STATUSES = (TrainingStatus.DRAFT, TrainingStatus.ACTIVE)
 
-TEMPLATES = {
-    ImportType.QUESTIONS: [
-        QUESTION_HEADERS + QUESTION_OPTIONAL_HEADERS,
-        ["SAMPLE-Q01", "", "Identity checks", "Applies the documented process", "single", "A customer uploads an expired address proof. What should you do?", "Approve it because the name matches", "Request a valid document through the approved process", "Ask a colleague to approve it", "Close the application without notice", "", "B", "Expired documents cannot complete verification.", "Easy", "1", "L2", "English", "Active", "", ""],
-    ],
-    ImportType.COMPLETIONS: [
-        COMPLETION_HEADERS + COMPLETION_OPTIONAL_HEADERS,
-        ["E001", "T003", "2026-11-03", "PRESENT", ""],
-    ],
-}
+# Three sample MCQs: four options and one correct letter each.
+QUESTION_SAMPLES = [
+    {"question": "A customer uploads an expired address proof. What should you do?", "option_a": "Approve it because the name matches", "option_b": "Request a valid document through the approved process", "option_c": "Ask a colleague to approve it", "option_d": "Close the application without notice", "correct": "B", "topic": "Identity checks"},
+    {"question": "Which of these can be accepted as current proof of address?", "option_a": "A passport that expired last year", "option_b": "A handwritten note from a neighbour", "option_c": "A bank statement dated this quarter", "option_d": "A photo of an unsigned form", "correct": "C", "topic": "Identity checks"},
+    {"question": "How should customer identity documents be shared with a colleague?", "option_a": "Through personal email", "option_b": "Through the approved document system", "option_c": "Through a messaging app", "option_d": "On a printed copy left at the desk", "correct": "B", "topic": "Data protection"},
+]
+
+
+def question_samples() -> list[dict[str, str]]:
+    return [dict(sample) for sample in QUESTION_SAMPLES]
+
+
+def template_rows(import_type: ImportType) -> list[list[str]]:
+    if import_type == ImportType.QUESTIONS:
+        return [list(qf.FIELDS)] + [[sample[f] for f in qf.FIELDS] for sample in question_samples()]
+    return [COMPLETION_HEADERS + COMPLETION_OPTIONAL_HEADERS, ["E001", "T003", "2026-11-03", "PRESENT", ""]]
 
 
 def _header_map(rows: list[list[str]], required: list[str]) -> dict[str, int]:
@@ -47,6 +51,24 @@ def _header_map(rows: list[list[str]], required: list[str]) -> dict[str, int]:
     if missing:
         raise ApiError(400, "INVALID_HEADERS", f"Use the TrainCheck template. Missing columns: {', '.join(missing)}.")
     return {h: i for i, h in enumerate(headers)}
+
+
+def _question_header_map(rows: list[list[str]]) -> dict[str, int]:
+    """The seven-field MCQ format. Earlier-template and unknown columns are refused, never silently ignored."""
+    headers = [h.strip().lower().lstrip("﻿") for h in rows[0]]
+    old = [h for h in qf.OLD_COLUMNS if h in headers]
+    if old:
+        raise ApiError(400, "INVALID_HEADERS", f"This file uses an old question template (column{'s' if len(old) > 1 else ''} {', '.join(old)}). Download the new template: it has only question, option_a, option_b, option_c, option_d, correct and topic. The training and test type are chosen on the import screen; TrainCheck sets the rest.")
+    unknown = [h for h in headers if h and h not in qf.FIELDS]
+    if unknown:
+        raise ApiError(400, "INVALID_HEADERS", f"Use the TrainCheck question template. Unknown columns: {', '.join(unknown)}.")
+    repeated = sorted({h for h in headers if h and headers.count(h) > 1})
+    if repeated:
+        raise ApiError(400, "INVALID_HEADERS", f"Use the TrainCheck question template. Columns appearing more than once: {', '.join(repeated)}.")
+    missing = [h for h in qf.REQUIRED if h not in headers]
+    if missing:
+        raise ApiError(400, "INVALID_HEADERS", f"Use the TrainCheck question template. Missing columns: {', '.join(missing)}.")
+    return {h: i for i, h in enumerate(headers) if h}
 
 
 def _cells(row: list[str], headers: dict[str, int]) -> dict[str, str]:
@@ -58,8 +80,6 @@ def _error(field: str, message: str) -> dict[str, str]:
 
 
 # ---------- Validation ----------
-
-DUPLICATE_EXISTING = "This question ID already exists in the Question Bank. The row was skipped: the existing question, its answer key and its training and test-type links were not changed."
 
 
 class Lookups:
@@ -77,26 +97,16 @@ class Lookups:
         self.trainings: dict[str, Training] = {
             t.training_code.upper(): t for t in db.scalars(select(Training).where(func.upper(Training.training_code).in_(training_codes)))
         } if training_codes else {}
-        self.question_codes: set[str] = set()
-        self.departments: dict[str, uuid.UUID] = {}
-        self.functions: dict[str, uuid.UUID] = {}
         self.employees: dict[str, Employee] = {}
         self.live: dict[tuple[uuid.UUID, uuid.UUID], Enrolment] = {}
         self.cancelled: set[tuple[uuid.UUID, uuid.UUID]] = set()
         self.events: set[str] = set()
         if import_type == ImportType.QUESTIONS:
-            codes = upper(c.get("id", "") for c in cells)
-            if codes:
-                self.question_codes = upper(db.scalars(select(Question.question_code).where(func.upper(Question.question_code).in_(codes))))
-            departments, functions = upper(c.get("department", "") for c in cells), upper(c.get("function", "") for c in cells)
-            if departments:
-                self.departments = {code.upper(): i for code, i in db.execute(select(Department.code, Department.id).where(func.upper(Department.code).in_(departments)))}
-            if functions:
-                self.functions = {code.upper(): i for code, i in db.execute(select(Function.code, Function.id).where(func.upper(Function.code).in_(functions)))}
-            return
+            return  # Question rows name no training, department or competency: nothing to look up per row.
         employee_codes = upper(c.get("employee", "") for c in cells)
         if employee_codes:
-            self.employees = {e.employee_code.upper(): e for e in db.scalars(select(Employee).where(func.upper(Employee.employee_code).in_(employee_codes)))}
+            # The designated L&D Admin sign-in record is not a learner: its ID reads as an unknown employee.
+            self.employees = {e.employee_code.upper(): e for e in db.scalars(select(Employee).where(func.upper(Employee.employee_code).in_(employee_codes), is_learner()))}
         employee_ids, training_ids = [e.id for e in self.employees.values()], [t.id for t in self.trainings.values()]
         if employee_ids and training_ids:
             for enrolment in db.scalars(
@@ -164,90 +174,99 @@ def training_import_problem(training: Training) -> ApiError | None:
 
 
 def _validate_question(v: dict[str, str], seen: set[str], db: Session, context: dict) -> tuple[list[dict[str, str]], str, dict | None]:
+    """One row of the seven-field MCQ format. Duplicates and conflicts are decided afterwards for the whole file
+    (_classify_questions), because they depend on the other rows and on the selected training's pool."""
     selected: Training = context["training"]
-    required = ("id", "topic", "competency", "type", "question", "option_a", "option_b", "correct", "difficulty", "marks", "level", "language", "active")
-    errors = [_error(k, "Required.") for k in required if not v.get(k)]
+    errors = [_error(k, "Required.") for k in qf.REQUIRED if not v.get(k)]
     errors += [_error(k, "Use plain values, not formulas.") for k, value in v.items() if has_formula(value)]
-    status = "INVALID" if errors else "VALID"
 
-    lookups: Lookups = context["lookups"]
-    code = v.get("id", "").upper()
-    repeated, existing = code in seen, bool(code and code in lookups.question_codes)
-    seen.add(code)
+    if len(v.get("topic", "")) > qf.MAX_TOPIC:
+        errors.append(_error("topic", f"Use at most {qf.MAX_TOPIC:,} characters."))
+    if len(v.get("question", "")) > qf.MAX_TEXT:
+        errors.append(_error("question", f"Use at most {qf.MAX_TEXT:,} characters."))
+    elif v.get("question") and len(v["question"]) < qf.MIN_QUESTION:
+        errors.append(_error("question", f"Use at least {qf.MIN_QUESTION} characters."))
 
-    # A blank training cell uses the selection. A code must match it: a mismatch is never overridden.
-    if v.get("training") and v["training"].upper() != selected.training_code.upper():
-        errors.append(_error("training", f"This row is for training {v['training']}, but the selected training is {selected.training_code}. Leave the cell blank, correct the code, or select the matching training."))
+    # Four options, all different. Compared as the duplicate check compares them: case and spacing do not count.
+    options = [v.get(field, "") for field in qf.OPTION_FIELDS]
+    if all(options):
+        seen_options: dict[str, str] = {}
+        for field, option in zip(qf.OPTION_FIELDS, options, strict=True):
+            key = qf.normalise(option)
+            if key in seen_options:
+                errors.append(_error(field, f"This option is the same as {seen_options[key]}. Give four different options."))
+            else:
+                seen_options[key] = field
 
-    question_type = TYPE_MAP.get(v.get("type", "").lower())
-    if v.get("type") and question_type is None:
-        errors.append(_error("type", "Use single, multiple, boolean or scenario."))
-    difficulty = DIFFICULTY_MAP.get(v.get("difficulty", ""))
-    if v.get("difficulty") and difficulty is None:
-        errors.append(_error("difficulty", "Use Easy, Medium or Hard."))
-
-    marks = None
-    try:
-        marks = Decimal(v.get("marks") or "x")
-        if not 0 < marks <= 100:
-            errors.append(_error("marks", "Use a positive number up to 100."))
-    except InvalidOperation:
-        if v.get("marks"):
-            errors.append(_error("marks", "Use a positive number up to 100."))
-
-    if v.get("level") and v["level"] != "L2":
-        errors.append(_error("level", "Assessment questions must be L2."))
-    if v.get("active") and v["active"] not in ("Active", "Inactive"):
-        errors.append(_error("active", "Use Active or Inactive."))
-
-    options = [v.get(k, "") for k in ("option_a", "option_b", "option_c", "option_d")]
-    options = [o for o in options if o] + [o.strip() for o in v.get("options_extra", "").split("|") if o.strip()]
-    letters = [c.strip().upper() for c in re.split(r"[|,]", v.get("correct", "")) if c.strip()]
-    if any(len(letter) != 1 or not "A" <= letter <= "Z" for letter in letters):
-        errors.append(_error("correct", "Use option letters such as A or A|C."))
-        correct: list[int] = []
-    else:
-        correct = [ord(letter) - 65 for letter in letters]
-    if question_type and v.get("correct") and not any(e["field"] == "correct" for e in errors):
-        problem = question_problem(question_type, options, correct, v.get("language") or "English")
+    correct = None
+    if v.get("correct"):
+        correct, problem = qf.correct_letter(v["correct"])
         if problem:
-            errors.append(_error("correct" if "orrect" in problem else "language" if "Language" in problem else "options", problem))
-
-    department_id = function_id = None
-    if v.get("department"):
-        department_id = lookups.departments.get(v["department"].upper())
-        if department_id is None:
-            errors.append(_error("department", "Use an existing department code."))
-    if v.get("function"):
-        function_id = lookups.functions.get(v["function"].upper())
-        if function_id is None:
-            errors.append(_error("function", "Use an existing function code."))
+            errors.append(_error("correct", problem))
 
     if errors:
         return errors, "INVALID", None
-    # Never silently overwrite an existing question or answer key, or change its training or test-type links.
-    if existing:
-        return [_error("id", DUPLICATE_EXISTING)], "DUPLICATE", None
-    if repeated:
-        return [_error("id", "This question ID appears more than once in this file. Only its first row is used; this row was skipped.")], "DUPLICATE", None
-    return [], status, {
-        "question_code": code,
+    return [], "VALID", {
+        "format": qf.PAYLOAD_FORMAT,
         "training_id": str(selected.id),
         "test_type": context["test_type"],
         "topic": v["topic"],
-        "competency": v["competency"],
-        "question_type": question_type,
+        "question_type": qf.IMPORT_TYPE,
         "question_text": v["question"],
         "options": options,
-        "correct": correct,
-        "explanation": v.get("explanation") or None,
-        "difficulty": difficulty,
-        "marks": str(marks),
-        "language": v["language"],
-        "status": QuestionStatus.ACTIVE if v["active"] == "Active" else QuestionStatus.INACTIVE,
-        "department_id": str(department_id) if department_id else None,
-        "function_id": str(function_id) if function_id else None,
+        "correct": [correct],
     }
+
+
+@dataclass
+class _Row:
+    number: int
+    status: str
+    record: str
+    errors: list[dict[str, str]]
+    payload: dict | None
+
+
+OTHER_TEST_TYPE = {AssessmentType.PRE_TEST.value: AssessmentType.POST_TEST.value, AssessmentType.POST_TEST.value: AssessmentType.PRE_TEST.value}
+
+
+def _classify_questions(rows: list[_Row], pool: qf.Pool, test_type: str) -> None:
+    """Content-based duplicates and conflicts, scoped to the selected training and test type.
+
+    Against the pool: identical content is a duplicate (skipped); the same text with different content is a conflict
+    (skipped for review, never overwritten). Within the file: identical repeats after the first row are duplicates;
+    rows sharing a text with different content are all conflicts, because the right version cannot be chosen.
+    """
+    label, other = TEST_TYPE_LABEL[test_type], TEST_TYPE_LABEL[OTHER_TEST_TYPE[test_type]]
+    groups: dict[str, list[_Row]] = {}
+    for row in rows:
+        if row.status != "VALID":
+            continue
+        found = pool.match(row.payload, label)
+        if found:
+            row.status, row.errors, row.payload = found[0], [_error("question", found[1])], None
+            continue
+        groups.setdefault(qf.content_key(row.payload["question_text"]), []).append(row)
+    for members in groups.values():
+        if len(members) == 1:
+            continue
+        first = members[0]
+        signatures = [qf.payload_signature(m.payload) for m in members]
+        if all(sig == signatures[0] for sig in signatures):
+            for row in members[1:]:
+                row.status, row.payload = "DUPLICATE", None
+                row.errors = [_error("question", f"Same question as row {first.number} in this file. Only row {first.number} is imported; this row was skipped.")]
+            continue
+        numbers = ", ".join(str(m.number) for m in members)
+        changed = ", ".join(dict.fromkeys(d for sig in signatures[1:] for d in qf.differences(signatures[0], sig)))
+        for row in members:
+            row.status, row.payload = "CONFLICT", None
+            row.errors = [_error("question", f"Rows {numbers} have the same question text but different {changed}. None of them is imported, because the right version cannot be chosen automatically. Correct the file and validate it again. {qf.GENERIC_STEM_HINT}")]
+    for row in rows:
+        if row.status == "VALID":
+            note = pool.other_test_note(row.payload, label, other)
+            if note:
+                row.errors = [_error("note", note)]
 
 
 def completion_eligibility(db: Session, employee: Employee, training: Training, attendance: str, lookups: "Lookups | None" = None) -> tuple[ApiError | None, bool]:
@@ -360,9 +379,7 @@ def replace_job(db: Session, job: ImportJob, file_name: str, rows: list[list[str
 def _row_rules(import_type: ImportType, rows: list[list[str]], training: Training | None, test_type: str | None):
     check_selections(import_type, training, test_type)
     if import_type == ImportType.QUESTIONS:
-        # The training is selected, so the file's training column is optional.
-        headers = _header_map(rows, [h for h in QUESTION_HEADERS if h != "training"])
-        return _validate_question, "id", headers
+        return _validate_question, "question", _question_header_map(rows)
     return _validate_completion, "employee", _header_map(rows, COMPLETION_HEADERS)
 
 
@@ -371,53 +388,72 @@ def _validate_rows(db: Session, job: ImportJob, rows: list[list[str]], training:
     seen: set[str] = set()
     all_cells = [_cells(row, headers) for row in rows[1:]]
     context: dict = {"events": set(), "readiness": {}, "training": training, "test_type": test_type, "lookups": Lookups(db, import_type, all_cells)}
-    accepted = rejected = 0
+    results: list[_Row] = []
     # Spreadsheets number data rows from 2 (row 1 is the header); PDFs number question blocks from 1.
     for number, cells in enumerate(all_cells, start=getattr(rows, "first_data_row", 2)):
         errors, status, payload = validate(cells, seen, db, context)
-        accepted += status == "VALID"
-        rejected += status != "VALID"
-        record = cells.get(label, "") or f"Row {number}"
-        if import_type == ImportType.COMPLETIONS and cells.get("training"):
-            record = f"{record} · {cells['training']}"  # Each row names its own training.
-        db.add(ImportJobRow(import_job_id=job.id, row_number=number, row_status=status, record_label=record[:200], errors=errors, payload=payload))
-    job.accepted_rows, job.rejected_rows = accepted, rejected
+        if import_type == ImportType.QUESTIONS:
+            record = qf.excerpt(cells.get("question", "")) or f"Row {number}"
+        else:
+            record = cells.get(label, "") or f"Row {number}"
+            if cells.get("training"):
+                record = f"{record} · {cells['training']}"  # Each row names its own training.
+        results.append(_Row(number, status, record, errors, payload))
+    if import_type == ImportType.QUESTIONS:
+        _classify_questions(results, qf.Pool(db, training.id, test_type), test_type)
+    for row in results:
+        db.add(ImportJobRow(import_job_id=job.id, row_number=row.number, row_status=row.status, record_label=row.record[:200], errors=row.errors, payload=row.payload))
+    job.accepted_rows = sum(1 for r in results if r.status == "VALID")
+    job.rejected_rows = len(results) - job.accepted_rows
     db.flush()
 
 
 # ---------- Commit ----------
 
-def _competency(db: Session, name: str) -> Competency:
-    competency = db.scalar(select(Competency).where(func.lower(Competency.name) == name.lower()))
-    if competency is None:
-        competency = Competency(code=uuid.uuid4().hex[:12].upper(), name=name)
-        db.add(competency)
-        db.flush()
-    return competency
+CODE_ATTEMPTS = 3
 
 
-def _commit_question(db: Session, payload: dict, user_id: uuid.UUID, training: Training, test_type: str) -> None:
-    question = Question(
-        question_code=payload["question_code"],
-        topic=payload["topic"],
-        competency_id=_competency(db, payload["competency"]).id,
-        department_id=payload["department_id"],
-        function_id=payload["function_id"],
-        question_type=payload["question_type"],
-        question_text=payload["question_text"],
-        explanation=payload["explanation"],
-        difficulty=payload["difficulty"],
-        language=payload["language"],
-        marks=Decimal(payload["marks"]),
-        status=payload["status"],
-        created_by=user_id,
-    )
-    db.add(question)
-    db.flush()
+def _commit_question(db: Session, payload: dict, user_id: uuid.UUID, training: Training, test_type: str, taken: set[str]) -> str:
+    """Creates one confirmed question and returns its generated ID.
+
+    Backend-managed fields: a new unique question ID; Single choice; 1 mark and Easy difficulty; no competency,
+    explanation, department or function; Active status, because L&D Admin has reviewed the preview and confirmed it
+    (the question can be drawn by the selected test straight away and can be deactivated in the Question Bank); the
+    internal English language default; L2 is implicit. The text is stored as supplied.
+    """
+    for attempt in range(CODE_ATTEMPTS):
+        question = Question(
+            question_code=qf.new_code(db, taken),
+            topic=payload["topic"],
+            competency_id=None,
+            department_id=None,
+            function_id=None,
+            question_type=payload["question_type"],
+            question_text=payload["question_text"],
+            explanation=None,
+            difficulty=qf.DEFAULT_DIFFICULTY,
+            language=qf.IMPORT_LANGUAGE,
+            marks=qf.DEFAULT_MARKS,
+            status=QuestionStatus.ACTIVE,
+            created_by=user_id,
+        )
+        attempt_point = db.begin_nested()
+        try:
+            db.add(question)
+            db.flush()
+        except IntegrityError:
+            # Only a concurrent insert of the same generated ID can collide: try another ID.
+            attempt_point.rollback()
+            if attempt == CODE_ATTEMPTS - 1:
+                raise
+            continue
+        attempt_point.commit()
+        break
     # The one link this import makes: the selected training, for the selected test only.
     db.add(QuestionTrainingTag(question_id=question.id, training_id=training.id, test_type=test_type))
     set_content(db, question, payload["options"], payload["correct"])
     db.add(QuestionRevision(question_id=question.id, version=1, content_snapshot=revision_snapshot(db, question), changed_by=user_id))
+    return question.question_code
 
 
 def _commit_completion(db: Session, payload: dict, user_id: uuid.UUID, job_id: uuid.UUID) -> list[dict[str, str]]:
@@ -462,6 +498,49 @@ def check_commit_selection(job: ImportJob, training_id: str | None, test_type: s
         raise conflict("IMPORT_SELECTION_CHANGED", "The training or test type was changed after this file was validated. Validate the file again before importing.")
 
 
+# Namespace of the two-key advisory lock taken while question imports into one training are confirmed.
+QUESTION_IMPORT_LOCK = 0x7C_EE_02
+
+
+def lock_training_imports(db: Session, training_id: uuid.UUID) -> None:
+    """Confirmations into the same training run one after another, until the transaction ends, so two imports of the
+    same file (or a double-click) cannot both pass the duplicate recheck. Other trainings are not held up."""
+    key = int.from_bytes(training_id.bytes[:4], "big", signed=True)
+    db.execute(text("SELECT pg_advisory_xact_lock(CAST(:space AS integer), CAST(:key AS integer))"), {"space": QUESTION_IMPORT_LOCK, "key": key})
+
+
+def difficulty_notice(db: Session, job: ImportJob) -> str | None:
+    """Imported questions are Easy. When the selected test's active configuration requires Medium or Hard questions
+    that the pool does not have (counting this import's questions as Easy), say so: readiness will report the same
+    shortfall and keep blocking until L&D changes difficulties in the Question Bank or the configured mix."""
+    if job.import_type != ImportType.QUESTIONS or job.training_id is None or job.test_type is None:
+        return None
+    config = active_config(db, job.training_id, job.test_type)
+    if config is None or not config.difficulty_mix:
+        return None
+    report = pool_report(db, job.training_id, config.question_count, config.difficulty_mix, assessment_type=job.test_type)
+    available = dict(report["eligible_by_difficulty"])
+    if job.status == ImportStatus.READY:
+        available[qf.DEFAULT_DIFFICULTY] += sum(1 for r in job.rows if r.row_status == "VALID")
+    short = [(level, config.difficulty_mix.get(level, 0), available[level]) for level in ("EASY", "MEDIUM", "HARD") if config.difficulty_mix.get(level, 0) > available[level]]
+    if not short:
+        return None
+    test = TEST_TYPE_LABEL[job.test_type]
+    needs = ", ".join(f"{wanted} {level.title()}" for level, wanted, _ in short)
+    has = ", ".join(f"{have} {level.title()}" for level, _, have in short)
+    after = "after this import" if job.status == ImportStatus.READY else "now"
+    return (
+        f"This training's {test} configuration requires {needs} questions; available {after}: {has}. "
+        "Imported questions are Easy, so they do not count toward Medium or Hard. The assessment stays not ready until you change "
+        "question difficulties in the Question Bank or adjust the difficulty mix in Assessment Configuration."
+    )
+
+
+def outdated_question_preview(job: ImportJob) -> bool:
+    """A question preview validated with the old template (its rows carry a file-supplied ID, type and status)."""
+    return job.import_type == ImportType.QUESTIONS and any(r.row_status == "VALID" and (not r.payload or r.payload.get("format") != qf.PAYLOAD_FORMAT) for r in job.rows)
+
+
 def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
     """Re-validates every row at commit time. Invalid and duplicate rows are never applied.
 
@@ -479,8 +558,14 @@ def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
         problem = training_import_problem(job.training)
         if problem:
             raise ApiError(409, problem.code, f"{problem.message} Cancel this preview and validate the file again.")
+        if outdated_question_preview(job):
+            raise conflict("IMPORT_NEEDS_REVALIDATION", "This preview was validated with an old question template. Edit the import and validate a file made from the new template before importing.")
+        # Duplicates and conflicts are checked again, under the lock, against the pool as it is now.
+        lock_training_imports(db, job.training.id)
+        pool = qf.Pool(db, job.training.id, job.test_type)
+        test_label = TEST_TYPE_LABEL[job.test_type]
+        taken: set[str] = set()
     imported = 0
-    seen_codes: set[str] = set()
     for row in job.rows:
         if row.row_status != "VALID":
             continue
@@ -488,12 +573,14 @@ def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
         try:
             notes: list[dict[str, str]] = []
             if job.import_type == ImportType.QUESTIONS:
-                code = row.payload["question_code"]
-                if code in seen_codes or db.scalar(select(Question.id).where(Question.question_code == code)):
-                    raise ApiError(409, "DUPLICATE", "This question ID was added to the Question Bank after validation. " + DUPLICATE_EXISTING)
-                seen_codes.add(code)
                 _check_row_selection(job, row.payload)
-                _commit_question(db, row.payload, user_id, job.training, job.test_type)
+                found = pool.match(row.payload, test_label)
+                if found:
+                    raise ApiError(409, "DUPLICATE" if found[0] == "DUPLICATE" else "QUESTION_CONFLICT", f"Rechecked when importing: {found[1]}")
+                code = _commit_question(db, row.payload, user_id, job.training, job.test_type, taken)
+                pool.add(row.payload, code)
+                row.record_label = f"{code} · {row.record_label or ''}"[:200]
+                notes = list(row.errors or [])  # A note about the other test type's pool stays with the row.
             else:
                 notes = _commit_completion(db, row.payload, user_id, job.id)
             savepoint.commit()
@@ -502,13 +589,17 @@ def commit_job(db: Session, job: ImportJob, user_id: uuid.UUID) -> ImportJob:
             imported += 1
         except ApiError as exc:
             savepoint.rollback()
-            row.row_status = "DUPLICATE" if exc.status == 409 and exc.code in ("DUPLICATE", "COMPLETION_EXISTS") else "INVALID"
-            row.errors = [_error("record", exc.message)]
+            row.row_status = "DUPLICATE" if exc.status == 409 and exc.code in ("DUPLICATE", "COMPLETION_EXISTS") else "CONFLICT" if exc.code == "QUESTION_CONFLICT" else "INVALID"
+            row.errors = [_error("question" if job.import_type == ImportType.QUESTIONS else "record", exc.message)]
         except IntegrityError:
-            # A completion or source event ID recorded by a concurrent request or another import.
             savepoint.rollback()
-            row.row_status = "DUPLICATE"
-            row.errors = [_error("record", "This completion or source event ID already exists. The row was skipped.")]
+            if job.import_type == ImportType.QUESTIONS:
+                row.row_status = "INVALID"
+                row.errors = [_error("record", "This question could not be saved because of a conflicting record. Nothing was changed; validate the file again.")]
+            else:
+                # A completion or source event ID recorded by a concurrent request or another import.
+                row.row_status = "DUPLICATE"
+                row.errors = [_error("record", "This completion or source event ID already exists. The row was skipped.")]
     job.accepted_rows = imported
     job.rejected_rows = job.total_rows - imported
     job.status = ImportStatus.COMPLETED if job.rejected_rows == 0 else ImportStatus.COMPLETED_WITH_ERRORS

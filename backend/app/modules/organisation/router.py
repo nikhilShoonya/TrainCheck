@@ -159,9 +159,12 @@ def create_competency(body: CompetencyIn, user: CurrentUser = Depends(require_ad
 
 @router.get("/employees")
 def list_employees(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Every employee record, once each, whether or not they have assignments (Employee Assignments, Assign Employees).
+    Employee fields only: no account, password or training history."""
     rows = db.scalars(
         select(Employee)
         .options(selectinload(Employee.department), selectinload(Employee.function), selectinload(Employee.location))
+        .where(people.is_learner())  # Never the designated L&D Admin sign-in record.
         .order_by(Employee.full_name)
     ).all()
     return ok(
@@ -170,6 +173,7 @@ def list_employees(_: CurrentUser = Depends(require_admin), db: Session = Depend
                 "id": str(e.id),
                 "employee_code": e.employee_code,
                 "full_name": e.full_name,
+                "work_email": e.work_email,
                 "department": e.department.name if e.department else None,
                 "department_id": str(e.department_id) if e.department_id else None,
                 "function": e.function.name if e.function else None,
@@ -294,10 +298,10 @@ def employee_import_template(format: str = "csv", _: CurrentUser = Depends(requi
         sheet.title = "Employees"
         for row in people.TEMPLATE_ROWS:
             sheet.append(row)
-        for column in ("B", "D"):  # Employee ID and joining date stay text, so leading zeros survive editing.
+        for column in ("A", "D"):  # Employee Number and Date of Joining stay text, so leading zeros survive editing.
             for cell in sheet[column]:
                 cell.number_format = "@"
-        for column, width in zip("ABCDE", (22, 14, 30, 16, 22), strict=True):
+        for column, width in zip("ABCDE", (18, 22, 30, 16, 22), strict=True):
             sheet.column_dimensions[column].width = width
         buffer = io.BytesIO()
         workbook.save(buffer)

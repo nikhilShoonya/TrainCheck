@@ -76,7 +76,7 @@ export function QueryProvider({ children }: { children: ReactNode }) {
     the whole question bank or every employee record. Paths equal the destination pages' requests. */
 export const ROLE_PREFETCH: Record<RoleCode, string[]> = {
   EMPLOYEE: ["/me/trainings"],
-  LD_ADMIN: ["/admin/trainings", "/admin/enrolments", "/admin/departments", "/admin/functions", "/admin/trainers", "/admin/competencies"],
+  LD_ADMIN: ["/admin/trainings", "/admin/departments", "/admin/functions", "/admin/trainers", "/admin/competencies"],
 };
 
 /** What each sidebar page loads first, prefetched when the link is hovered or focused. */
@@ -84,7 +84,7 @@ export const NAV_PREFETCH: Record<string, string[]> = {
   "/lnd": ["/admin/dashboard"],
   "/lnd/trainings": ["/admin/trainings"],
   "/lnd/organisation": ["/admin/departments", "/admin/functions", "/admin/trainers", "/admin/competencies", "/admin/calendar"],
-  "/lnd/assignments": ["/admin/enrolments"],
+  "/lnd/assignments": ["/admin/employees"], // The employee list; one employee's assignments load when opened.
   "/lnd/completion": ["/admin/trainings"], // The training cards; each training's employees load when opened.
   "/lnd/questions": ["/admin/trainings"], // The bank itself is not preloaded.
   "/lnd/imports": ["/admin/imports", "/admin/trainings"],

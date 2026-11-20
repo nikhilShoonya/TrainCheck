@@ -55,6 +55,8 @@ interface JobSelection {
   import_type: string;
   training?: { id: string } | null;
   test_type?: string | null;
+  /** A question preview validated with the old template (file-supplied ID, type and status): it must be validated again. */
+  needs_revalidation?: boolean;
 }
 
 /** The test type an import was validated for, as shown in previews and history. */
@@ -63,10 +65,10 @@ export function testTypeLabel(job: JobSelection): string {
   return job.test_type ? (TEST_TYPE_LABEL[job.test_type] ?? job.test_type) : "Not recorded";
 }
 
-/** A question preview made before test types existed (or whose training was deleted) cannot be imported as it is:
- *  it must be edited and validated again with a training and test type. */
+/** A question preview made before test types existed (or whose training was deleted), or validated with the old
+ *  question template, cannot be imported as it is: it must be edited and validated again. */
 export function needsRevalidation(job: JobSelection): boolean {
-  return job.import_type === "QUESTIONS" && (!job.test_type || !job.training);
+  return job.import_type === "QUESTIONS" && (!job.test_type || !job.training || Boolean(job.needs_revalidation));
 }
 
 /** What the page shows while confirming. The server imports with the selection saved at validation and only
@@ -74,4 +76,51 @@ export function needsRevalidation(job: JobSelection): boolean {
 export function commitSelection(job: JobSelection, form: Pick<ImportSelection, "trainingId" | "testType">): { training_id: string; test_type: string } | undefined {
   if (job.import_type !== "QUESTIONS") return undefined;
   return { training_id: form.trainingId, test_type: form.testType };
+}
+
+/** Template download path. Templates name no training: it is chosen on the import screen. */
+export function templatePath(kind: string, format: "csv" | "xlsx" | "pdf"): string {
+  return `/admin/imports/templates/${kind}${format === "csv" ? "" : `?format=${format}`}`;
+}
+
+/** Row outcomes reported by the server for a preview (VALID) or a finished import (IMPORTED). */
+export interface ImportCounts {
+  VALID?: number;
+  IMPORTED?: number;
+  DUPLICATE?: number;
+  CONFLICT?: number;
+  INVALID?: number;
+}
+
+interface SummaryJob {
+  import_type: string;
+  status: string;
+  file_name: string;
+  accepted_rows: number;
+  rejected_rows: number;
+  counts?: ImportCounts;
+}
+
+const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** Each skipped outcome, counted separately: duplicates, conflicts (questions only) and rows with errors. */
+function skippedParts(job: SummaryJob): string[] {
+  const c = job.counts ?? {};
+  const parts = [`${count(c.DUPLICATE ?? 0, "duplicate")} skipped`];
+  if (job.import_type === "QUESTIONS") parts.push(`${count(c.CONFLICT ?? 0, "conflict")} skipped for review`);
+  parts.push(`${count(c.INVALID ?? 0, "row")} with errors`);
+  return parts;
+}
+
+/** What validation found and what confirming will import, or what a finished import did. */
+export function importSummary(job: SummaryJob): string {
+  if (!job.counts) {
+    // An entry listed without its rows: only the totals are known.
+    return job.status === "READY"
+      ? `${job.file_name} validated. ${job.accepted_rows} valid, ${job.rejected_rows} rejected or skipped. Nothing has been imported yet.`
+      : `Import finished. ${count(job.accepted_rows, "row")} imported, ${count(job.rejected_rows, "row")} rejected or skipped.`;
+  }
+  const skipped = skippedParts(job).join(", ");
+  if (job.status === "READY") return `${job.file_name} validated. ${count(job.counts.VALID ?? 0, "row")} will be imported; ${skipped}. Nothing has been imported yet.`;
+  return `Import finished. ${count(job.counts.IMPORTED ?? 0, "row")} imported; ${skipped}.`;
 }

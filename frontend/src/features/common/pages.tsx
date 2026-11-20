@@ -124,8 +124,8 @@ export function ProfilePage() {
           <strong>Roles:</strong> {user.roles.map((r) => ROLE_LABEL[r]).join(", ")}
         </p>
       </section>
-      {/* Employees keep the password L&D set for them; only L&D Admin accounts can change their own (enforced by the server). */}
-      {!canChangeOwnPassword(user.roles) ? (
+      {/* L&D Admins can change their own password; employees only when the server allows it (EMPLOYEE_PASSWORD_CHANGE_ENABLED). The server enforces it. */}
+      {!canChangeOwnPassword(user) ? (
         <section className="panel">
           <h2>Password</h2>
           <p>Your password is managed by L&amp;D and cannot be changed here. If you cannot sign in, contact your L&amp;D Admin.</p>
