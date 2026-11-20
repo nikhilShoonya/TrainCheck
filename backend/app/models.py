@@ -105,6 +105,7 @@ class Employee(Base, Timestamped):
     location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"), index=True)
     grade: Mapped[str | None] = mapped_column(String(40), index=True)
     employment_status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    joining_date: Mapped[date | None] = mapped_column(Date)  # Null for employees created before it was recorded.
     department: Mapped[Department | None] = relationship()
     function: Mapped[Function | None] = relationship()
     location: Mapped[Location | None] = relationship()
@@ -352,6 +353,8 @@ class Question(Base, Timestamped):
     function: Mapped[Function | None] = relationship()
     options: Mapped[list["QuestionOption"]] = relationship(cascade="all, delete-orphan", order_by="QuestionOption.display_order")
     trainings: Mapped[list[Training]] = relationship(secondary="question_training_tags")
+    # The same links with their test type, for display. Read-only: links are written through `trainings` or as rows.
+    training_links: Mapped[list["QuestionTrainingTag"]] = relationship(viewonly=True)
     __table_args__ = (CheckConstraint("marks > 0", name="ck_question_marks_positive"),)
 
 
@@ -373,9 +376,19 @@ class QuestionAnswerKey(Base):
 
 
 class QuestionTrainingTag(Base):
+    """Links a central-bank question to one training, and says which of that training's tests may draw it.
+
+    test_type is PRE_TEST or POST_TEST for questions imported for one test. NULL is the legacy, unclassified link
+    (every link made before test types existed, and links made in the Question Bank form): it keeps its original
+    eligibility for both the pre-test and the post-test of that training until L&D classifies it. Eligibility is
+    stored per link, so classifying a question for one training never changes it for another.
+    """
+
     __tablename__ = "question_training_tags"
     question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True)
     training_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trainings.id", ondelete="CASCADE"), primary_key=True, index=True)
+    test_type: Mapped[str | None] = mapped_column(String(10))
+    __table_args__ = (CheckConstraint("test_type IS NULL OR test_type IN ('PRE_TEST', 'POST_TEST')", name="ck_question_training_tags_test_type"),)
 
 
 class QuestionRevision(Base):
@@ -708,8 +721,12 @@ class ImportJob(Base):
     # Question imports: the training chosen in the Import Centre. Null for completion imports and for
     # file-based question imports, where each row names its training.
     training_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("trainings.id", ondelete="SET NULL"), index=True)
+    # Question imports: the test the questions are for (PRE_TEST or POST_TEST), chosen with the training and
+    # validated with the file. Null for completion imports and for question imports made before test types existed.
+    test_type: Mapped[str | None] = mapped_column(String(10))
     training: Mapped[Training | None] = relationship()
     rows: Mapped[list["ImportJobRow"]] = relationship(cascade="all, delete-orphan", order_by="ImportJobRow.row_number")
+    __table_args__ = (CheckConstraint("test_type IS NULL OR test_type IN ('PRE_TEST', 'POST_TEST')", name="ck_import_jobs_test_type"),)
 
 
 class ImportJobRow(Base):

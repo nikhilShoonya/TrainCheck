@@ -23,6 +23,7 @@ APScheduler
 # Imports and exports
 openpyxl
 reportlab
+pypdf  # Reads text from question-import PDFs (BSD-3, pure Python). Added 20 November 2026.
 
 # Development and tests
 pytest

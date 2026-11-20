@@ -98,8 +98,9 @@ def test_inactive_employee_cannot_sign_in(world, db):  # TC-RBAC-008
 
 
 def test_change_password_revokes_other_sessions(world, client_for, db):
-    other = client_for(world.employee)
-    client = client_for(world.employee)
+    # L&D Admin accounts keep self-service password changes; employees are refused (test_employee_creation.py).
+    other = client_for(world.admin)
+    client = client_for(world.admin)
     weak = client.post("/auth/change-password", json={"current_password": PASSWORD, "new_password": "short"})
     assert weak.status_code == 400
     assert client.post("/auth/change-password", json={"current_password": "wrong", "new_password": "NewPassword123"}).status_code == 400
@@ -109,7 +110,7 @@ def test_change_password_revokes_other_sessions(world, client_for, db):
     assert other.get("/auth/me").status_code == 401
     assert client.get("/auth/me").status_code == 200
     db.expire_all()
-    account = db.scalar(select(UserAccount).where(UserAccount.employee_id == world.employee.id))
+    account = db.scalar(select(UserAccount).where(UserAccount.employee_id == world.admin.id))
     assert verify_password(account.password_hash, "NewPassword123")
 
 
@@ -137,7 +138,7 @@ def test_error_response_hides_internals(world):
 
 def test_change_password_limits_wrong_current_password_guesses(world, client_for):
     """A stolen session must not be able to guess the current password without limit (audit F-19)."""
-    client = client_for(world.employee)
+    client = client_for(world.admin)
     wrong = {"current_password": "NotMyPassword1", "new_password": "BrandNewPass123"}
     for _ in range(5):
         response = client.post("/auth/change-password", json=wrong)

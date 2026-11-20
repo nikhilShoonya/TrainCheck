@@ -282,12 +282,14 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
     _take(db, _post(db, done), 90, now - timedelta(days=64), rng)
     _review(db, done, 30, "SELF", 3, e["E002"], now - timedelta(days=34))
     second = _enrol(db, e["E002"], t["T002"], old)
+    _pre_test(db, second, 50, now - timedelta(days=21), rng)
     record_completion(db, second, now - timedelta(days=20), "MANUAL", None)
     _take(db, _post(db, second), 80, now - timedelta(days=19), rng)
     _enrol(db, e["E002"], t["T003"], now - timedelta(days=2))
 
     # E003: failed once with a retake pending, plus one pass with learning gain.
     failed = _enrol(db, e["E003"], t["T002"], old)
+    _pre_test(db, failed, 40, now - timedelta(days=11), rng)
     record_completion(db, failed, now - timedelta(days=10), "MANUAL", None)
     _take(db, _post(db, failed), 60, now - timedelta(days=9), rng)
     passed = _enrol(db, e["E003"], t["T001"], old)
@@ -302,9 +304,13 @@ def _scenarios(db: Session, org: dict, catalogue: dict, now: datetime) -> None:
     for offset, score in ((14, 40), (12, 50), (10, 60)):
         _take(db, _post(db, final), score, now - timedelta(days=offset), rng)
 
-    # E005 and the second team: a mix of passes, a timed scenario and pending work.
+    # E005 and the second team: a mix of passes, a timed scenario and pending work. The Customer Handling (T002)
+    # employees took its pre-test the day before training, so its scorecard shows a baseline and learning gain.
+    baselines = {"E006": 40, "E007": 50, "E008": 60, "E009": 50}
     for code, days, score in (("E005", 12, 100), ("E006", 45, 70), ("E007", 31, 80), ("E008", 8, 90), ("E009", 8, 60)):
         enrolment = _enrol(db, e[code], t["T002" if code != "E005" else "T003"], old)
+        if code in baselines:
+            _pre_test(db, enrolment, baselines[code], now - timedelta(days=days + 1), rng)
         record_completion(db, enrolment, now - timedelta(days=days), "MANUAL", None)
         _take(db, _post(db, enrolment), score, now - timedelta(days=days - 1), rng)
     observed = db.scalar(select(Enrolment).where(Enrolment.employee_id == e["E006"].id))

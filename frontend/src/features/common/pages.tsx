@@ -5,6 +5,7 @@ import { Icon } from "@/components/icons";
 import { ROLE_LABEL } from "@/components/shell/nav";
 import { Badge, Btn, BtnLink, Empty, ErrorPanel, Loaded, PageTitle, TextField, useToast } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
+import { canChangeOwnPassword } from "@/features/admin/employeeView";
 import { useApi, useSession } from "@/lib/hooks";
 import { dateTime } from "@/lib/utils";
 
@@ -123,18 +124,26 @@ export function ProfilePage() {
           <strong>Roles:</strong> {user.roles.map((r) => ROLE_LABEL[r]).join(", ")}
         </p>
       </section>
-      {/* Any edit clears the previous answer, so an old message never describes a new attempt. */}
-      <form className="panel" onSubmit={(e) => void submit(e)} onInput={() => error && setError(null)}>
-        <h2>Change password</h2>
-        <TextField label="Current password" name="current" type="password" required autoComplete="current-password" />
-        <TextField label="New password" name="next" type="password" required minLength={10} autoComplete="new-password" />
-        <TextField label="Confirm new password" name="confirm" type="password" required minLength={10} autoComplete="new-password" />
-        <p className="small">Use at least 10 characters with upper-case and lower-case letters and a number.</p>
-        {error ? <ErrorPanel error={error} /> : null}
-        <button className="btn primary" type="submit" disabled={busy}>
-          {busy ? "Changing…" : "Change password"}
-        </button>
-      </form>
+      {/* Employees keep the password L&D set for them; only L&D Admin accounts can change their own (enforced by the server). */}
+      {!canChangeOwnPassword(user.roles) ? (
+        <section className="panel">
+          <h2>Password</h2>
+          <p>Your password is managed by L&amp;D and cannot be changed here. If you cannot sign in, contact your L&amp;D Admin.</p>
+        </section>
+      ) : (
+        /* Any edit clears the previous answer, so an old message never describes a new attempt. */
+        <form className="panel" onSubmit={(e) => void submit(e)} onInput={() => error && setError(null)}>
+          <h2>Change password</h2>
+          <TextField label="Current password" name="current" type="password" required autoComplete="current-password" />
+          <TextField label="New password" name="next" type="password" required minLength={10} autoComplete="new-password" />
+          <TextField label="Confirm new password" name="confirm" type="password" required minLength={10} autoComplete="new-password" />
+          <p className="small">Use at least 10 characters with upper-case and lower-case letters and a number.</p>
+          {error ? <ErrorPanel error={error} /> : null}
+          <button className="btn primary" type="submit" disabled={busy}>
+            {busy ? "Changing…" : "Change password"}
+          </button>
+        </form>
+      )}
     </>
   );
 }

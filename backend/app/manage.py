@@ -205,7 +205,7 @@ def main() -> None:
                 print(f"Created {len(result.created)} and updated {result.updated} employees.")
                 for email, password in result.created:
                     print(f"{email}\t{password}")
-                print("These passwords are shown only once. Ask each person to change theirs in My profile.")
+                print("These passwords are shown only once. L&D Admin accounts can change theirs in My profile; employees cannot.")
             elif args.command == "reset-password":
                 password = reset_password(db, args.email)
                 db.commit()

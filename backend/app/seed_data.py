@@ -54,7 +54,7 @@ TRAININGS = [
         "title": "Customer Handling",
         "category": "Customer experience",
         "description": "Build clear conversations, protect privacy and resolve customer concerns.",
-        "pretest": False,
+        "pretest": True,
         "competencies": ["Customer communication", "Complaint handling and resolution"],
     },
     {

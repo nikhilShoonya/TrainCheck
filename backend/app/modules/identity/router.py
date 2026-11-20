@@ -12,8 +12,8 @@ from app.core.clock import utcnow
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import CSRF_COOKIE, SESSION_COOKIE, CurrentUser, client_ip, require_session
-from app.core.enums import AccountStatus, EmploymentStatus
-from app.core.errors import ApiError, validation
+from app.core.enums import AccountStatus, EmploymentStatus, RoleCode
+from app.core.errors import ApiError, forbidden, validation
 from app.core.responses import ok
 from app.core.routing import ReleasingRoute
 from app.core.security import (
@@ -155,6 +155,12 @@ def me(user: CurrentUser = Depends(require_session), db: Session = Depends(get_d
 
 @router.post("/change-password")
 def change_password(body: ChangePasswordIn, response: Response, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
+    # Employees keep the password L&D set for them (Fin@ + joining date); only L&D Admin accounts may change their
+    # own. Refused before the current password is checked, so this endpoint cannot be used to test guesses either.
+    if not user.has_role(RoleCode.LD_ADMIN):
+        record_audit(db, user.id, "PASSWORD_CHANGE_REFUSED", "user_account", user.id)
+        db.commit()
+        raise forbidden("Employees cannot change their password. Ask your L&D Admin if you need help signing in.")
     # Wrong current passwords are counted like failed sign-ins, so a stolen session cannot guess without limit.
     settings = get_settings()
     key = hashlib.sha256(f"change-password|{user.id}".encode()).hexdigest()

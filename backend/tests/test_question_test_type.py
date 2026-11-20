@@ -1,0 +1,390 @@
+"""Separate pre-test and post-test question pools (Import Centre test type).
+
+A question imported for a training's pre-test is eligible only for that pre-test, and one imported for its
+post-test only for that post-test. The rule is enforced by the backend for counts, readiness, configuration,
+activation, gate startability and question selection. Links made before test types existed are unclassified
+(test_type NULL) and keep serving both tests. All data is synthetic.
+"""
+import csv
+import io
+import uuid
+from datetime import timedelta
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+
+from app.core.enums import AssessmentType, ImportStatus, ImportType
+from app.models import AssessmentAttempt, AssessmentConfig, AttemptQuestion, Enrolment, ImportJob, ImportJobRow, Question, QuestionTrainingTag
+from app.modules.assessment.gate import obligation_startable
+from app.modules.assessment.service import pool_report
+from app.modules.imports.service import QUESTION_HEADERS
+from app.modules.training.service import assessment_readiness, record_completion
+from tests.conftest import NOW, start, take
+
+HEADERS = [h for h in QUESTION_HEADERS if h != "training"]  # The training is selected, so the column is optional.
+
+
+def question_file(codes: list[str], difficulty: str = "Easy") -> bytes:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(HEADERS)
+    for code in codes:
+        row = {"id": code, "topic": "Topic", "competency": "Applies the documented process", "type": "single", "question": f"{code}?", "option_a": "Right", "option_b": "Wrong", "correct": "A", "difficulty": difficulty, "marks": "1", "level": "L2", "language": "English", "active": "Active"}
+        writer.writerow([row.get(h, "") for h in HEADERS])
+    return buffer.getvalue().encode()
+
+
+def validate(admin, training, test_type, codes, difficulty="Easy"):
+    data = {"import_type": "QUESTIONS", "training_id": str(training.id)}
+    if test_type is not None:
+        data["test_type"] = test_type
+    return admin.post("/admin/imports", files={"file": ("q.csv", question_file(codes, difficulty))}, data=data)
+
+
+def import_questions(admin, training, test_type, codes, difficulty="Easy") -> dict:
+    job = validate(admin, training, test_type, codes, difficulty).json()["data"]
+    assert job["accepted_rows"] == len(codes), job["rows"]
+    done = admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]
+    assert done["status"] == "COMPLETED", done
+    return done
+
+
+def links(db, code: str) -> set[tuple[uuid.UUID, str | None]]:
+    db.expire_all()
+    return set(db.execute(select(QuestionTrainingTag.training_id, QuestionTrainingTag.test_type).join(Question, Question.id == QuestionTrainingTag.question_id).where(Question.question_code == code)).all())
+
+
+def pool(admin, training, test_type, **params) -> dict:
+    response = admin.get(f"/admin/trainings/{training.id}/question-pool", params={"assessment_type": test_type, **params})
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def pre_config(db, training, count: int) -> None:
+    training.pretest_enabled = True
+    db.add(AssessmentConfig(training_id=training.id, assessment_type=AssessmentType.PRE_TEST, version=1, question_count=count, duration_seconds=600, max_attempts=1))
+    db.commit()
+
+
+# ---------- Pools never mix ----------
+
+def test_pre_test_questions_never_make_the_post_test_ready(world, db, client_for):
+    """20 pre-test-only questions do not make a post-test requiring 10 questions look, save, activate or run as ready."""
+    training = world.training("SPLIT", questions=0, count=10)  # An active post-test configuration for 10 questions.
+    admin = client_for(world.admin)
+    import_questions(admin, training, "PRE_TEST", [f"PRE-{i:02d}" for i in range(20)])
+
+    post = pool(admin, training, "POST_TEST", question_count=10)
+    assert (post["assessment_type"], post["eligible"], post["other_test_type"], post["ready"], post["shortfall"]) == ("POST_TEST", 0, 20, False, 10)
+    pre = pool(admin, training, "PRE_TEST", question_count=10)
+    assert (pre["eligible"], pre["other_test_type"], pre["ready"]) == (20, 0, True)
+
+    detail = admin.get(f"/admin/trainings/{training.id}").json()["data"]
+    assert (detail["eligible_questions"], detail["pre_test_eligible_questions"], detail["config_ready"]) == (0, 20, False)
+    assert detail["assessment_readiness"]["ready"] is False and "post-test" in detail["assessment_readiness"]["message"]
+    assert assessment_readiness(db, training).ready is False
+
+    saved_post = admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={"assessment_type": "POST_TEST", "question_count": 10, "duration_minutes": 15})
+    assert saved_post.status_code == 422 and "no eligible active post-test questions" in saved_post.json()["error"]["message"]
+    saved_pre = admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={"assessment_type": "PRE_TEST", "question_count": 10, "duration_minutes": 15})
+    assert saved_pre.status_code == 200, saved_pre.text
+
+    training.status = "DRAFT"
+    db.commit()
+    activated = admin.post(f"/admin/trainings/{training.id}/status", json={"status": "ACTIVE"})
+    assert activated.status_code == 422 and activated.json()["error"]["code"] == "QUESTION_POOL_INSUFFICIENT"
+    assert "post-test" in activated.json()["error"]["message"]
+
+
+def test_post_test_questions_never_serve_the_pre_test(world, db, client_for):
+    training = world.training("POSTONLY", questions=0, count=5)
+    admin = client_for(world.admin)
+    import_questions(admin, training, "POST_TEST", [f"POST-{i:02d}" for i in range(12)])
+    assert pool(admin, training, "POST_TEST", question_count=5)["ready"] is True
+    assert pool(admin, training, "PRE_TEST")["eligible"] == 0
+
+    saved = admin.post(f"/admin/trainings/{training.id}/assessment-configs", json={"assessment_type": "PRE_TEST", "question_count": 5, "duration_minutes": 15})
+    assert saved.status_code == 422 and "no eligible active pre-test questions" in saved.json()["error"]["message"]
+
+    # Even a pre-test configuration saved earlier cannot draw post-test questions when an employee starts it.
+    pre_config(db, training, 5)
+    enrolment = world.enrol(world.employee, training)
+    started = client_for(world.employee).post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    assert started.status_code == 422 and started.json()["error"]["code"] == "QUESTION_POOL_INSUFFICIENT"
+    assert db.scalar(select(func.count()).select_from(AssessmentAttempt)) == 0
+
+
+def test_counts_and_difficulty_quotas_are_per_test_type(world, db, client_for):
+    training = world.training("MIX", questions=0, count=4)
+    admin = client_for(world.admin)
+    import_questions(admin, training, "PRE_TEST", ["PE-1", "PE-2", "PE-3"], "Easy")
+    import_questions(admin, training, "PRE_TEST", ["PH-1", "PH-2", "PH-3"], "Hard")
+    import_questions(admin, training, "POST_TEST", ["SE-1", "SE-2"], "Easy")
+    import_questions(admin, training, "POST_TEST", ["SM-1", "SM-2", "SM-3", "SM-4"], "Medium")
+    world.question(training, "LEGACY-H", difficulty="HARD")  # Unclassified: counts for both tests.
+    db.commit()
+
+    pre, post = pool(admin, training, "PRE_TEST"), pool(admin, training, "POST_TEST")
+    assert pre["eligible_by_difficulty"] == {"EASY": 3, "MEDIUM": 0, "HARD": 4}
+    assert post["eligible_by_difficulty"] == {"EASY": 2, "MEDIUM": 4, "HARD": 1}
+    assert (pre["eligible"], pre["eligible_unclassified"], pre["other_test_type"]) == (7, 1, 6)
+    assert (post["eligible"], post["eligible_unclassified"], post["other_test_type"]) == (7, 1, 6)
+
+    assert pool(admin, training, "POST_TEST", question_count=4, easy=0, medium=4, hard=0)["ready"] is True
+    short = pool(admin, training, "POST_TEST", question_count=4, easy=0, medium=2, hard=2)
+    assert short["ready"] is False and short["difficulty_shortfalls"] == [{"difficulty": "HARD", "available": 1, "required": 2, "shortfall": 1}]
+    assert pool(admin, training, "PRE_TEST", question_count=4, easy=0, medium=0, hard=4)["ready"] is True
+    assert pool(admin, training, "PRE_TEST", question_count=4, easy=0, medium=4, hard=0)["ready"] is False
+
+
+def test_attempts_draw_only_their_own_test_type(world, db, client_for):
+    training = world.training("DRAW", questions=0, count=5)
+    admin = client_for(world.admin)
+    import_questions(admin, training, "PRE_TEST", [f"DPRE-{i}" for i in range(6)])
+    import_questions(admin, training, "POST_TEST", [f"DPOST-{i}" for i in range(5)])
+    pre_config(db, training, 6)
+    enrolment = world.enrol(world.employee, training)
+    employee = client_for(world.employee)
+
+    pre = employee.post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    assert pre.status_code == 200, pre.text
+    drawn = lambda attempt_id: set(db.scalars(select(Question.question_code).join(AttemptQuestion, AttemptQuestion.question_id == Question.id).where(AttemptQuestion.attempt_id == attempt_id)))  # noqa: E731
+    assert drawn(pre.json()["data"]["attempt_id"]) == {f"DPRE-{i}" for i in range(6)}
+
+    db.expire_all()
+    obligation = record_completion(db, db.get(Enrolment, enrolment.id), NOW - timedelta(days=1), "MANUAL", None)
+    db.commit()
+    post = start(employee, obligation.id)
+    assert drawn(post["attempt_id"]) == {f"DPOST-{i}" for i in range(5)}
+
+
+def test_gate_startability_follows_the_test_type(world, db, client_for):
+    training = world.training("GATE", questions=10, count=10)  # Ten unclassified questions: the post-test can run.
+    obligation = world.complete(world.employee, training)
+    assert obligation_startable(db, obligation, {}) is True
+
+    # Were those links classified for the pre-test only, the post-test could no longer draw a full assessment.
+    for link in db.scalars(select(QuestionTrainingTag).where(QuestionTrainingTag.training_id == training.id)):
+        link.test_type = AssessmentType.PRE_TEST
+    db.commit()
+    db.expire_all()
+    assert obligation_startable(db, db.get(type(obligation), obligation.id), {}) is False
+    response = client_for(world.employee).post(f"/assessment-obligations/{obligation.id}/attempts", json={"instructions_acknowledged": True})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "QUESTION_POOL_INSUFFICIENT"
+    assert client_for(world.admin).get(f"/admin/trainings/{training.id}").json()["data"]["unavailable_count"] == 1
+
+
+# ---------- Legacy links ----------
+
+def test_unclassified_legacy_links_keep_serving_both_tests(world, db, client_for):
+    training = world.training("OLD", questions=10, count=10)
+    admin = client_for(world.admin)
+    for test_type in ("PRE_TEST", "POST_TEST"):
+        report = pool(admin, training, test_type, question_count=10)
+        assert (report["eligible"], report["eligible_unclassified"], report["other_test_type"], report["ready"]) == (10, 10, 0, True)
+    assert set(db.scalars(select(QuestionTrainingTag.test_type))) == {None}  # Nothing was guessed into a pool.
+    listed = admin.get(f"/admin/questions?training_id={training.id}").json()["data"]
+    assert {t["test_type"] for q in listed for t in q["trainings"]} == {None}
+
+    pre_config(db, training, 10)
+    enrolment = world.enrol(world.employee, training)
+    assert client_for(world.employee).post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True}).status_code == 200
+
+
+def test_classification_belongs_to_the_training_link(world, db, client_for):
+    """Using a question for another training never changes its eligibility for the first one."""
+    first = world.training("FIRST", questions=0, count=1)
+    second = world.training("SECOND", questions=0, count=1)
+    admin = client_for(world.admin)
+    import_questions(admin, first, "PRE_TEST", ["SHARED-1"])
+    question = admin.get(f"/admin/questions?training_id={first.id}").json()["data"][0]
+    full = admin.get(f"/admin/questions/{question['id']}").json()["data"]
+
+    # Edited in the Question Bank and also linked to SECOND: the FIRST link keeps its pre-test classification.
+    body = {k: full[k] for k in ("question_code", "topic", "question_type", "question_text", "difficulty", "marks", "language", "status", "explanation", "randomise_options")}
+    body.update(options=[o["text"] for o in full["options"]], correct_option_indexes=[i for i, o in enumerate(full["options"]) if o["is_correct"]], training_ids=[str(first.id), str(second.id)])
+    body["question_text"] = "SHARED-1, reworded?"
+    assert admin.patch(f"/admin/questions/{question['id']}", json=body).status_code == 200
+    assert links(db, "SHARED-1") == {(first.id, "PRE_TEST"), (second.id, None)}
+    shown = {t["code"]: t["test_type"] for t in admin.get(f"/admin/questions/{question['id']}").json()["data"]["trainings"]}
+    assert shown == {"FIRST": "PRE_TEST", "SECOND": None}
+
+    assert (pool(admin, first, "PRE_TEST")["eligible"], pool(admin, first, "POST_TEST")["eligible"]) == (1, 0)
+    assert (pool(admin, second, "PRE_TEST")["eligible"], pool(admin, second, "POST_TEST")["eligible"]) == (1, 1)
+
+
+# ---------- Duplicates ----------
+
+def test_duplicate_ids_are_skipped_without_relinking_or_reclassifying(world, db, client_for):
+    first = world.training("DUPA", questions=0, count=1)
+    second = world.training("DUPB", questions=0, count=1)
+    admin = client_for(world.admin)
+    import_questions(admin, first, "PRE_TEST", ["DUP-1"])
+    for training, test_type in ((first, "POST_TEST"), (second, "POST_TEST"), (second, "PRE_TEST")):
+        job = validate(admin, training, test_type, ["DUP-1", "NEW-" + training.training_code + test_type]).json()["data"]
+        duplicate = job["rows"][0]
+        assert duplicate["status"] == "DUPLICATE"
+        assert "already exists in the Question Bank" in duplicate["errors"][0]["message"]
+        assert "training and test-type links were not changed" in duplicate["errors"][0]["message"]
+        assert admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]["accepted_rows"] == 1
+    assert links(db, "DUP-1") == {(first.id, "PRE_TEST")}  # Still only the first training's pre-test.
+
+
+def test_a_question_added_after_validation_is_skipped_at_commit(world, db, client_for):
+    training = world.training("RACE", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = validate(admin, training, "POST_TEST", ["RACE-1"]).json()["data"]
+    import_questions(admin, training, "PRE_TEST", ["RACE-1"])  # Another import added the same ID meanwhile.
+    done = admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]
+    assert (done["accepted_rows"], done["rows"][0]["status"]) == (0, "DUPLICATE")
+    assert links(db, "RACE-1") == {(training.id, "PRE_TEST")}
+
+
+# ---------- Saved selection: preview, reload, replace, commit ----------
+
+def test_selection_is_saved_shown_and_survives_reload_and_replacement(world, db, client_for):
+    training = world.training("KEEP", questions=0, count=1)
+    other = world.training("KEEP2", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = validate(admin, training, "PRE_TEST", ["K-1", "K-2"]).json()["data"]
+    assert (job["training"]["code"], job["test_type"]) == ("KEEP", "PRE_TEST")
+    assert db.get(ImportJob, uuid.UUID(job["id"])).test_type == "PRE_TEST"
+    assert admin.get(f"/admin/imports/{job['id']}").json()["data"]["test_type"] == "PRE_TEST"  # After a reload.
+    assert next(j for j in admin.get("/admin/imports").json()["data"] if j["id"] == job["id"])["test_type"] == "PRE_TEST"
+
+    # Replacing the file: the test type is chosen again explicitly, never carried over or defaulted.
+    missing = admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("fixed.csv", question_file(["K-1"]))}, data={"training_id": str(training.id)})
+    assert missing.status_code == 400
+    same = admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("fixed.csv", question_file(["K-1"]))}, data={"training_id": str(training.id), "test_type": "PRE_TEST"}).json()["data"]
+    assert (same["id"], same["file_name"], same["test_type"], same["total_rows"]) == (job["id"], "fixed.csv", "PRE_TEST", 1)
+    moved = admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("fixed2.csv", question_file(["K-3"]))}, data={"training_id": str(other.id), "test_type": "POST_TEST"}).json()["data"]
+    assert (moved["training"]["code"], moved["test_type"], moved["status"]) == ("KEEP2", "POST_TEST", "READY")
+    assert admin.get(f"/admin/imports/{job['id']}").json()["data"]["test_type"] == "POST_TEST"
+
+    admin.post(f"/admin/imports/{job['id']}/commit")
+    assert links(db, "K-3") == {(other.id, "POST_TEST")}
+    assert db.scalar(select(func.count()).select_from(Question).where(Question.question_code.in_(["K-1", "K-2"]))) == 0
+
+
+def test_commit_uses_the_validated_selection_and_refuses_a_changed_form(world, db, client_for):
+    training = world.training("SAVED", questions=0, count=1)
+    other = world.training("OTHER", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = validate(admin, training, "PRE_TEST", ["S-1", "S-2"]).json()["data"]
+    for changed in ({"training_id": str(other.id), "test_type": "PRE_TEST"}, {"training_id": str(training.id), "test_type": "POST_TEST"}):
+        refused = admin.post(f"/admin/imports/{job['id']}/commit", json=changed)
+        assert refused.status_code == 409 and refused.json()["error"]["code"] == "IMPORT_SELECTION_CHANGED"
+    assert db.scalar(select(func.count()).select_from(Question)) == 0
+
+    # A row whose saved payload no longer matches the job's selection is never applied.
+    row = db.scalar(select(ImportJobRow).where(ImportJobRow.import_job_id == uuid.UUID(job["id"]), ImportJobRow.row_number == 3))
+    row.payload = {**row.payload, "test_type": "POST_TEST"}
+    db.commit()
+    done = admin.post(f"/admin/imports/{job['id']}/commit", json={"training_id": str(training.id), "test_type": "PRE_TEST"}).json()["data"]
+    assert (done["accepted_rows"], done["rows"][1]["status"]) == (1, "INVALID")
+    assert links(db, "S-1") == {(training.id, "PRE_TEST")}
+    assert links(db, "S-2") == set()
+
+
+def test_a_question_preview_without_a_test_type_must_be_revalidated(world, db, client_for):
+    """A question import validated before test types existed is never imported as unclassified links."""
+    training = world.training("LEGACYJOB", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = ImportJob(import_type=ImportType.QUESTIONS, uploaded_by=_admin_account(db, world), file_name="old.csv", status=ImportStatus.READY, total_rows=1, accepted_rows=1, rejected_rows=0, created_at=NOW, training_id=training.id)
+    db.add(job)
+    db.flush()
+    db.add(ImportJobRow(import_job_id=job.id, row_number=2, row_status="VALID", record_label="OLD-1", errors=[], payload={"question_code": "OLD-1", "training_id": str(training.id)}))
+    db.commit()
+
+    preview = admin.get(f"/admin/imports/{job.id}").json()["data"]
+    assert preview["test_type"] is None
+    refused = admin.post(f"/admin/imports/{job.id}/commit")
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "IMPORT_NEEDS_REVALIDATION"
+    assert db.scalar(select(func.count()).select_from(Question)) == 0
+
+    edited = admin.post(f"/admin/imports/{job.id}/replace", files={"file": ("new.csv", question_file(["OLD-1"]))}, data={"training_id": str(training.id), "test_type": "POST_TEST"}).json()["data"]
+    assert edited["test_type"] == "POST_TEST"
+    assert admin.post(f"/admin/imports/{job.id}/commit").json()["data"]["status"] == "COMPLETED"
+    assert links(db, "OLD-1") == {(training.id, "POST_TEST")}
+
+
+def _admin_account(db, world):
+    from app.models import UserAccount
+
+    return db.scalar(select(UserAccount.id).where(UserAccount.employee_id == world.admin.id))
+
+
+# ---------- Completion imports are unaffected ----------
+
+def test_completion_imports_take_no_training_or_test_type(world, db, client_for):
+    training = world.training("COMP", questions=10, count=10)
+    admin = client_for(world.admin)
+    text = f"employee,training,completion_date\nE1,{training.training_code},2026-11-01\n".encode()
+    with_test = admin.post("/admin/imports", files={"file": ("c.csv", text)}, data={"import_type": "COMPLETIONS", "test_type": "POST_TEST"})
+    assert with_test.status_code == 400 and "only for question bank imports" in with_test.json()["error"]["message"]
+    job = admin.post("/admin/imports", files={"file": ("c.csv", text)}, data={"import_type": "COMPLETIONS"}).json()["data"]
+    assert (job["test_type"], job["training"], job["accepted_rows"]) == (None, None, 1)
+    done = admin.post(f"/admin/imports/{job['id']}/commit", json={}).json()["data"]
+    assert done["status"] == "COMPLETED" and done["test_type"] is None
+
+
+# ---------- History is never rewritten ----------
+
+def test_existing_attempts_and_snapshots_stay_unchanged(world, db, client_for):
+    training = world.training("HIST", questions=10, count=10)
+    obligation = world.complete(world.employee, training)
+    result = take(db, client_for(world.employee), obligation.id, 8)
+    snapshot = lambda: sorted(db.execute(select(AttemptQuestion.question_id, AttemptQuestion.question_version, AttemptQuestion.question_text_snapshot, AttemptQuestion.options_snapshot, AttemptQuestion.answer_key_snapshot, AttemptQuestion.marks_snapshot)).all(), key=str)  # noqa: E731
+    db.expire_all()
+    before = snapshot()
+    attempt_before = db.execute(select(AssessmentAttempt.id, AssessmentAttempt.score_percent, AssessmentAttempt.result_status)).all()
+
+    admin = client_for(world.admin)
+    import_questions(admin, training, "PRE_TEST", [f"NEWPRE-{i}" for i in range(5)])
+    for link in db.scalars(select(QuestionTrainingTag).where(QuestionTrainingTag.training_id == training.id, QuestionTrainingTag.test_type.is_(None))):
+        link.test_type = AssessmentType.PRE_TEST  # Even classifying the old questions away from the post-test.
+    db.commit()
+
+    db.expire_all()
+    assert snapshot() == before
+    assert db.execute(select(AssessmentAttempt.id, AssessmentAttempt.score_percent, AssessmentAttempt.result_status)).all() == attempt_before
+    assert client_for(world.employee).get(f"/attempts/{result['attempt_id']}/result").status_code == 200
+
+
+# ---------- Permissions and schema ----------
+
+def test_imports_and_pools_are_for_ld_only(world, db, client_for):
+    training = world.training("PERM", questions=0, count=1)
+    admin = client_for(world.admin)
+    job = validate(admin, training, "PRE_TEST", ["P-1"]).json()["data"]
+    for person in (world.hr, world.employee, world.manager):
+        client = client_for(person)
+        assert validate(client, training, "PRE_TEST", ["P-2"]).status_code == 403
+        assert client.post(f"/admin/imports/{job['id']}/commit").status_code == 403
+        assert client.post(f"/admin/imports/{job['id']}/replace", files={"file": ("q.csv", question_file(["P-3"]))}, data={"training_id": str(training.id), "test_type": "POST_TEST"}).status_code == 403
+        assert client.get("/admin/imports").status_code == 403
+        assert client.get(f"/admin/trainings/{training.id}/question-pool", params={"assessment_type": "PRE_TEST"}).status_code == 403
+    assert db.scalar(select(func.count()).select_from(Question)) == 0
+    assert db.get(ImportJob, uuid.UUID(job["id"])).status == ImportStatus.READY
+
+
+def test_the_pool_must_name_its_test_type(world, client_for):
+    training = world.training("NAMED", questions=1, count=1)
+    assert client_for(world.admin).get(f"/admin/trainings/{training.id}/question-pool").status_code == 400  # The API reports request validation as 400.
+
+
+def test_only_known_test_types_can_be_stored(world, db):
+    training = world.training("CHECK", questions=1, count=1)
+    link = db.scalar(select(QuestionTrainingTag).where(QuestionTrainingTag.training_id == training.id))
+    link.test_type = "BOTH"
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
+
+
+def test_service_pool_report_requires_a_test_type(world, db):
+    training = world.training("SVC", questions=2, count=1)
+    with pytest.raises(TypeError):
+        pool_report(db, training.id)  # type: ignore[call-arg]  # No silent default to either test.
+    assert pool_report(db, training.id, assessment_type="PRE_TEST")["eligible"] == 2

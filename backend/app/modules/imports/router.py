@@ -3,9 +3,10 @@ import csv
 import io
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 from openpyxl import Workbook
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -19,7 +20,7 @@ from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.core.routing import ReleasingRoute
 from app.models import ImportJob, Training
-from app.modules.imports import parsing, service
+from app.modules.imports import parsing, pdf_blocks, service
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin/imports", tags=["Import Centre"])
 
@@ -31,7 +32,8 @@ def training_ref(training: Training) -> dict:
 
 
 def resolved_trainings(db: Session, job: ImportJob) -> list[dict]:
-    """The trainings that accepted question rows link to, so every import shows where its questions go."""
+    """The trainings that accepted question rows link to, so every import shows where its questions go.
+    Older imports named the training on each row; newer ones always have one selected training."""
     if job.training is not None:
         return [training_ref(job.training)]
     ids = {r.payload["training_id"] for r in job.rows if r.row_status in ("VALID", "IMPORTED") and r.payload and r.payload.get("training_id")}
@@ -52,8 +54,10 @@ def job_view(job: ImportJob, with_rows: bool = True, db: Session | None = None) 
         "rejected_rows": job.rejected_rows,
         "created_at": iso(job.created_at),
         "completed_at": iso(job.completed_at),
-        # The training selected in the Import Centre; None for completion and file-based question imports.
+        # The training and test type selected in the Import Centre. None for completion imports; question imports
+        # made before test types existed have no test type (and older file-based ones no training either).
         "training": training_ref(job.training) if job.training else None,
+        "test_type": job.test_type,
     }
     if with_rows:
         data["trainings"] = resolved_trainings(db, job) if db is not None else []
@@ -75,6 +79,9 @@ def list_jobs(_: CurrentUser = Depends(require_admin), db: Session = Depends(get
 def template(import_type: ImportType, format: str = "csv", _: CurrentUser = Depends(require_admin)) -> Response:
     rows = service.TEMPLATES[import_type]
     name = f"traincheck-{import_type.lower()}-template"
+    if format == "pdf" and import_type == ImportType.QUESTIONS:
+        sample = dict(zip(rows[0], rows[1], strict=True))
+        return Response(pdf_blocks.template_pdf(sample), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{name}.pdf"'})
     if format == "xlsx":
         workbook = Workbook()
         sheet = workbook.active
@@ -97,20 +104,23 @@ def upload(
     import_type: ImportType = Form(...),
     file: UploadFile = File(...),
     training_id: str | None = Form(default=None),
+    test_type: str | None = Form(default=None),
     user: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
     """Validates and previews. Nothing is applied until the commit call.
 
-    Question imports normally name one training (training_id): every question is linked to it. Without it,
-    the file-based behaviour is kept for existing clients: each row names its training code.
+    Question imports must name one training (training_id) and one test type (test_type: PRE_TEST or POST_TEST).
+    Every question is linked to that training for that test only. Both are saved with the preview.
     """
     training = service.selected_training(db, training_id)
+    chosen_test = service.selected_test_type(test_type)
+    service.check_selections(import_type, training, chosen_test)
     limit = get_settings().max_upload_bytes
     content = file.file.read(limit + 1)
-    rows = parsing.read_table(file.filename or "upload", content, limit)
-    job = service.create_job(db, import_type, file.filename or "upload", rows, user.id, training)
-    record_audit(db, user.id, "IMPORT_VALIDATED", "import_job", job.id, after={"type": import_type, "valid": job.accepted_rows, "rejected": job.rejected_rows, "training": training.training_code if training else None})
+    rows = parsing.read_table(file.filename or "upload", content, limit, allow_pdf=import_type == ImportType.QUESTIONS)
+    job = service.create_job(db, import_type, file.filename or "upload", rows, user.id, training, chosen_test)
+    record_audit(db, user.id, "IMPORT_VALIDATED", "import_job", job.id, after={"type": import_type, "valid": job.accepted_rows, "rejected": job.rejected_rows, "training": training.training_code if training else None, "test_type": chosen_test})
     db.commit()
     db.refresh(job)
     return ok(job_view(job, db=db))
@@ -132,11 +142,21 @@ def get_job(job_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Sess
     return ok(job_view(_job(db, job_id), db=db))
 
 
+class CommitIn(BaseModel):
+    """Optional: the training and test type the page shows while confirming. They are compared, never applied."""
+
+    model_config = ConfigDict(extra="forbid")
+    training_id: str | None = Field(default=None, max_length=64)
+    test_type: str | None = Field(default=None, max_length=20)
+
+
 @router.post("/{job_id}/commit", dependencies=[expensive("import")])
-def commit(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+def commit(job_id: uuid.UUID, body: CommitIn | None = Body(default=None), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     job = _job(db, job_id, lock=True)
+    if body is not None:
+        service.check_commit_selection(job, body.training_id, body.test_type)
     service.commit_job(db, job, user.id)
-    record_audit(db, user.id, "IMPORT_COMMITTED", "import_job", job.id, after={"imported": job.accepted_rows, "rejected": job.rejected_rows, "training": job.training.training_code if job.training else None})
+    record_audit(db, user.id, "IMPORT_COMMITTED", "import_job", job.id, after={"imported": job.accepted_rows, "rejected": job.rejected_rows, "training": job.training.training_code if job.training else None, "test_type": job.test_type})
     db.commit()
     db.refresh(job)
     return ok(job_view(job, db=db))
@@ -158,20 +178,23 @@ def replace(
     job_id: uuid.UUID,
     file: UploadFile = File(...),
     training_id: str | None = Form(default=None),
+    test_type: str | None = Form(default=None),
     user: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Edits an import that was never applied: a corrected file (and training) is validated into the same entry."""
+    """Edits an import that was never applied: a corrected file, training and test type are validated into the same entry."""
     job = _job(db, job_id, lock=True)
     if job.status not in service.UNAPPLIED_STATUSES:
         raise conflict("IMPORT_ALREADY_PROCESSED", "This import has already been imported and can no longer be edited.")
     training = service.selected_training(db, training_id)
+    chosen_test = service.selected_test_type(test_type)
+    service.check_selections(ImportType(job.import_type), training, chosen_test)
     limit = get_settings().max_upload_bytes
     content = file.file.read(limit + 1)
-    rows = parsing.read_table(file.filename or "upload", content, limit)
-    before = {"file": job.file_name, "training": job.training.training_code if job.training else None, "valid": job.accepted_rows, "rejected": job.rejected_rows}
-    service.replace_job(db, job, file.filename or "upload", rows, user.id, training)
-    record_audit(db, user.id, "IMPORT_EDITED", "import_job", job.id, before=before, after={"file": job.file_name, "training": training.training_code if training else None, "valid": job.accepted_rows, "rejected": job.rejected_rows})
+    rows = parsing.read_table(file.filename or "upload", content, limit, allow_pdf=job.import_type == ImportType.QUESTIONS)
+    before = {"file": job.file_name, "training": job.training.training_code if job.training else None, "test_type": job.test_type, "valid": job.accepted_rows, "rejected": job.rejected_rows}
+    service.replace_job(db, job, file.filename or "upload", rows, user.id, training, chosen_test)
+    record_audit(db, user.id, "IMPORT_EDITED", "import_job", job.id, before=before, after={"file": job.file_name, "training": training.training_code if training else None, "test_type": chosen_test, "valid": job.accepted_rows, "rejected": job.rejected_rows})
     db.commit()
     db.refresh(job)
     return ok(job_view(job, db=db))

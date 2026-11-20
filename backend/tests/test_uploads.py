@@ -10,7 +10,7 @@ from starlette.requests import Request
 from app.core.config import get_settings
 from app.main import app
 
-UPLOAD_PATHS = ["/api/v1/admin/imports", "/api/v1/admin/imports/00000000-0000-0000-0000-000000000001/replace"]
+UPLOAD_PATHS = ["/api/v1/admin/imports", "/api/v1/admin/imports/00000000-0000-0000-0000-000000000001/replace", "/api/v1/admin/employees/import/preview", "/api/v1/admin/employees/import"]
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def test_validating_a_large_question_file_does_not_query_per_row(world, client_f
     admin = client_for(world.admin)
     counter, stop = _count_statements(database.get_engine())
     try:
-        response = admin.post("/admin/imports", data={"import_type": "QUESTIONS"}, files={"file": ("q.csv", _csv(body), "text/csv")})
+        response = admin.post("/admin/imports", data={"import_type": "QUESTIONS", "training_id": str(training.id), "test_type": "POST_TEST"}, files={"file": ("q.csv", _csv(body), "text/csv")})
     finally:
         stop()
     assert response.status_code == 200, response.text

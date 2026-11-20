@@ -256,7 +256,7 @@ def readiness_from(training: Training, config: AssessmentConfig | None, report: 
 def assessment_readiness(db: Session, training: Training) -> Readiness:
     """Whether a post-test can be scheduled now: an active configuration whose pool can run."""
     config = active_config(db, training.id, AssessmentType.POST_TEST)
-    report = pool_report(db, training.id, config.question_count, config.difficulty_mix) if config else None
+    report = pool_report(db, training.id, config.question_count, config.difficulty_mix, assessment_type=AssessmentType.POST_TEST) if config else None
     return readiness_from(training, config, report)
 
 

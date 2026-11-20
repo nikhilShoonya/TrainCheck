@@ -178,6 +178,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   const draftLabel = `E2E Training ${code} (${code}) · Draft`;
   await expect(trainingSelect.locator("option", { hasText: draftLabel })).toHaveCount(1); // Draft trainings are offered.
   await trainingSelect.selectOption({ label: draftLabel });
+  await page.getByLabel("Test type *").selectOption("POST_TEST"); // Chosen explicitly; there is no default.
   await page.locator('input[type="file"]').setInputFiles({
     name: "bad.csv",
     mimeType: "text/csv",
@@ -194,6 +195,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await page.getByRole("button", { name: "Validate file" }).click();
   const preview = page.locator("#import-preview");
   await expect(preview).toContainText(`Linked training: E2E Training ${code} (${code}) · Draft`);
+  await expect(preview).toContainText("Test type: Post-test");
   await expect(preview.getByRole("link", { name: "Open in Question Bank" })).toHaveAttribute("href", /\/lnd\/questions\?training_id=/);
 
   // Changing the selected training invalidates the preview; it must be validated again.

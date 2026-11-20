@@ -1,20 +1,28 @@
 """Organisation master data: departments, functions, locations, trainers, competencies, calendar, employees."""
+import csv
+import io
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import Response
+from openpyxl import Workbook
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
+from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin
-from app.core.errors import conflict, not_found
+from app.core.errors import ApiError, conflict, not_found, validation
+from app.core.ratelimit import expensive
 from app.core.responses import ok
 from app.core.routing import ReleasingRoute
 from app.models import CalendarHoliday, Competency, Department, Employee, Function, Location, Trainer, WorkingCalendar
+from app.modules.imports import parsing
+from app.modules.organisation import people
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["Organisation"])
 
@@ -173,6 +181,130 @@ def list_employees(_: CurrentUser = Depends(require_admin), db: Session = Depend
             for e in rows
         ]
     )
+
+
+# ---------- Add Employee (single and bulk) ----------
+# L&D Admin only (require_admin). Passwords are generated and hashed by the server and never returned.
+
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+SINGLE_LABELS = {"name": "full_name", "employeeid": "employee_code", "email": "work_email", "joiningdate": "joining_date", "department": "department"}
+
+
+class EmployeeIn(Strict):
+    """Checked by the people module, so every problem comes back in one answer with a clear message."""
+
+    full_name: str = Field(default="", max_length=400)
+    employee_code: str = Field(default="", max_length=200)
+    work_email: str = Field(default="", max_length=400)
+    joining_date: str = Field(default="", max_length=40)
+    department_id: str = Field(default="", max_length=64)
+
+
+def _single_candidate(db: Session, body: EmployeeIn) -> people.Candidate:
+    person = people.Candidate(0, body.full_name, body.employee_code, body.work_email, body.joining_date, "")
+    directory = people.load_directory(db, [person.code], [person.email.strip()])
+    try:
+        department = db.get(Department, uuid.UUID(body.department_id)) if body.department_id else None
+    except ValueError:
+        department = None
+    people.check_values(person, directory, SINGLE_LABELS, resolve_department=False)
+    if department is None:
+        person.problem("department", "Choose a department." if not body.department_id else "This department does not exist.")
+    elif not department.is_active:
+        person.problem("department", "This department is inactive. Choose an active department.")
+    else:
+        person.department = department
+    return person
+
+
+def _single_problems(person: people.Candidate) -> ApiError:
+    return validation("Check the details and try again.", person.errors)
+
+
+@router.post("/employees", dependencies=[expensive("import")])
+def create_employee(body: EmployeeIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Adds one employee and their sign-in account (role EMPLOYEE, password Fin@DDMMYYYY from the joining date)."""
+    person = _single_candidate(db, body)
+    db.rollback()  # Releases the connection while the password is hashed.
+    if person.errors:
+        raise _single_problems(person)
+    hashes = people.password_hashes([person])
+    people.lock_for_create(db)
+    person = _single_candidate(db, body)  # Checked again under the lock: another change may have added them.
+    if person.errors:
+        db.rollback()
+        raise _single_problems(person)
+    [employee] = people.create(db, [person], hashes, user.id, "SINGLE")
+    department = person.department.name if person.department else None
+    db.commit()
+    return ok({"created": 1, "employee": {"id": str(employee.id), "employee_code": employee.employee_code, "full_name": employee.full_name, "department": department}})
+
+
+def _read_people_rows(file: UploadFile) -> tuple[str, list[list[str]]]:
+    limit = get_settings().max_upload_bytes
+    content = file.file.read(limit + 1)
+    name = file.filename or "upload"
+    return name, parsing.read_table(name, content, limit, typed_cells=True)
+
+
+def _not_ready(result: dict) -> ApiError:
+    return conflict("IMPORT_NOT_READY", f"Nothing was imported. {result['invalid_rows']} of {result['total_rows']} rows need correcting. Fix them in the file and validate it again.", result)
+
+
+# Plain (synchronous) handlers, like the Import Centre's: parsing and hashing run in the worker thread pool.
+@router.post("/employees/import/preview", dependencies=[expensive("import")])
+def preview_employee_import(file: UploadFile = File(...), _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Validate and preview only. Creates nothing: no employee, no account, no import record."""
+    name, rows = _read_people_rows(file)
+    result = people.preview(people.validate_file(db, people.candidates_from_rows(rows)))
+    db.rollback()
+    return ok({"file_name": name, **result})
+
+
+@router.post("/employees/import", dependencies=[expensive("import")])
+def confirm_employee_import(file: UploadFile = File(...), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Imports the whole file or nothing. The file is validated again here, and again under the creation lock, so
+    a repeated confirmation finds its employees already exist and adds no one twice."""
+    name, rows = _read_people_rows(file)
+    checked = people.validate_file(db, people.candidates_from_rows(rows))
+    db.rollback()
+    result = {"file_name": name, **people.preview(checked)}
+    if not result["ready"]:
+        raise _not_ready(result)
+    hashes = people.password_hashes(checked)
+    people.lock_for_create(db)
+    checked = people.validate_file(db, people.candidates_from_rows(rows))
+    result = {"file_name": name, **people.preview(checked)}
+    if not result["ready"]:
+        db.rollback()
+        raise _not_ready(result)
+    created = people.create(db, checked, hashes, user.id, "BULK_IMPORT")
+    record_audit(db, user.id, "EMPLOYEES_IMPORTED", "employee_import", None, after={"file_name": name[:255], "created": len(created)})
+    db.commit()
+    return ok({"file_name": name, "created": len(created), "employees": [{"id": str(e.id), "employee_code": e.employee_code, "full_name": e.full_name} for e in created]})
+
+
+@router.get("/employees/import/template")
+def employee_import_template(format: str = "csv", _: CurrentUser = Depends(require_admin)) -> Response:
+    """Synthetic sample rows only."""
+    name = "traincheck-employees-template"
+    if format == "xlsx":
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Employees"
+        for row in people.TEMPLATE_ROWS:
+            sheet.append(row)
+        for column in ("B", "D"):  # Employee ID and joining date stay text, so leading zeros survive editing.
+            for cell in sheet[column]:
+                cell.number_format = "@"
+        for column, width in zip("ABCDE", (22, 14, 30, 16, 22), strict=True):
+            sheet.column_dimensions[column].width = width
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return Response(buffer.getvalue(), media_type=XLSX_TYPE, headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'})
+    buffer = io.StringIO()
+    csv.writer(buffer).writerows(people.TEMPLATE_ROWS)
+    return Response("\ufeff" + buffer.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
 
 
 def _default_calendar(db: Session) -> WorkingCalendar:

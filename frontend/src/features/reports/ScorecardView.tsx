@@ -13,6 +13,9 @@ const signed = (value: number | null, unit = "") => (value === null ? "Not compa
 
 function ScorecardBody({ card }: { card: Scorecard }) {
   const { learning: l } = card;
+  // Without a pre-test there is no baseline, so learning gain cannot be measured. Say that, rather than
+  // "Not collected" / "Not comparable", which read like missing data.
+  const noPreTest = l.pre_test_state === "Not configured";
   return (
     <>
       <section className="panel scorecard-header">
@@ -29,9 +32,9 @@ function ScorecardBody({ card }: { card: Scorecard }) {
           <p className="small">Did the employee acquire the required knowledge?</p>
           <Metrics
             items={[
-              ["Pre-test", score(l.pre_test_mean), l.pre_test_state],
+              noPreTest ? ["Pre-test", "Off", "This training has no pre-test"] : ["Pre-test", score(l.pre_test_mean), l.pre_test_state],
               ["Post-test (latest)", score(l.post_test_mean), `${l.assessed} of ${l.completed} completed`],
-              ["Learning gain", signed(l.learning_gain_mean, " pts"), `${l.matched_pairs} matched pair(s)`],
+              noPreTest ? ["Learning gain", "Not measured", "Needs a pre-test baseline"] : ["Learning gain", signed(l.learning_gain_mean, " pts"), `${l.matched_pairs} matched pair(s)`],
             ]}
           />
           <Metrics

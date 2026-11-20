@@ -72,7 +72,7 @@ test("question pool problems are explained, fixable and still enforced by the se
   // 5. The server stays the authority: the pool shrinks before saving, the save is refused, values are kept.
   await call(page, "POST", `/admin/questions/${ids[0]}/status`, { status: "INACTIVE" });
   await save().click();
-  await expect(dialog.getByRole("alert").filter({ hasText: "has 4 eligible active questions, but the assessment requires 5" })).toBeVisible();
+  await expect(dialog.getByRole("alert").filter({ hasText: "has 4 eligible active post-test questions, but the post-test requires 5" })).toBeVisible();
   await expect(count()).toHaveValue("5");
   await expect(dialog.getByLabel("Time limit (minutes) *")).toHaveValue("25");
   await expect(dialog.getByText("1 inactive question not counted")).toBeVisible();

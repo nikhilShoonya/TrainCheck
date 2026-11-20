@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from fractions import Fraction
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -49,13 +49,27 @@ INCIDENT_MERGE_SECONDS = 2
 
 # ---------- Question pool ----------
 
-def eligible_questions(db: Session, training_id: uuid.UUID) -> list[Question]:
+TEST_TYPE_LABEL = {AssessmentType.PRE_TEST: "pre-test", AssessmentType.POST_TEST: "post-test"}
+
+
+def link_serves(test_type: str | None, assessment_type: str) -> bool:
+    """Whether a question link may supply this test. An unclassified (legacy) link keeps serving both tests."""
+    return test_type is None or test_type == assessment_type
+
+
+def link_serves_clause(assessment_type: str):
+    """link_serves() as a SQL condition on QuestionTrainingTag. The two must always agree."""
+    return or_(QuestionTrainingTag.test_type.is_(None), QuestionTrainingTag.test_type == assessment_type)
+
+
+def eligible_questions(db: Session, training_id: uuid.UUID, assessment_type: str) -> list[Question]:
+    """Active questions this training's pre-test or post-test may draw. Never another test type's questions."""
     return list(
         db.scalars(
             select(Question)
             .join(QuestionTrainingTag, QuestionTrainingTag.question_id == Question.id)
             .options(selectinload(Question.options), selectinload(Question.competency))
-            .where(QuestionTrainingTag.training_id == training_id, Question.status == QuestionStatus.ACTIVE)
+            .where(QuestionTrainingTag.training_id == training_id, link_serves_clause(assessment_type), Question.status == QuestionStatus.ACTIVE)
         )
     )
 
@@ -74,48 +88,50 @@ SUGGESTED_QUESTIONS_PER_ATTEMPT = 10
 EXAMPLE_CODES = 5
 
 
+def _links(db: Session, training_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[tuple[Question, str | None]]]:
+    """Every question linked to these trainings, with the test type of its link, in question-code order."""
+    links: dict[uuid.UUID, list[tuple[Question, str | None]]] = {t: [] for t in training_ids}
+    if training_ids:
+        rows = db.execute(
+            select(QuestionTrainingTag.training_id, QuestionTrainingTag.test_type, Question)
+            .join(Question, Question.id == QuestionTrainingTag.question_id)
+            .options(selectinload(Question.options))
+            .where(QuestionTrainingTag.training_id.in_(training_ids))
+            .order_by(Question.question_code)
+        ).all()
+        for training_id, test_type, question in rows:
+            links[training_id].append((question, test_type))
+    return links
+
+
 class PoolData:
-    """Linked questions (with options) and answer keys for several trainings, read in three queries.
-    Lets list pages report every training's pool without one round of queries per training."""
+    """Linked questions (with options, and each link's test type) and answer keys for several trainings, read in
+    three queries. Lets list pages report every training's pre-test and post-test pools without one round of
+    queries per training."""
 
     def __init__(self, db: Session, training_ids: list[uuid.UUID]) -> None:
-        self.linked: dict[uuid.UUID, list[Question]] = {t: [] for t in training_ids}
-        if training_ids:
-            rows = db.execute(
-                select(QuestionTrainingTag.training_id, Question)
-                .join(Question, Question.id == QuestionTrainingTag.question_id)
-                .options(selectinload(Question.options))
-                .where(QuestionTrainingTag.training_id.in_(training_ids))
-                .order_by(Question.question_code)
-            ).all()
-            for training_id, question in rows:
-                self.linked[training_id].append(question)
-        active = {q.id for questions in self.linked.values() for q in questions if q.status == QuestionStatus.ACTIVE}
+        self.links = _links(db, training_ids)
+        active = {q.id for links in self.links.values() for q, _ in links if q.status == QuestionStatus.ACTIVE}
         self.keys = answer_keys(db, list(active)) if active else {}
 
 
-def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None = None, difficulty_mix: dict[str, int] | None = None, pools: PoolData | None = None) -> dict:
-    """Describes a training's question pool and, given a configuration, whether it can run (BR §7, §20.4).
+def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None = None, difficulty_mix: dict[str, int] | None = None, pools: PoolData | None = None, *, assessment_type: str) -> dict:
+    """Describes one test's question pool for a training and, given a configuration, whether it can run (BR §7, §20.4).
 
-    Eligible means: linked to this training, Active, has an answer key and has at least two options.
-    The same rule decides what start_attempt may draw, so this report and the engine always agree.
+    Eligible means: linked to this training for this test type (or by an unclassified legacy link), Active, has
+    an answer key and has at least two options. The same rule decides what start_attempt may draw, so this report
+    and the engine always agree. Questions linked only for the other test type are reported, never counted.
     `pools` supplies already-loaded data for list pages; the result is identical.
     """
-    if pools is not None and training_id in pools.linked:
-        linked = pools.linked[training_id]
-        active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
-        keys = pools.keys
+    if pools is not None and training_id in pools.links:
+        links, keys = pools.links[training_id], pools.keys
     else:
-        linked = list(
-            db.scalars(
-                select(Question)
-                .join(QuestionTrainingTag, QuestionTrainingTag.question_id == Question.id)
-                .options(selectinload(Question.options))
-                .where(QuestionTrainingTag.training_id == training_id)
-                .order_by(Question.question_code)
-            )
-        )
-        active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
+        links, keys = _links(db, [training_id])[training_id], None
+    linked = [q for q, test_type in links if link_serves(test_type, assessment_type)]
+    unclassified = {q.id for q, test_type in links if test_type is None}
+    other_test_type = sum(1 for _, test_type in links if not link_serves(test_type, assessment_type))
+    active = [q for q in linked if q.status == QuestionStatus.ACTIVE]
+    if keys is None:
         keys = answer_keys(db, [q.id for q in active]) if active else {}
     missing_key = [q for q in active if not keys.get(q.id)]
     few_options = [q for q in active if len(q.options) < 2]
@@ -124,6 +140,7 @@ def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None 
 
     report: dict = {
         "training_id": str(training_id),
+        "assessment_type": assessment_type,
         "linked_total": len(linked),
         "active": len(active),
         "inactive": len(linked) - len(active),
@@ -133,6 +150,10 @@ def pool_report(db: Session, training_id: uuid.UUID, question_count: int | None 
         "insufficient_options_codes": [q.question_code for q in few_options[:EXAMPLE_CODES]],
         "eligible": len(eligible),
         "eligible_by_difficulty": by_difficulty,
+        # Eligible through a legacy link that has no test type yet, so it also counts for the other test.
+        "eligible_unclassified": sum(1 for q in eligible if q.id in unclassified),
+        # Linked to this training only for the other test type: never drawn for this one.
+        "other_test_type": other_test_type,
         "suggested_question_count": min(SUGGESTED_QUESTIONS_PER_ATTEMPT, len(eligible)),
         "required": None,
         "shortfall": None,
@@ -172,12 +193,13 @@ def pool_message(report: dict, training_title: str) -> str:
         return f"{training_title} has no assessment configuration yet. Open Assessment Configuration and save one first."
     parts = []
     eligible, required = report["eligible"], report["required"]
-    noun = "question" if eligible == 1 else "questions"
+    test = TEST_TYPE_LABEL.get(report.get("assessment_type"), "assessment")
+    noun = f"{test} question" if eligible == 1 else f"{test} questions"
     if "INSUFFICIENT_POOL" in report.get("reasons", []):
         if eligible == 0:
-            parts.append(f"{training_title} has no eligible active questions. Add or import questions for this training.")
+            parts.append(f"{training_title} has no eligible active {test} questions. Add or import {test} questions for this training.")
         else:
-            parts.append(f"{training_title} has {eligible} eligible active {noun}, but the assessment requires {required}. Add {report['shortfall']} more or reduce questions per attempt to {eligible}.")
+            parts.append(f"{training_title} has {eligible} eligible active {noun}, but the {test} requires {required}. Add {report['shortfall']} more or reduce questions per attempt to {eligible}.")
     if "MIX_TOTAL" in report.get("reasons", []):
         parts.append(f"The difficulty counts total {report['mix_total']}, but questions per attempt is {required}.")
     for gap in report.get("difficulty_shortfalls", []):
@@ -187,12 +209,12 @@ def pool_message(report: dict, training_title: str) -> str:
 
 def pool_problem(db: Session, config: AssessmentConfig, pools: "PoolData | None" = None) -> dict | None:
     """Explains why a configuration cannot run, or returns None when it can (BR §20.4)."""
-    report = pool_report(db, config.training_id, config.question_count, config.difficulty_mix, pools)
+    report = pool_report(db, config.training_id, config.question_count, config.difficulty_mix, pools, assessment_type=config.assessment_type)
     return None if report["ready"] else report
 
 
 def _select_questions(db: Session, config: AssessmentConfig, keys: dict[uuid.UUID, list[str]], rng: random.Random) -> list[Question]:
-    pool = [q for q in eligible_questions(db, config.training_id) if keys.get(q.id) and len(q.options) >= 2]
+    pool = [q for q in eligible_questions(db, config.training_id, config.assessment_type) if keys.get(q.id) and len(q.options) >= 2]
     if config.difficulty_mix:
         chosen: list[Question] = []
         for level in Difficulty:
@@ -290,7 +312,7 @@ def start_attempt(db: Session, obligation: AssessmentObligation, acknowledged: b
     if counted_attempts(obligation) >= config.max_attempts:
         raise conflict("MAX_ATTEMPTS_REACHED", "All attempts for this assessment have been used.")
 
-    questions_keys = answer_keys(db, [q.id for q in eligible_questions(db, config.training_id)])
+    questions_keys = answer_keys(db, [q.id for q in eligible_questions(db, config.training_id, config.assessment_type)])
     chosen = _select_questions(db, config, questions_keys, rng)
     attempt = AssessmentAttempt(
         obligation_id=obligation.id,

@@ -380,7 +380,10 @@ export interface TrainingAdmin {
   pre_test_config?: ConfigView | null;
   pool_problem?: PoolReport | null;
   question_pool?: PoolReport;
+  /** Eligible questions for the post-test (the assessment). */
   eligible_questions: number;
+  /** Eligible questions for the pre-test, which has its own pool. */
+  pre_test_eligible_questions?: number;
   config_ready: boolean;
   assessment_readiness: AssessmentReadiness;
   pending_scheduling_count: number;

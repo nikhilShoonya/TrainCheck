@@ -69,6 +69,7 @@ def question_problem(question_type: str, options: list[str], correct: list[int],
 
 
 def question_view(q: Question, keys: list[str] | None = None) -> dict:
+    test_types = {link.training_id: link.test_type for link in q.training_links}
     data = {
         "id": str(q.id),
         "question_code": q.question_code,
@@ -87,7 +88,9 @@ def question_view(q: Question, keys: list[str] | None = None) -> dict:
         "status": q.status,
         "version": q.version,
         "randomise_options": q.randomise_options,
-        "trainings": [{"id": str(t.id), "title": t.title, "code": t.training_code} for t in q.trainings],
+        # test_type: the test of that training that may draw the question. None is a legacy, unclassified link
+        # (eligible for both tests of that training until classified).
+        "trainings": [{"id": str(t.id), "title": t.title, "code": t.training_code, "test_type": test_types.get(t.id)} for t in q.trainings],
         "updated_at": q.updated_at.isoformat() if q.updated_at else None,
     }
     if keys is not None:
@@ -144,7 +147,7 @@ def search_questions(
 ) -> dict:
     query = (
         select(Question)
-        .options(selectinload(Question.competency), selectinload(Question.department), selectinload(Question.function), selectinload(Question.trainings))
+        .options(selectinload(Question.competency), selectinload(Question.department), selectinload(Question.function), selectinload(Question.trainings), selectinload(Question.training_links))
         .order_by(Question.question_code)
     )
     if search:
@@ -228,6 +231,8 @@ def update_question(question_id: uuid.UUID, body: QuestionIn, user: CurrentUser 
     question.question_type, question.question_text, question.explanation = body.question_type, body.question_text, body.explanation
     question.difficulty, question.language, question.marks = body.difficulty, body.language, body.marks
     question.randomise_options, question.status = body.randomise_options, body.status
+    # Links kept in the list keep their row, so a pre-test or post-test classification is never lost by an edit.
+    # A training added here gets an unclassified link (eligible for both of its tests), as before.
     question.trainings = _trainings(db, body.training_ids)
     set_content(db, question, body.options, body.correct_option_indexes)
     db.add(QuestionRevision(question_id=question.id, version=question.version, content_snapshot=revision_snapshot(db, question), changed_by=user.id))

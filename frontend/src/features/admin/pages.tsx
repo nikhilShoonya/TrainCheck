@@ -10,6 +10,9 @@ import { ActionItem, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMor
 import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
 import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref } from "@/features/admin/completionView";
+import { allShownSelected, filterPeople, toggleOne, toggleShown } from "@/features/admin/assignView";
+import { activeDepartments, confirmBlockedReason, createdMessage, departmentShown, EMPLOYEE_COLUMNS, EMPLOYEE_FILE_TYPES, joiningShown, PASSWORD_RULE, plural, previewSummary, rowProblems, type AddEmployeeMode, type EmployeeImportResult, type EmployeePreview } from "@/features/admin/employeeView";
+import { acceptedFiles, commitSelection, fileTypesLabel, importFields, needsRevalidation, selectionChanged, selectionProblem, TEST_TYPE_HELP, TEST_TYPE_LABEL, TEST_TYPE_OPTIONS, testTypeLabel, type ImportSelection } from "@/features/admin/importView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
@@ -399,7 +402,7 @@ function TrainingDetail({ id, onClose, onEdit }: { id: string; onClose: () => vo
               {t.departments.length ? ` · Departments: ${t.departments.map((d) => d.name).join(", ")}` : ""}
               {t.functions.length ? ` · Functions: ${t.functions.map((f) => f.name).join(", ")}` : ""}. Assigned {t.assigned_count}, completed {t.completed_count}.
             </p>
-            {!t.config ? <div className="notice danger">{t.assessment_readiness.message} {t.assessment_readiness.action}</div> : t.pool_problem ? <div className="notice danger">The assessment cannot run yet. {describePool(t.pool_problem, t.title)}</div> : <div className="notice">The question pool satisfies this assessment ({t.eligible_questions} eligible questions).</div>}
+            {!t.config ? <div className="notice danger">{t.assessment_readiness.message} {t.assessment_readiness.action}</div> : t.pool_problem ? <div className="notice danger">The assessment cannot run yet. {describePool(t.pool_problem, t.title)}</div> : <div className="notice">The question pool satisfies this assessment ({t.eligible_questions} eligible post-test questions).</div>}
             <AssessmentAttention training={t} onChanged={() => void state.reload()} />
             <h3>Materials and recordings</h3>
             {t.materials?.length ? (
@@ -499,7 +502,7 @@ export function TrainingManagement() {
                   {t.config ? `${t.config.question_count} questions · ${t.config.duration_minutes} min` : "Not configured"}
                   <small>
                     {t.config ? `${t.config.pass_mark_percent}% pass · ${t.config.max_attempts} attempts · ` : ""}
-                    {t.eligible_questions} eligible · {t.config_ready ? "Ready" : t.config ? "Needs questions" : "Needs configuration"}
+                    {t.eligible_questions} eligible post-test · {t.config_ready ? "Ready" : t.config ? "Needs questions" : "Needs configuration"}
                   </small>
                   {t.pending_scheduling_count || t.unavailable_count ? (
                     <small className="form-error">
@@ -984,34 +987,35 @@ function AssignmentOutcome({ result, onClose }: { result: AssignmentResult; onCl
 
 function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (result: AssignmentResult) => void }) {
   const trainings = useApi<TrainingAdmin[]>("/admin/trainings?status=ACTIVE");
-  const batches = useApi<Batch[]>("/admin/batches");
   const employees = useApi<{ id: string; full_name: string; employee_code: string; department: string | null; function: string | null; employment_status: string }[]>("/admin/employees");
   const [trainingId, setTrainingId] = useState("");
   const [useTarget, setUseTarget] = useState(false);
   const [filter, setFilter] = useState("");
+  // Kept by ID, so a ticked employee stays selected when the search changes and hides them.
+  const [chosen, setChosen] = useState<Set<string>>(() => new Set());
   const list = trainings.data ?? [];
   const selected = trainingId || list[0]?.id || "";
   const training = list.find((t) => t.id === selected);
-  const needle = filter.trim().toLowerCase();
   // Inactive employees cannot receive new assignments, so they are not offered.
   const active = (employees.data ?? []).filter((p) => p.employment_status !== "INACTIVE");
-  const shown = needle ? active.filter((p) => `${p.full_name} ${p.employee_code} ${p.department ?? ""} ${p.function ?? ""}`.toLowerCase().includes(needle)) : active;
+  const shown = filterPeople(active, filter);
+  const picked = active.filter((p) => chosen.has(p.id));
+  const everyoneShown = allShownSelected(chosen, shown);
   return (
     <DialogForm
       title="Assign employees"
       submitLabel="Assign selected employees"
       wide
       submitBlockedReason={
-        !trainings.data ? "Loading active trainings…" : !list.length ? "No active training can take assignments. Activate a training in Training Management first." : null
+        !trainings.data ? "Loading active trainings…" : !list.length ? "No active training can take assignments. Activate a training in Training Management first." : !useTarget && !picked.length ? "Select at least one employee." : null
       }
       onClose={onClose}
       onSubmit={async (form) => {
-        const result = await api.post<AssignmentResult>("/admin/enrolments", { training_id: selected, batch_id: form.get("batch_id") || null, employee_ids: form.getAll("employee_ids"), use_training_target: useTarget });
+        const result = await api.post<AssignmentResult>("/admin/enrolments", { training_id: selected, employee_ids: useTarget ? [] : picked.map((p) => p.id), use_training_target: useTarget });
         onSaved(result);
       }}
     >
       <SelectField label="Training (active only) *" value={selected} onChange={(e) => setTrainingId(e.target.value)} placeholder={trainings.data ? undefined : "Loading trainings…"} options={list.map((t) => ({ value: t.id, label: t.title }))} />
-      <SelectField label="Batch" name="batch_id" placeholder="No batch" options={(batches.data ?? []).filter((b) => b.training_id === selected).map((b) => ({ value: b.id, label: b.name }))} />
       {training ? (
         <p className="small">
           Audience: {SCOPE_LABEL[training.target_scope]}
@@ -1026,10 +1030,18 @@ function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (res
         <fieldset>
           <legend>Select employees</legend>
           <TextField label="Find by name, ID, department or function" name="employee_filter" type="search" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <div className="row wrap between">
+            <Btn kind="text" disabled={!shown.length} onClick={() => setChosen((c) => toggleShown(c, shown))}>
+              {everyoneShown ? "Clear" : "Select all"} {filter.trim() ? `${shown.length} matching` : `${shown.length}`}
+            </Btn>
+            <span className="small" role="status">
+              {picked.length} selected
+            </span>
+          </div>
           <div className="checkbox-list">
             {shown.map((p) => (
               <label key={p.id}>
-                <input type="checkbox" name="employee_ids" value={p.id} /> {p.full_name} · {p.employee_code}
+                <input type="checkbox" checked={chosen.has(p.id)} onChange={() => setChosen((c) => toggleOne(c, p.id))} /> {p.full_name} · {p.employee_code}
                 {p.department || p.function ? <small> · {[p.department, p.function].filter(Boolean).join(" / ")}</small> : null}
               </label>
             ))}
@@ -1039,6 +1051,222 @@ function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (res
       )}
       <p className="small">Existing assignments are skipped, so no one is enrolled twice. Record completion separately after attendance.</p>
     </DialogForm>
+  );
+}
+
+/* ---------- Add Employee: one by form, or many from a file ---------- */
+
+function AddEmployeeDialog({ onClose }: { onClose: () => void }) {
+  const [mode, setMode] = useState<AddEmployeeMode | null>(null);
+  if (mode === "single") return <NewEmployeeForm onBack={() => setMode(null)} onClose={onClose} />;
+  if (mode === "bulk") return <BulkEmployees onBack={() => setMode(null)} onClose={onClose} />;
+  return (
+    <Modal title="Add employee" onClose={onClose}>
+      <p>How would you like to add employees?</p>
+      <div className="add-employee-choices" role="group" aria-label="How to add employees">
+        <button type="button" className="add-employee-choice" onClick={() => setMode("single")}>
+          <Icon name="person" />
+          <strong>New Employee</strong>
+          <span>Add one person with a short form.</span>
+        </button>
+        <button type="button" className="add-employee-choice" onClick={() => setMode("bulk")}>
+          <Icon name="users" />
+          <strong>Multiple Employees</strong>
+          <span>Upload a CSV or Excel file, check the preview, then import.</span>
+        </button>
+      </div>
+      <p className="small">{PASSWORD_RULE} Adding an employee does not assign any training.</p>
+      <div className="dialog-actions">
+        <Btn onClick={onClose}>Cancel</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function NewEmployeeForm({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+  const departments = useApi<OrgUnit[]>("/admin/departments");
+  const choices = activeDepartments(departments.data);
+  const toast = useToast();
+  return (
+    <DialogForm
+      title="Add employee · New Employee"
+      submitLabel="Add employee"
+      onClose={onClose}
+      submitBlockedReason={departments.error ? `Departments could not be loaded. ${departments.error.message}` : !departments.data ? "Loading departments…" : !choices.length ? "No active department exists. Add one in Departments & Functions first." : null}
+      onSubmit={async (form) => {
+        const result = await api.post<{ created: number; employee: { full_name: string; employee_code: string } }>("/admin/employees", {
+          full_name: form.get("full_name"),
+          employee_code: form.get("employee_code"),
+          work_email: form.get("work_email"),
+          joining_date: form.get("joining_date"),
+          department_id: form.get("department_id"),
+        });
+        toast(`${result.employee.full_name} (${result.employee.employee_code}) added. They are now available in Assign Employees.`);
+      }}
+    >
+      <Btn kind="text" onClick={onBack}>
+        <Icon name="back" /> Choose another way
+      </Btn>
+      <TextField label="Full name *" name="full_name" required maxLength={160} autoComplete="off" />
+      <div className="form-grid">
+        <TextField label="Employee ID *" name="employee_code" required maxLength={40} autoComplete="off" />
+        <TextField label="Work email *" name="work_email" type="email" required maxLength={254} autoComplete="off" />
+      </div>
+      <div className="form-grid">
+        <TextField label="Joining date *" name="joining_date" type="date" required min="1900-01-01" max="2100-12-31" />
+        <SelectField label="Department *" name="department_id" required placeholder={departments.data ? "Choose an active department" : "Loading departments…"} options={choices.map((d) => ({ value: d.id, label: `${d.name} (${d.code})` }))} />
+      </div>
+      <p className="small">{PASSWORD_RULE}</p>
+    </DialogForm>
+  );
+}
+
+function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [checked, setChecked] = useState<File | null>(null);
+  const [preview, setPreview] = useState<EmployeePreview | null>(null);
+  const [busy, setBusy] = useState<"validate" | "import" | null>(null);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState<EmployeeImportResult | null>(null);
+  const toast = useToast();
+  const form = () => {
+    const data = new FormData();
+    if (file) data.set("file", file);
+    return data;
+  };
+  const download = (format: "csv" | "xlsx") =>
+    downloadFile(`/admin/employees/import/template${format === "xlsx" ? "?format=xlsx" : ""}`, `traincheck-employees-template.${format}`).catch((e: ApiError) => toast(e.message));
+  const validate = async () => {
+    if (!file) {
+      setError("Choose a CSV or Excel file first.");
+      return;
+    }
+    setBusy("validate");
+    setError("");
+    setPreview(null);
+    try {
+      setPreview(await api.upload<EmployeePreview>("/admin/employees/import/preview", form()));
+      setChecked(file);
+    } catch (e) {
+      setError(fieldErrors(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const confirm = async () => {
+    setBusy("import");
+    setError("");
+    try {
+      const result = await api.upload<EmployeeImportResult>("/admin/employees/import", form());
+      setDone(result);
+      toast(createdMessage(result.created));
+    } catch (e) {
+      // Checked again on confirmation: show what changed (for example, someone added one of these employees meanwhile).
+      if (e instanceof ApiError && e.code === "IMPORT_NOT_READY" && e.details) setPreview(e.details as EmployeePreview);
+      setError(fieldErrors(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const blocked = confirmBlockedReason(preview, file !== checked);
+  // Rows with problems first, so they are on the first page of the table; each keeps its file row number.
+  const shown = preview ? [...preview.rows].sort((a, b) => Number(b.status === "INVALID") - Number(a.status === "INVALID")) : [];
+  return (
+    <Modal title="Add employees · Multiple Employees" onClose={onClose} wide>
+      {done ? (
+        <>
+          <div className="notice" role="status">
+            <strong>{createdMessage(done.created)}</strong> Imported from {done.file_name}. No training was assigned.
+          </div>
+          <DataTable all headers={["Employee ID", "Name"]} rows={done.employees.map((e) => [e.employee_code, e.full_name])} />
+          <div className="dialog-actions">
+            <Btn kind="primary" onClick={onClose}>
+              Done
+            </Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <Btn kind="text" onClick={onBack} disabled={busy !== null}>
+            <Icon name="back" /> Choose another way
+          </Btn>
+          <p className="small">
+            Columns: {EMPLOYEE_COLUMNS.join(", ")}. Departments must already exist and be active (code or exact name). Joining dates are read day first: 19 Nov 2026, 19/11/2026, 19-11-2026, 2026-11-19 or 19112026. Keep employee IDs as text so leading zeros stay.
+          </p>
+          <div className="row wrap">
+            <Btn tone="data" onClick={() => void download("csv")}>
+              Download CSV template
+            </Btn>
+            <Btn tone="data" onClick={() => void download("xlsx")}>
+              Download Excel template
+            </Btn>
+          </div>
+          <label className="field add-employee-file">
+            Employee file (CSV or Excel) *
+            <input
+              type="file"
+              name="file"
+              accept={EMPLOYEE_FILE_TYPES}
+              disabled={busy !== null}
+              onChange={(e) => {
+                setFile(e.target.files?.[0] ?? null);
+                setPreview(null);
+                setError("");
+              }}
+            />
+          </label>
+          <small className="small">Up to 5 MB. The first worksheet is read as plain values; formulas, macros and external links are rejected.</small>
+          <div className="row wrap">
+            <Btn kind="primary" onClick={() => void validate()} disabled={busy !== null || !file}>
+              {busy === "validate" ? "Validating file…" : "Validate file"}
+            </Btn>
+          </div>
+          <FormError message={error} />
+          {preview ? (
+            <div id="employee-preview">
+              <Metrics
+                items={[
+                  ["Rows", preview.total_rows, "In the file"],
+                  ["Ready", preview.valid_rows, "Passed validation"],
+                  ["Need correcting", preview.invalid_rows, "Fix in the file"],
+                ]}
+              />
+              <div className={`notice${preview.ready ? "" : " danger"}`} role="status">
+                {previewSummary(preview)}
+              </div>
+              <DataTable
+                headers={["Row", "Name", "Employee ID", "Email", "Joining date", "Department", "Status", "Problems"]}
+                rows={shown.map((r) => [
+                  r.row,
+                  r.name || "—",
+                  r.employee_code || "—",
+                  r.email || "—",
+                  joiningShown(r),
+                  departmentShown(r),
+                  <span key="s" className={`badge ${r.status === "VALID" ? "success" : "danger"}`} data-sort={r.status}>
+                    {r.status === "VALID" ? "Ready" : "Needs correcting"}
+                  </span>,
+                  rowProblems(r),
+                ])}
+              />
+            </div>
+          ) : null}
+          {blocked && preview ? (
+            <p className="small" id="employee-confirm-blocked">
+              {blocked}
+            </p>
+          ) : null}
+          <div className="dialog-actions">
+            <Btn onClick={onClose} disabled={busy === "import"}>
+              Cancel
+            </Btn>
+            <Btn kind="primary" onClick={() => void confirm()} disabled={Boolean(blocked) || busy !== null} aria-describedby={blocked && preview ? "employee-confirm-blocked" : undefined}>
+              {busy === "import" ? "Importing…" : preview?.ready && !blocked ? `Confirm Import (${plural(preview.total_rows, "employee")})` : "Confirm Import"}
+            </Btn>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -1057,6 +1285,7 @@ function AssignmentsInner() {
   const [stage, setStage] = useState("");
   const state = useApi<EnrolmentRow[]>(`/admin/enrolments${toQuery({ search })}`);
   const [assigning, setAssigning] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [outcome, setOutcome] = useState<AssignmentResult | null>(null);
   const [cancel, setCancel] = useState<EnrolmentRow | null>(null);
   const [retake, setRetake] = useState<EnrolmentRow | null>(null);
@@ -1069,9 +1298,14 @@ function AssignmentsInner() {
         title="Employee Assignments"
         description="Training assignment and completion are independent records. Only active trainings and active employees in the audience can be assigned."
         action={
-          <Btn kind="primary" onClick={() => setAssigning(true)}>
-            <Icon name="plus" /> Assign Employees
-          </Btn>
+          <div className="page-actions">
+            <Btn onClick={() => setAdding(true)}>
+              <Icon name="plus" /> Add Employee
+            </Btn>
+            <Btn kind="primary" onClick={() => setAssigning(true)}>
+              <Icon name="plus" /> Assign Employees
+            </Btn>
+          </div>
         }
       />
       <section className="panel">
@@ -1147,6 +1381,7 @@ function AssignmentsInner() {
           }}
         </Loaded>
       </section>
+      {adding ? <AddEmployeeDialog onClose={() => setAdding(false)} /> : null}
       {assigning ? (
         <AssignDialog
           onClose={() => setAssigning(false)}
@@ -1613,7 +1848,8 @@ interface QuestionRow {
   status: string;
   version: number;
   randomise_options: boolean;
-  trainings: { id: string; title: string; code: string }[];
+  /** test_type: the test of that training that may use the question; null is an unclassified link (both tests). */
+  trainings: { id: string; title: string; code: string; test_type?: string | null }[];
   explanation?: string | null;
   options?: { id: string; text: string; is_correct: boolean }[];
 }
@@ -1764,7 +2000,7 @@ function QuestionBankInner() {
                   </small>
                 </div>,
                 <div key="t">
-                  {q.trainings.map((t) => t.title).join(", ") || "Not linked"}
+                  {q.trainings.map((t) => `${t.title} (${t.test_type ? TEST_TYPE_LABEL[t.test_type] : "both tests"})`).join(", ") || "Not linked"}
                   <small>{q.competency ?? "No competency"}</small>
                 </div>,
                 <div key="d">
@@ -1853,6 +2089,8 @@ interface ImportJob {
   file_name: string;
   training?: ImportTraining | null;
   trainings?: ImportTraining[];
+  /** PRE_TEST or POST_TEST for question imports; null for completions and for question imports made before test types. */
+  test_type?: string | null;
   status: string;
   total_rows: number;
   accepted_rows: number;
@@ -1882,27 +2120,41 @@ const ROW_STATUS: Record<string, [string, string]> = {
   INVALID: ["Rejected", "danger"],
 };
 
-/** Where a question import's questions go: the selected training, or the trainings named in a file-based import. */
+/** Where a question import's questions go: the selected training and test type (older imports: the trainings named in the file). */
 function ImportTrainingLinks({ job }: { job: ImportJob }) {
   const list = job.training ? [job.training] : (job.trainings ?? []);
-  if (job.import_type !== "QUESTIONS" || !list.length) return null;
+  if (job.import_type !== "QUESTIONS") return null;
   return (
-    <p className="import-training">
-      {job.training ? "Linked training: " : "Linked trainings (from the file): "}
-      {list.map((t, i) => (
-        <span key={t.id}>
-          {i ? "; " : ""}
-          <strong>{t.title}</strong> ({t.code}){t.status === "DRAFT" ? " · Draft" : ""} ·{" "}
-          <Link href={`/lnd/questions?training_id=${t.id}`}>Open in Question Bank</Link>
-        </span>
-      ))}
-    </p>
+    <>
+      {list.length ? (
+        <p className="import-training">
+          {job.training ? "Linked training: " : "Linked trainings (from the file): "}
+          {list.map((t, i) => (
+            <span key={t.id}>
+              {i ? "; " : ""}
+              <strong>{t.title}</strong> ({t.code}){t.status === "DRAFT" ? " · Draft" : ""} ·{" "}
+              <Link href={`/lnd/questions?training_id=${t.id}`}>Open in Question Bank</Link>
+            </span>
+          ))}
+        </p>
+      ) : null}
+      <p className="import-training">
+        Test type: <strong>{testTypeLabel(job)}</strong>
+        {job.test_type
+          ? ` · used only for this training's ${TEST_TYPE_LABEL[job.test_type]?.toLowerCase() ?? "test"}`
+          : job.status === "READY"
+            ? " · validated before test types existed. Edit this import and choose the training and test type before importing."
+            : " · imported before test types existed. Its questions stay eligible for both the pre-test and the post-test of their training."}
+      </p>
+    </>
   );
 }
 
 export function ImportCentre() {
   const [kind, setKind] = useState("QUESTIONS");
   const [trainingId, setTrainingId] = useState("");
+  // No default: L&D chooses Pre-test or Post-test for every question import.
+  const [testType, setTestType] = useState("");
   const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
   const [job, setJob] = useState<ImportJob | null>(null);
   const [error, setError] = useState("");
@@ -1917,19 +2169,19 @@ export function ImportCentre() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     form.set("import_type", kind);
-    if (kind === "QUESTIONS" && !trainingId) {
-      setError("Select the training these questions belong to.");
+    const sent = formSnapshot();
+    const problem = selectionProblem(sent);
+    if (problem) {
+      setError(problem);
       return;
     }
-    const sent = formSnapshot();
     setBusy(true);
     setError("");
     setJob(null);
     try {
       const validated = await api.upload<ImportJob>("/admin/imports", form);
-      const current = formSnapshot();
-      if (current.training !== sent.training || current.file !== sent.file) {
-        // The type, training or file changed while validating: this preview no longer matches the form.
+      if (selectionChanged(sent, formSnapshot())) {
+        // The type, training, test type or file changed while validating: this preview no longer matches the form.
         void api.post(`/admin/imports/${validated.id}/cancel`).catch(() => {});
         return;
       }
@@ -1945,7 +2197,8 @@ export function ImportCentre() {
     if (!job) return;
     setBusy(true);
     try {
-      const done = await api.post<ImportJob>(`/admin/imports/${job.id}/commit`);
+      // The server imports with the training and test type saved at validation; these are only compared with them.
+      const done = await api.post<ImportJob>(`/admin/imports/${job.id}/commit`, commitSelection(job, formSnapshot()));
       setJob(done);
       toast(`${rows(done.accepted_rows)} imported; ${rows(done.rejected_rows)} rejected or skipped as duplicates.`);
       void recent.reload();
@@ -1960,6 +2213,7 @@ export function ImportCentre() {
   const showJob = (full: ImportJob) => {
     setKind(full.import_type);
     setTrainingId(full.training?.id ?? "");
+    setTestType(full.test_type ?? "");
     setJob(full);
     setError("");
   };
@@ -1971,8 +2225,13 @@ export function ImportCentre() {
     setError("");
   };
   const fileInput = () => document.querySelector<HTMLInputElement>("#import-form input[type=file]");
-  /** What the form holds now. The training select exists only for question imports, so a type change shows here too. */
-  const formSnapshot = () => ({ training: document.querySelector<HTMLSelectElement>("#import-form select[name=training_id]")?.value ?? null, file: fileInput()?.files?.[0] ?? null });
+  /** What the form holds now, read from the page itself so a change made while validating is seen. */
+  const formSnapshot = (): ImportSelection => ({
+    kind: document.querySelector<HTMLSelectElement>("#import-form select[name=import_type]")?.value ?? kind,
+    trainingId: document.querySelector<HTMLSelectElement>("#import-form select[name=training_id]")?.value ?? "",
+    testType: document.querySelector<HTMLSelectElement>("#import-form select[name=test_type]")?.value ?? "",
+    file: fileInput()?.files?.[0] ?? null,
+  });
   const focusById = (id: string) => {
     const el = document.getElementById(id);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1999,7 +2258,7 @@ export function ImportCentre() {
   const importable = (trainings.data ?? []).filter((t) => t.status !== "ARCHIVED");
   const hint = !job
     ? kind === "QUESTIONS"
-      ? "Choose the training and a file, then select Validate file. Nothing is saved until step 3."
+      ? "Choose the training, the test type and a file, then select Validate file. Nothing is saved until step 3."
       : "Choose the import type and a file, then select Validate file. Nothing is saved until step 3."
     : finished
       ? "Import finished. Select 1 · Choose file to import another file."
@@ -2032,30 +2291,57 @@ export function ImportCentre() {
             if ((e.target as HTMLElement).getAttribute("type") === "file" && job) discardPreview();
           }}
         >
-          <SelectField
-            label="Import type"
-            value={kind}
-            onChange={(e) => {
-              setKind(e.target.value);
-              if (job) discardPreview();
-            }}
-            options={[{ value: "QUESTIONS", label: "Question bank" }, { value: "COMPLETIONS", label: "Training completions" }]}
-          />
+          {/* Import type, Select training, Test type: side by side on desktop, stacked in the same order on mobile. */}
+          <div className="import-selections">
+            {importFields(kind).map((field) =>
+              field === "import_type" ? (
+                <SelectField
+                  key={field}
+                  label="Import type"
+                  name="import_type"
+                  value={kind}
+                  onChange={(e) => {
+                    setKind(e.target.value);
+                    if (job) discardPreview();
+                  }}
+                  options={[{ value: "QUESTIONS", label: "Question bank" }, { value: "COMPLETIONS", label: "Training completions" }]}
+                />
+              ) : field === "training_id" ? (
+                <SelectField
+                  key={field}
+                  label="Select training *"
+                  name="training_id"
+                  required
+                  aria-describedby="import-selection-help"
+                  value={trainingId}
+                  placeholder={trainings.data ? "Choose a draft or active training" : "Loading trainings…"}
+                  onChange={(e) => {
+                    setTrainingId(e.target.value);
+                    if (job) discardPreview();
+                  }}
+                  options={importable.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})${t.status === "DRAFT" ? " · Draft" : ""}` }))}
+                />
+              ) : (
+                <SelectField
+                  key={field}
+                  label="Test type *"
+                  name="test_type"
+                  required
+                  aria-describedby="import-selection-help"
+                  value={testType}
+                  placeholder="Choose Pre-test or Post-test"
+                  onChange={(e) => {
+                    setTestType(e.target.value);
+                    if (job) discardPreview();
+                  }}
+                  options={TEST_TYPE_OPTIONS}
+                />
+              ),
+            )}
+          </div>
           {kind === "QUESTIONS" ? (
-            <div className="import-training-select">
-              <SelectField
-                label="Select training *"
-                name="training_id"
-                required
-                value={trainingId}
-                placeholder={trainings.data ? "Choose a draft or active training" : "Loading trainings…"}
-                onChange={(e) => {
-                  setTrainingId(e.target.value);
-                  if (job) discardPreview();
-                }}
-                options={importable.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})${t.status === "DRAFT" ? " · Draft" : ""}` }))}
-              />
-              <p className="small">All questions in this file will be linked to the selected training. The file&apos;s training column can be left blank; a code in it must match this training.</p>
+            <div className="import-training-select" id="import-selection-help">
+              <p className="small">{TEST_TYPE_HELP} The file&apos;s training column can be left blank; a code in it must match this training.</p>
               {trainings.data && !importable.length ? <p className="small form-error">No draft or active training exists. Create one in Training Management first.</p> : null}
               {trainings.error ? <p className="small form-error">Trainings could not be loaded. {trainings.error.message}</p> : null}
             </div>
@@ -2081,12 +2367,13 @@ export function ImportCentre() {
           >
             <Icon name="download" />
             <h2>Drop your question or attendance file here</h2>
-            <p>Drag and drop a CSV/XLSX file, or select one below. Up to 5 MB and 5,000 rows.</p>
+            <p>Drag and drop a {fileTypesLabel(kind)} file, or select one below. Up to 5 MB and 5,000 {kind === "QUESTIONS" ? "questions" : "rows"}.</p>
             <label className="field">
-              Select CSV or Excel file
-              <input type="file" name="file" accept=".csv,.xlsx" required />
+              Select {fileTypesLabel(kind)} file
+              <input type="file" name="file" accept={acceptedFiles(kind)} required />
             </label>
             <small>The first worksheet is read as plain values. Formulas, macros and external links are rejected.</small>
+            {kind === "QUESTIONS" ? <small>PDFs must use the TrainCheck PDF template: each question is a block of labelled lines starting with &quot;ID:&quot;. Only text is read; scanned and password-protected PDFs cannot be imported.</small> : null}
           </div>
           <div className="row wrap">
             <Btn tone="data" onClick={() => void download(`/admin/imports/templates/${kind}`, "template.csv")}>
@@ -2095,6 +2382,11 @@ export function ImportCentre() {
             <Btn tone="data" onClick={() => void download(`/admin/imports/templates/${kind}?format=xlsx`, "template.xlsx")}>
               Download Excel template
             </Btn>
+            {kind === "QUESTIONS" ? (
+              <Btn tone="data" onClick={() => void download(`/admin/imports/templates/${kind}?format=pdf`, "template.pdf")}>
+                Download PDF template
+              </Btn>
+            ) : null}
             <button className="btn primary" type="submit" disabled={busy}>
               {busy ? "Validating file…" : "Validate file"}
             </button>
@@ -2129,11 +2421,16 @@ export function ImportCentre() {
                 </Btn>
               ) : null}
               {job.status === "READY" ? (
-                <Btn kind="primary" id="import-commit" disabled={!job.accepted_rows || busy} onClick={() => void commit()}>
+                <Btn kind="primary" id="import-commit" aria-describedby="import-confirm-summary" disabled={!job.accepted_rows || busy || needsRevalidation(job)} onClick={() => void commit()}>
                   Import {rows(job.accepted_rows, "valid row")}
                 </Btn>
               ) : null}
             </div>
+            {job.status === "READY" && job.import_type === "QUESTIONS" && job.accepted_rows && !needsRevalidation(job) ? (
+              <p className="small" id="import-confirm-summary">
+                Importing adds {rows(job.accepted_rows, "new question")} to <strong>{job.training?.title}</strong> ({job.training?.code}) for the <strong>{testTypeLabel(job).toLowerCase()}</strong> only. Duplicate question IDs are skipped; existing questions and their links are not changed.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </section>
@@ -2142,13 +2439,14 @@ export function ImportCentre() {
         <Loaded state={recent}>
           {(rows) => (
             <DataTable
-              headers={["File", "Type", "Training", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)", ""]}
+              headers={["File", "Type", "Training", "Test type", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)", ""]}
               emptyTitle="No imports yet."
               emptyHint="Validate a file above to begin."
               rows={rows.map((j) => [
                 j.file_name,
                 j.import_type === "QUESTIONS" ? "Question bank" : "Completions",
                 j.training ? `${j.training.title} (${j.training.code})` : j.import_type === "QUESTIONS" ? "Named in file" : "—",
+                testTypeLabel(j),
                 j.status.replaceAll("_", " ").toLowerCase(),
                 j.total_rows,
                 j.accepted_rows,
@@ -2187,21 +2485,30 @@ export function ImportCentre() {
           }}
         >
           <p className="small">
-            {editing.file_name} · {rows(editing.total_rows)}. Choose a corrected file{editing.import_type === "QUESTIONS" ? " and the training" : ""}. Its rows replace the current ones in this import and are validated again; nothing is imported until you confirm.
+            {editing.file_name} · {rows(editing.total_rows)}. Choose a corrected file{editing.import_type === "QUESTIONS" ? ", the training and the test type" : ""}. Its rows replace the current ones in this import and are validated again; nothing is imported until you confirm.
           </p>
           {editing.import_type === "QUESTIONS" ? (
-            <SelectField
-              label="Select training *"
-              name="training_id"
-              required
-              defaultValue={editing.training?.id ?? ""}
-              placeholder="Choose a draft or active training"
-              options={importable.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})${t.status === "DRAFT" ? " · Draft" : ""}` }))}
-            />
+            <>
+              <div className="form-grid">
+                <SelectField
+                  label="Select training *"
+                  name="training_id"
+                  required
+                  aria-describedby="import-edit-help"
+                  defaultValue={editing.training?.id ?? ""}
+                  placeholder="Choose a draft or active training"
+                  options={importable.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})${t.status === "DRAFT" ? " · Draft" : ""}` }))}
+                />
+                <SelectField label="Test type *" name="test_type" required aria-describedby="import-edit-help" defaultValue={editing.test_type ?? ""} placeholder="Choose Pre-test or Post-test" options={TEST_TYPE_OPTIONS} />
+              </div>
+              <p className="small" id="import-edit-help">
+                {TEST_TYPE_HELP}
+              </p>
+            </>
           ) : null}
           <label className="field">
-            Select CSV or Excel file *
-            <input type="file" name="file" accept=".csv,.xlsx" required />
+            Select {fileTypesLabel(editing.import_type)} file *
+            <input type="file" name="file" accept={acceptedFiles(editing.import_type)} required />
           </label>
         </DialogForm>
       ) : null}
@@ -2253,7 +2560,7 @@ function PoolPanel({ training, report, count, mix, check, reload, onUseEligible 
   );
   return (
     <section className="tc-pool" aria-labelledby="pool-title" aria-live="polite">
-      <h3 id="pool-title">Question pool</h3>
+      <h3 id="pool-title">{report.assessment_type === "PRE_TEST" ? "Pre-test" : "Post-test"} question pool</h3>
       {report.eligible === 0 ? (
         <div className="notice danger">
           <div>
@@ -2317,7 +2624,8 @@ const mixFor = (count: number): Record<Difficulty, string> => {
 function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAdmin; kind: "POST_TEST" | "PRE_TEST"; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
   const current: ConfigView | null | undefined = kind === "POST_TEST" ? training.config : training.pre_test_config;
-  const pool = useApi<PoolReport>(`/admin/trainings/${training.id}/question-pool`);
+  // Each test has its own pool: pre-test-only questions never count for the post-test, and the reverse.
+  const pool = useApi<PoolReport>(`/admin/trainings/${training.id}/question-pool?assessment_type=${kind}`);
   const reloadPool = pool.reload;
   // Questions are often added in another tab (the Question Bank opens in one), so recount on return.
   useEffect(() => {
@@ -2486,7 +2794,10 @@ export function AssessmentConfig() {
               emptyTitle="No trainings yet."
               rows={rows.map((t) => [
                 t.title,
-                t.eligible_questions,
+                <span key="q">
+                  {t.eligible_questions} post-test
+                  {t.pretest_enabled ? <small>{t.pre_test_eligible_questions ?? 0} pre-test</small> : null}
+                </span>,
                 <span key="r" className={`badge ${t.config_ready ? "success" : t.config ? "danger" : "info"}`}>
                   {t.config_ready ? "Ready" : t.config ? "Needs questions" : "Not configured"}
                 </span>,

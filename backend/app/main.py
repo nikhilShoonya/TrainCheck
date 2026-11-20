@@ -34,7 +34,7 @@ logger = logging.getLogger("traincheck")
 API_PREFIX = "/api/v1"
 # Import uploads: FastAPI reads and spools a multipart body before any dependency (sign-in included) runs, so these
 # are checked from their headers first (audit F-08). The allowance covers multipart framing and the form fields.
-UPLOAD_PATH = re.compile(rf"^{API_PREFIX}/admin/imports(/[^/]+/replace)?/?$")
+UPLOAD_PATH = re.compile(rf"^{API_PREFIX}/admin/(imports(/[^/]+/replace)?|employees/import(/preview)?)/?$")
 MULTIPART_ALLOWANCE = 64 * 1024
 
 

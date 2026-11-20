@@ -276,7 +276,7 @@ export function LoginPage() {
       </section>
       {dialog === "recovery" ? (
         <Modal title="Forgot your password?" onClose={() => setDialog(null)}>
-          <p>Ask your TrainCheck system administrator for a one-time password, then change it in My profile. Self-service recovery by email will be added once Finvasia approves an email provider.</p>
+          <p>Employees: your password is set by L&amp;D and cannot be changed or reset here. Contact your L&amp;D Admin. L&amp;D Admins: ask your TrainCheck system administrator for a one-time password, then change it in My profile.</p>
         </Modal>
       ) : null}
       {dialog === "reset" ? (

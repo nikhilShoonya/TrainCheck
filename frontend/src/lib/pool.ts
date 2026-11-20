@@ -15,6 +15,8 @@ export interface DifficultyGap {
 
 export interface PoolReport {
   training_id: string;
+  /** The test this pool is for. Questions imported for the other test are never counted. */
+  assessment_type: "PRE_TEST" | "POST_TEST";
   linked_total: number;
   active: number;
   inactive: number;
@@ -24,6 +26,10 @@ export interface PoolReport {
   insufficient_options_codes: string[];
   eligible: number;
   eligible_by_difficulty: Record<Difficulty, number>;
+  /** Eligible through a link made before test types existed; such questions count for both tests. */
+  eligible_unclassified?: number;
+  /** Linked to this training only for the other test type. */
+  other_test_type?: number;
   suggested_question_count: number;
   required: number | null;
   shortfall: number | null;
@@ -79,6 +85,7 @@ export function exclusionNotes(report: PoolReport): string[] {
   if (report.inactive) notes.push(`${plural(report.inactive, "inactive question")} not counted`);
   if (report.missing_answer_key) notes.push(`${plural(report.missing_answer_key, "question")} without a correct answer${codes(report.missing_answer_key_codes, report.missing_answer_key)}`);
   if (report.insufficient_options) notes.push(`${plural(report.insufficient_options, "question")} with fewer than 2 options${codes(report.insufficient_options_codes, report.insufficient_options)}`);
+  if (report.other_test_type) notes.push(`${plural(report.other_test_type, "question")} imported for the ${report.assessment_type === "PRE_TEST" ? "post-test" : "pre-test"} only`);
   return notes;
 }
 

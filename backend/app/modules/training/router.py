@@ -198,13 +198,13 @@ def config_view(config: AssessmentConfig | None, calendar: CalendarView | None =
     }
 
 
-def config_pool(db: Session, training_id: uuid.UUID, config: AssessmentConfig | None, pools: PoolData | None = None) -> dict:
-    """The question pool measured against the active configuration. Without one, readiness is NOT_CONFIGURED."""
+def config_pool(db: Session, training_id: uuid.UUID, config: AssessmentConfig | None, pools: PoolData | None = None, *, assessment_type: str) -> dict:
+    """One test's question pool measured against its active configuration. Without one, readiness is NOT_CONFIGURED."""
     if config is None:
-        report = pool_report(db, training_id, pools=pools)
+        report = pool_report(db, training_id, pools=pools, assessment_type=assessment_type)
         report.update({"reason": "NOT_CONFIGURED", "reasons": ["NOT_CONFIGURED"], "ready": False})
         return report
-    return pool_report(db, training_id, config.question_count, config.difficulty_mix, pools)
+    return pool_report(db, training_id, config.question_count, config.difficulty_mix, pools, assessment_type=assessment_type)
 
 
 class TrainingData:
@@ -242,7 +242,9 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
     loaded = data_for or TrainingData(db, [t])
     enrolments = loaded.enrolments[t.id]
     post = loaded.post.get(t.id)
-    pool = config_pool(db, t.id, post, loaded.pools)
+    pool = config_pool(db, t.id, post, loaded.pools, assessment_type=AssessmentType.POST_TEST)
+    # The pre-test draws from its own pool; pre-test-only questions never make the post-test look ready.
+    pre_pool = pool_report(db, t.id, pools=loaded.pools, assessment_type=AssessmentType.PRE_TEST)
     readiness = service.readiness_from(t, post, pool if post else None)
     pending = [e for e in enrolments if e.completion and not any(o.assessment_type == AssessmentType.POST_TEST for o in e.obligations)]
     unavailable = loaded.unavailable[t.id]
@@ -272,6 +274,7 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
         "config": config_view(post, loaded.calendar),
         "timezone": loaded.calendar.timezone,
         "eligible_questions": pool["eligible"],
+        "pre_test_eligible_questions": pre_pool["eligible"],
         "config_ready": bool(pool["ready"]),
         "assessment_readiness": readiness.view(),
         "pending_scheduling_count": len(pending),
@@ -384,7 +387,7 @@ def update_training(training_id: uuid.UUID, body: TrainingIn, user: CurrentUser 
 def set_training_status(training_id: uuid.UUID, body: StatusIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     training = _training(db, training_id)
     if body.status == TrainingStatus.ACTIVE:
-        problem = config_pool(db, training.id, active_config(db, training.id, AssessmentType.POST_TEST))
+        problem = config_pool(db, training.id, active_config(db, training.id, AssessmentType.POST_TEST), assessment_type=AssessmentType.POST_TEST)
         if not problem["ready"]:
             raise ApiError(422, "QUESTION_POOL_INSUFFICIENT", "This training cannot be activated yet. " + pool_message(problem, training.title), problem)
     before = training.status
@@ -458,6 +461,7 @@ def question_pool(
     training_id: uuid.UUID,
     _: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
+    assessment_type: AssessmentType = Query(description="The test whose pool is counted: PRE_TEST or POST_TEST. Each has its own pool."),
     question_count: int | None = Query(default=None, ge=1, le=200),
     easy: int | None = Query(default=None, ge=0, le=200),
     medium: int | None = Query(default=None, ge=0, le=200),
@@ -468,7 +472,7 @@ def question_pool(
     mix = None
     if easy is not None or medium is not None or hard is not None:
         mix = {"EASY": easy or 0, "MEDIUM": medium or 0, "HARD": hard or 0}
-    return ok(pool_report(db, training.id, question_count, mix))
+    return ok(pool_report(db, training.id, question_count, mix, assessment_type=assessment_type))
 
 @router.post("/trainings/{training_id}/assessment-configs")
 def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:

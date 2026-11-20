@@ -5,8 +5,8 @@ from sqlalchemy import select
 from app.models import AssessmentConfig, Question, QuestionOption
 
 
-def pool(client, training_id, **params):
-    response = client.get(f"/admin/trainings/{training_id}/question-pool", params=params)
+def pool(client, training_id, assessment_type="POST_TEST", **params):
+    response = client.get(f"/admin/trainings/{training_id}/question-pool", params={"assessment_type": assessment_type, **params})
     assert response.status_code == 200, response.text
     return response.json()["data"]
 
@@ -36,7 +36,7 @@ def test_zero_eligible_questions(world, client_for, db):  # 1
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["code"] == "QUESTION_POOL_INSUFFICIENT"
-    assert "Sales Basics has no eligible active questions" in error["message"]
+    assert "Sales Basics has no eligible active post-test questions" in error["message"]
     assert (error["details"]["eligible"], error["details"]["required"], error["details"]["shortfall"]) == (0, 1, 1)
     assert configs(db, training_id) == []
 
@@ -124,7 +124,7 @@ def test_adding_questions_after_a_failed_save(world, client_for, db):  # 11
     admin = client_for(world.admin)
     failed = save_config(admin, training.id, 5)
     assert failed.status_code == 422
-    assert "has 4 eligible active questions, but the assessment requires 5. Add 1 more or reduce questions per attempt to 4." in failed.json()["error"]["message"]
+    assert "has 4 eligible active post-test questions, but the post-test requires 5. Add 1 more or reduce questions per attempt to 4." in failed.json()["error"]["message"]
     versions = configs(db, training.id)
     assert [(c.version, c.is_active, c.question_count) for c in versions] == [(1, True, 4)]  # Nothing changed.
 
