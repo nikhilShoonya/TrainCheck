@@ -42,7 +42,7 @@ test("question pool problems are explained, fixable and still enforced by the se
   await expect(count()).toHaveValue("");
   await expect(save()).toBeDisabled();
   await expect(dialog.getByText("Add eligible questions to this training before saving.")).toBeVisible();
-  await expect(dialog.getByRole("link", { name: /Open Question Bank/ })).toHaveAttribute("href", `/lnd/questions?training_id=${trainingId}`);
+  await expect(dialog.getByRole("link", { name: /Open Question Bank/ })).toHaveAttribute("href", `/lnd/questions/${trainingId}/post-test`);
 
   // 2. Five questions added elsewhere: refreshing suggests 5, not 10.
   const ids: string[] = [];
@@ -92,8 +92,8 @@ test("question pool problems are explained, fixable and still enforced by the se
   dialog = await openSettings();
   await expect(count()).toHaveValue("5");
 
-  // 8. The Question Bank link opens filtered, and a new question is pre-linked to this training.
-  await page.goto(`/lnd/questions?training_id=${trainingId}`);
+  // 8. The Question Bank link opens this training's post-test questions, and a new question is pre-linked to this training.
+  await page.goto(`/lnd/questions/${trainingId}/post-test`);
   await expect(page.getByRole("cell", { name: new RegExp(`POOL-${stamp}-0`) })).toBeVisible();
   await page.getByRole("button", { name: "Add Question" }).click();
   await expect(page.getByRole("dialog").getByRole("checkbox", { name: title })).toBeChecked();

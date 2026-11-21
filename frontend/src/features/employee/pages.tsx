@@ -10,7 +10,7 @@ import { EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, Panel, RecentRow, Scor
 import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import type { BehaviourMeans, ReviewSummary, Summary, TrainingCard } from "@/lib/types";
-import { dateTimeIn, day, firstName, percent, ORG_TIMEZONE } from "@/lib/utils";
+import { dateTimeIn, day, firstName, longDay, percent, ORG_TIMEZONE } from "@/lib/utils";
 
 const EYEBROW = "EMPLOYEE";
 
@@ -185,43 +185,56 @@ export function MyTrainings() {
               {cards.map((c, i) => {
                 const entry = cardEntry(c);
                 return (
-                <article className="panel course-card" key={c.enrolment_id}>
-                  <div className="row between">
+                <article className="panel course-card training-card" key={c.enrolment_id}>
+                  <div className="training-card-head">
                     <Glyph index={i} />
-                    <Badge status={c.result} />
+                    <div className="training-card-title">
+                      <Badge status={c.result} />
+                      <h2>{c.title}</h2>
+                      {c.description ? <p>{c.description}</p> : null}
+                    </div>
                   </div>
-                  <h2>{c.title}</h2>
-                  <p>{c.description}</p>
-                  <div className="course-meta">
-                    <span>{c.batch ?? "No batch"}</span>
-                    {c.question_count ? (
-                      <span>
-                        {c.question_count} questions · {c.duration_minutes} minutes
-                      </span>
-                    ) : null}
-                  </div>
-                  <p>
-                    <small>
-                      Training: {c.completed_at ? `Completed ${day(c.completed_at)}` : "Assigned · completion not recorded"}
-                      <br />
-                      First score {percent(c.first_score, "Not collected")} · Best {percent(c.best_score, "Not collected")}
-                      {c.pre_test_score !== null ? ` · Pre-test ${c.pre_test_score}%` : ""}
-                    </small>
-                  </p>
-                  {entry.status ? (
-                    <div className="course-next">
-                      <strong>{entry.status}</strong>
-                      {entry.note ? <small>{entry.note}</small> : null}
+                  {c.question_count || c.batch ? (
+                    <div className="training-card-meta">
+                      {c.question_count ? (
+                        <>
+                          <span className="questions"><Icon name="list" /> {c.question_count} questions</span>
+                          <span><Icon name="clock" /> {c.duration_minutes} minutes</span>
+                        </>
+                      ) : null}
+                      {c.batch ? <span><Icon name="users" /> {c.batch}</span> : null}
                     </div>
                   ) : null}
+                  <dl className="training-card-scores">
+                    {([["First score", c.first_score], ["Best score", c.best_score], ...(c.pre_test_score !== null ? [["Pre-test", c.pre_test_score]] : [])] as [string, number | null][]).map(([label, value]) => (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd className={value === null ? "missing" : undefined}>{percent(value, "Not collected")}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <p className={`training-card-done${c.completed_at ? " done" : ""}`}>
+                    <Icon name={c.completed_at ? "checkCircle" : "hourglass"} />
+                    {c.completed_at ? `Training completed · ${longDay(c.completed_at)}` : "Training assigned · completion not recorded"}
+                  </p>
                   {c.materials.length ? (
-                    <p>
+                    <p className="training-card-materials">
                       {c.materials.map((m) => (
                         <a key={m.id} href={m.url} target="_blank" rel="noopener noreferrer">
                           {m.title}{" "}
                         </a>
                       ))}
                     </p>
+                  ) : null}
+                  <div className="training-card-foot">
+                  {entry.status ? (
+                    <div className={`training-card-status${c.entry_state === "UNAVAILABLE" && c.entry_reason === "COMPLETED" ? " finished" : ""}`}>
+                      <strong>
+                        {c.entry_state === "UNAVAILABLE" && c.entry_reason === "COMPLETED" ? <Icon name="check" /> : null}
+                        {entry.status}
+                      </strong>
+                      {entry.note ? <small>{entry.note}</small> : null}
+                    </div>
                   ) : null}
                   <div className="row wrap">
                     {entry.href ? (
@@ -240,6 +253,7 @@ export function MyTrainings() {
                       </BtnLink>
                     ) : null}
                     {c.pre_test_available ? <BtnLink href={`/assessment/pre-test/${c.enrolment_id}`}>Take Pre-test</BtnLink> : null}
+                  </div>
                   </div>
                 </article>
                 );

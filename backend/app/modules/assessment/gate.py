@@ -7,7 +7,7 @@ kept unchanged, reported as unavailable, and L&D is alerted. It blocks again aut
 as the pool can run, or after L&D moves it onto a valid configuration.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -232,6 +232,52 @@ def next_opening(db: Session, employee_id: uuid.UUID, now: datetime) -> datetime
     )
 
 
+COUNTDOWN_WINDOW = timedelta(minutes=5)
+"""How long before a scheduled post-test opens its countdown takes over the workspace (presentation only)."""
+
+
+def countdown_ready(db: Session, obligation: AssessmentObligation, now: datetime, cache: dict) -> bool:
+    """Whether a scheduled post-test will be startable when it opens, by the same rules as start_attempt: still
+    waiting to open, its pool can draw the assessment, no refresher is owed and an attempt is left."""
+    from app.modules.assessment.entry import obligation_entry
+    from app.modules.assessment.service import counted_attempts
+
+    if obligation_entry(db, obligation, now, cache)["entry_state"] != "NOT_YET_OPEN":
+        return False
+    if finished_attempts(obligation) and obligation.refresher_acknowledged_at is None:
+        return False
+    if counted_attempts(obligation) >= obligation.config.max_attempts:
+        return False
+    return obligation_startable(db, obligation, cache)
+
+
+def countdown_state(db: Session, employee_id: uuid.UUID, now: datetime) -> tuple[dict | None, datetime | None]:
+    """The scheduled post-test whose countdown is showing now, or when the next countdown begins.
+
+    Only assessments already assigned to the employee and scheduled by L&D are considered; nothing is created here.
+    The nearest opening comes first, ties in the gate's queue order. An assessment inside the window that could not
+    start when it opens (pool incomplete, refresher owed, no attempt left) gets no countdown."""
+    upcoming = db.scalars(
+        select(AssessmentObligation)
+        .options(joinedload(AssessmentObligation.training), joinedload(AssessmentObligation.config))
+        .where(
+            AssessmentObligation.employee_id == employee_id,
+            AssessmentObligation.assessment_type == AssessmentType.POST_TEST,
+            AssessmentObligation.status.in_((ObligationStatus.SCHEDULED, ObligationStatus.DUE)),
+            AssessmentObligation.due_at > now,
+            training_not_archived(),
+        )
+        .order_by(AssessmentObligation.due_at, AssessmentObligation.completed_training_at, AssessmentObligation.created_at, AssessmentObligation.id)
+    ).unique()
+    cache: dict = {}
+    for obligation in upcoming:
+        if obligation.due_at - now > COUNTDOWN_WINDOW:
+            return None, obligation.due_at - COUNTDOWN_WINDOW
+        if countdown_ready(db, obligation, now, cache):
+            return {"obligation_id": str(obligation.id), "training_title": obligation.training.title, "due_at": iso(obligation.due_at)}, None
+    return None, None
+
+
 def access_state(db: Session, employee_id: uuid.UUID) -> dict:
     now = utcnow()
     finalise_expired_attempts(db, employee_id, now)
@@ -245,7 +291,10 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
     db.commit()  # Persist any timeout finalised above and any alert.
     held = [{"obligation_id": str(o.id), "training_title": o.training.title, "reason": "QUESTION_POOL_INSUFFICIENT"} for o in unavailable]
     # An open page re-checks at next_change_at, timed against the server's clock (server_now), not the device's.
-    timing = {"next_change_at": iso(next_opening(db, employee_id, now)), "server_now": iso(now)}
+    # countdown: a scheduled post-test opening within COUNTDOWN_WINDOW, whose countdown screen opens by itself.
+    # Only offered while the workspace is otherwise open: a due assessment and owed feedback come first.
+    countdown, countdown_starts_at = countdown_state(db, employee_id, now)
+    timing = {"next_change_at": iso(next_opening(db, employee_id, now)), "server_now": iso(now), "countdown_starts_at": iso(countdown_starts_at)}
     if queue:
         return {
             "access_status": "ASSESSMENT_REQUIRED",
@@ -254,8 +303,13 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
             "queue": [queue_item(o, i + 1) for i, o in enumerate(queue)],
             "unavailable": held,
             "feedback_due": None,
+            "countdown": None,
             **timing,
         }
     if feedback:
-        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback, **timing}
-    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None, **timing}
+        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback, "countdown": None, **timing}
+    if countdown:
+        from app.modules.assessment.scheduling import load_calendar
+
+        countdown["timezone"] = load_calendar(db).timezone  # The organisation timezone, for showing the opening time.
+    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None, "countdown": countdown, **timing}

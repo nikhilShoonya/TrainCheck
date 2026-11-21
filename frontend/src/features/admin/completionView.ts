@@ -3,6 +3,39 @@
 
 export const COMPLETION_HOME = "/lnd/completion";
 
+export interface EnrolmentRow {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  employee_code: string;
+  department: string | null;
+  training_id: string;
+  training_title: string;
+  batch_name: string | null;
+  assigned_at: string;
+  attendance_status: string;
+  completed_at: string | null;
+  completion_source: string | null;
+  due_at: string | null;
+  assessment_state: string;
+  assessment_issue: { code: string; message: string; action: string | null } | null;
+  outcome: string | null;
+  retraining_flag: string;
+  obligation_id: string | null;
+  attempts_used: number;
+  max_attempts: number | null;
+  retrainings: number;
+  refresher_acknowledged_at: string | null;
+}
+
+export interface SchedulingOutcome {
+  status: "SCHEDULED" | "NOT_SCHEDULED" | "ALREADY_SCHEDULED";
+  reason: string | null;
+  message: string;
+  action: string | null;
+  due_at: string | null;
+}
+
 /** The training fields a completion card uses, all from the one /admin/trainings list request. */
 export interface CompletionTraining {
   id: string;

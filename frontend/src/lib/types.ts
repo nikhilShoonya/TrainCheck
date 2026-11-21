@@ -62,6 +62,10 @@ export interface AccessState {
   next_change_at?: string | null;
   /** The server's clock when this was decided, for timing next_change_at without trusting the device clock. */
   server_now?: string;
+  /** A scheduled post-test opening within five minutes (DASHBOARD_ALLOWED only): its countdown opens by itself. */
+  countdown?: { obligation_id: string; training_title: string; due_at: string; timezone: string | null } | null;
+  /** When the next countdown begins, so an open page re-checks then (server clock). */
+  countdown_starts_at?: string | null;
 }
 
 export interface Summary {

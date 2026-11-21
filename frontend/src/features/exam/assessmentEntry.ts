@@ -93,13 +93,26 @@ export function cardEntry(card: EntryFields): CardEntry {
   return { status: null, note: null, ...none };
 }
 
+/** The automatic countdown window before a scheduled post-test opens. */
+export const PREPARE_WINDOW_MS = 5 * MINUTE;
+
+/** MM:SS for the five-minute countdown (03:00 → 02:59 → … → 00:00), rounding up like countdown(). */
+export function shortCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
 export type WaitingStep = "loading" | "wait" | "confirm" | "gate" | "workspace" | "unavailable";
 
 /** The waiting screen's next step. The gate (with its system check, instructions and confirmation) takes over
-    only when the server's access decision says an assessment is due; an "open" answer alone is re-checked. */
-export function waitingStep(detail: Pick<TrainingCard, "entry_state"> | null, access: Pick<AccessState, "access_status"> | null): WaitingStep {
+    only when the server's access decision says an assessment is due; an "open" answer alone is re-checked.
+    Expiry never starts an attempt: the employee still completes preparation and selects Start assessment. */
+export function waitingStep(
+  detail: Pick<TrainingCard, "entry_state"> | null,
+  access: Pick<AccessState, "access_status"> | null,
+): WaitingStep {
   if (!access) return "loading";
-  if (access.access_status === "ASSESSMENT_REQUIRED") return "gate"; // The gate always comes first.
+  if (access.access_status === "ASSESSMENT_REQUIRED") return "gate";
   if (access.access_status === "FEEDBACK_REQUIRED") return "workspace";
   if (!detail) return "loading";
   if (detail.entry_state === "NOT_YET_OPEN") return "wait";

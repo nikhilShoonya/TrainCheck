@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ACCOUNTS, signIn } from "./helpers";
+import { ACCOUNTS, answerAll, giveFeedback, signIn, submitAssessment } from "./helpers";
 
 /* Custom-date-and-time scheduling, from L&D's Assessment Rules to the employee's view and the gate.
    Like journeys.spec.ts this needs freshly seeded synthetic data (it changes "Data Privacy & Protection"'s rules
@@ -32,8 +32,8 @@ async function openRules(page: Page) {
 }
 
 test("L&D schedules a custom date and time; the employee sees it, and the assessment opens at that moment", async ({ page }) => {
-  test.setTimeout(6 * 60_000);
-  const opens = localIn(3); // Today (or tomorrow just before midnight), a few minutes from now.
+  test.setTimeout(9 * 60_000);
+  const opens = localIn(4); // Today (or tomorrow just before midnight), a few minutes from now: inside the countdown at step 5.
   const shown = `${opens.date} ${opens.time} (${ZONE})`;
 
   // 1. L&D chooses "Custom date and time"; the form names the timezone.
@@ -76,18 +76,36 @@ test("L&D schedules a custom date and time; the employee sees it, and the assess
   const completed = await page.request.post(`/api/v1/admin/enrolments/${enrolment!.id}/completion`, { headers: { "X-CSRF-Token": csrf }, data: { completion_date: localIn(0).date } });
   expect(completed.status(), await completed.text()).toBe(200);
 
-  // 5. Before the moment: scheduled at the chosen date and time, and nothing blocks the workspace.
+  // 5. Within five minutes of the moment: signing in opens the countdown by itself. Nothing blocks on the server yet,
+  //    and nothing has started.
   await signOut(page);
   await signIn(page, ACCOUNTS.scheduled);
-  await page.goto("/employee/assessments");
-  await expect(row).toContainText(shown);
-  await expect(row).toContainText("Scheduled");
-  expect((await (await page.request.get("/api/v1/me/access-state")).json()).data.access_status).toBe("DASHBOARD_ALLOWED");
+  await expect(page).toHaveURL(/\/assessment\/start\//);
+  const state = (await (await page.request.get("/api/v1/me/access-state")).json()).data;
+  expect(state.access_status).toBe("DASHBOARD_ALLOWED");
+  expect(state.countdown.training_title).toBe(TRAINING);
+  await expect(page.locator(".scheduled-banner")).toContainText(`Opens ${shown}`);
+  await expect(page.locator(".scheduled-banner h2")).toHaveText(/opens in 0[0-4]:\d\d/);
 
-  // 6. At the moment, with nothing saved again, the gate requires the assessment, and the page left open goes to it
-  //    by itself: no navigation, no reload.
+  // 6. The employee prepares while waiting; at the moment the server confirms it and the test starts by itself, with
+  //    no Start click. Then the existing completion flow: required feedback, result, workspace.
+  await expect(page.getByRole("heading", { name: "System check" })).toBeVisible();
+  const proceed = page.getByRole("button", { name: /^Continue/ });
+  await expect(proceed).toBeEnabled({ timeout: 15_000 });
+  await proceed.click();
+  await page.getByRole("button", { name: "Enter full screen" }).click();
+  await page.getByRole("checkbox", { name: /read and understood/ }).check();
+  await expect(page.getByRole("button", { name: /Starts by itself at/ })).toBeDisabled();
   const due = new Date(`${opens.date}T${opens.time}:00+05:30`).getTime();
-  await expect(page).toHaveURL(/\/employee\/assessments/);
-  await page.waitForURL(/\/access\/assessment-required/, { timeout: Math.max(0, due - Date.now()) + 30_000 });
-  expect((await (await page.request.get("/api/v1/me/access-state")).json()).data.access_status).toBe("ASSESSMENT_REQUIRED");
+  await expect(page.locator(".exam-timer")).toBeVisible({ timeout: Math.max(0, due - Date.now()) + 30_000 });
+  expect(Date.now()).toBeGreaterThanOrEqual(due - 2_000); // Not before the moment (allowing for clock skew).
+  const running = (await (await page.request.get("/api/v1/me/access-state")).json()).data;
+  expect(running.access_status).toBe("ASSESSMENT_REQUIRED");
+  expect(running.queue[0].in_progress).toBe(true);
+  expect(running.queue[0].attempts_used).toBe(1); // One attempt, started once.
+  await answerAll(page);
+  await submitAssessment(page);
+  await giveFeedback(page);
+  await page.getByRole("button", { name: "Continue to my workspace" }).click();
+  await page.waitForURL(/\/employee$/);
 });

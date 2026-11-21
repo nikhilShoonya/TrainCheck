@@ -4,13 +4,13 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { FocusShell } from "@/components/shell/AppShell";
-import { landingPath } from "@/components/shell/nav";
+import { countdownTarget, landingPath } from "@/components/shell/nav";
 import { Btn, BtnLink, ErrorPanel, Loading, Metrics } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
 import type { QueueItem, TrainingCard } from "@/lib/types";
 import { dateTimeIn } from "@/lib/utils";
-import { countdown, milestone, serverClock, waitingStep } from "./assessmentEntry";
+import { countdown, milestone, PREPARE_WINDOW_MS, serverClock, shortCountdown, waitingStep } from "./assessmentEntry";
 
 /** What GET /me/assessment-obligations/{id} returns: rules and entry state, never questions. */
 interface EntryDetail extends QueueItem {
@@ -24,6 +24,7 @@ interface EntryDetail extends QueueItem {
 const TICK_MS = 1_000;
 /** Re-synced with the server this often while waiting: schedule changes, and drift after sleep. */
 const RESYNC_MS = 60_000;
+const WINDOW_RESYNC_MS = 15_000;
 /** Returning to the tab re-syncs at most this often. */
 const RETURN_RESYNC_MS = 5_000;
 /** After the opening, a server answer of "not yet" is asked again no sooner than this. */
@@ -51,6 +52,10 @@ export function AssessmentWaiting({ obligationId }: { obligationId: string }) {
   const lastRecheck = useRef(-Infinity);
   const previousRemaining = useRef<number | null>(null);
   const previousDue = useRef<string | null>(null);
+  const waited = useRef(false);
+  const sessionCountdown = useRef(false);
+  const showingHere = countdownTarget(access)?.obligation_id === obligationId;
+  useEffect(() => { sessionCountdown.current = showingHere; }, [showingHere]);
 
   const remainingNow = () => (timing.current ? timing.current.clock.remainingMs(timing.current.due, performance.now()) : null);
 
@@ -73,6 +78,8 @@ export function AssessmentWaiting({ obligationId }: { obligationId: string }) {
         setDetail(d);
         setLoadError(null);
         setUnreachable(false);
+        // A cancelled/rescheduled countdown must not reopen from a stale session answer.
+        if (!gate && sessionCountdown.current && (d.entry_state !== "NOT_YET_OPEN" || left === null || left > PREPARE_WINDOW_MS)) void refresh();
       } catch (e) {
         if (mine !== generation.current) return;
         const failure = e as ApiError;
@@ -94,13 +101,19 @@ export function AssessmentWaiting({ obligationId }: { obligationId: string }) {
   }, [sync]);
 
   const step = waitingStep(detail, access);
+  const inWindow = remaining !== null && remaining <= PREPARE_WINDOW_MS;
+  useEffect(() => { if (step === "wait") waited.current = true; }, [step]);
 
   useEffect(() => {
     if (!ready) return;
     if (!user && !sessionError) router.replace("/login");
-    else if (user && step === "gate") router.replace(GATE);
+    else if (user && step === "gate") {
+      const first = access?.queue[0];
+      const prepare = waited.current && first?.obligation_id === obligationId && !first.in_progress;
+      router.replace(prepare ? `${GATE}?fromCountdown=${encodeURIComponent(obligationId)}` : GATE);
+    }
     else if (user && step === "workspace") router.replace(landingPath(user, access));
-  }, [ready, user, sessionError, step, access, router]);
+  }, [ready, user, sessionError, step, access, router, obligationId]);
 
   /** At (or after) the opening: confirm with the server, at most every few seconds, never while offline. */
   const recheck = useCallback(() => {
@@ -126,10 +139,10 @@ export function AssessmentWaiting({ obligationId }: { obligationId: string }) {
       previousRemaining.current = left;
       setRemaining(left);
       if (left <= 0) recheck();
-      else if (performance.now() - lastSync.current >= RESYNC_MS) void sync();
+      else if (performance.now() - lastSync.current >= (inWindow ? WINDOW_RESYNC_MS : RESYNC_MS)) void sync();
     }, TICK_MS);
     return () => window.clearInterval(timer);
-  }, [step, sync, recheck]);
+  }, [step, inWindow, sync, recheck]);
 
   // Returning to the tab, waking from sleep or reconnecting re-syncs with the server.
   useEffect(() => {
@@ -257,12 +270,12 @@ export function AssessmentWaiting({ obligationId }: { obligationId: string }) {
           // Plain text inside the heading, so the time is part of its accessible name. Not a live region: seconds
           // are never announced; milestones go to the status message below.
           <h1 tabIndex={-1}>
-            Your assessment opens in <span className="waiting-countdown">{countdown(remaining ?? 0)}</span>
+            Your assessment opens in <span className="waiting-countdown">{inWindow ? shortCountdown(remaining ?? 0) : countdown(remaining ?? 0)}</span>
           </h1>
         )}
         {detail.due_at ? <p className="lead">Opens {dateTimeIn(detail.due_at, detail.timezone)}</p> : null}
         <p>
-          You can wait here or come back later. When it opens, TrainCheck confirms it and you continue to the system check and instructions. Your test starts only when you select Start assessment.
+          When the countdown ends, TrainCheck confirms the opening and takes you to the system check and instructions. Your assessment starts only when you select Start assessment.
         </p>
         {waitingForConnection ? (
           <div className="notice danger left" role="alert">
@@ -285,7 +298,7 @@ export function AssessmentWaiting({ obligationId }: { obligationId: string }) {
           </Btn>
         ) : null}
         {facts}
-        {back}
+        {inWindow ? null : back}
         {status}
       </section>
     </FocusShell>

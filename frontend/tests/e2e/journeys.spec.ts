@@ -196,7 +196,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   const preview = page.locator("#import-preview");
   await expect(preview).toContainText(`Linked training: E2E Training ${code} (${code}) · Draft`);
   await expect(preview).toContainText("Test type: Post-test");
-  await expect(preview.getByRole("link", { name: "Open in Question Bank" })).toHaveAttribute("href", /\/lnd\/questions\?training_id=/);
+  await expect(preview.getByRole("link", { name: "Open in Question Bank" })).toHaveAttribute("href", /\/lnd\/questions\/[0-9a-f-]+\/post-test$/);
 
   // Changing the selected training invalidates the preview; it must be validated again.
   const other = (await trainingSelect.locator("option").allTextContents()).find((label) => label && label !== draftLabel && !label.startsWith("Choose"));

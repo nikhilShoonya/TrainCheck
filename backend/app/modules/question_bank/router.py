@@ -4,18 +4,19 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin
-from app.core.enums import Difficulty, QuestionStatus, QuestionType
+from app.core.enums import AssessmentType, Difficulty, QuestionStatus, QuestionType
 from app.core.errors import conflict, not_found, validation
 from app.core.responses import num, ok
 from app.core.routing import ReleasingRoute
-from app.models import Competency, Question, QuestionAnswerKey, QuestionOption, QuestionRevision, Training
+from app.models import Competency, Question, QuestionAnswerKey, QuestionOption, QuestionRevision, QuestionTrainingTag, Training
+from app.modules.assessment.service import link_serves, link_serves_clause
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin/questions", tags=["Question Bank"])
 
@@ -40,6 +41,11 @@ class QuestionIn(BaseModel):
     language: str = "English"
     randomise_options: bool = True
     training_ids: list[uuid.UUID] = Field(default_factory=list)
+    # Optional, used only when a question is created: the test (PRE_TEST or POST_TEST) that one of the selected
+    # trainings may draw it for, e.g. when it is added from that training's test in the Question Bank. Trainings
+    # not named here get an unclassified link (eligible for both of their tests), as before. Edits ignore it, so
+    # an existing link's classification is never changed by the form.
+    training_test_types: dict[uuid.UUID, AssessmentType] = Field(default_factory=dict, max_length=1)
     status: QuestionStatus = QuestionStatus.ACTIVE
 
     @model_validator(mode="after")
@@ -47,6 +53,8 @@ class QuestionIn(BaseModel):
         problem = question_problem(self.question_type, self.options, self.correct_option_indexes, self.language)
         if problem:
             raise ValueError(problem)
+        if any(training_id not in self.training_ids for training_id in self.training_test_types):
+            raise ValueError("A test type can only be set for a selected training.")
         return self
 
 
@@ -144,7 +152,13 @@ def search_questions(
     difficulty: Difficulty | None = None,
     language: str | None = None,
     status: QuestionStatus | None = None,
+    test_type: AssessmentType | None = None,
 ) -> dict:
+    """With training_id and test_type: only the questions that training's pre-test or post-test may draw, by the
+    same link rule as the assessment engine (link_serves_clause), so an unclassified legacy link is listed for both
+    tests and a link for the other test never is. Every other filter narrows within that selection."""
+    if test_type and not training_id:
+        raise validation("Choose a training to filter by test type.")
     query = (
         select(Question)
         .options(selectinload(Question.competency), selectinload(Question.department), selectinload(Question.function), selectinload(Question.trainings), selectinload(Question.training_links))
@@ -153,7 +167,9 @@ def search_questions(
     if search:
         like = f"%{search}%"
         query = query.where(Question.question_text.ilike(like) | Question.question_code.ilike(like) | Question.topic.ilike(like))
-    if training_id:
+    if training_id and test_type:
+        query = query.where(Question.training_links.any(and_(QuestionTrainingTag.training_id == training_id, link_serves_clause(test_type))))
+    elif training_id:
         query = query.where(Question.trainings.any(Training.id == training_id))
     for column, value in (
         (Question.competency_id, competency_id),
@@ -167,6 +183,38 @@ def search_questions(
         if value:
             query = query.where(column == value)
     return ok([question_view(q) for q in db.scalars(query)])
+
+
+@router.get("/summary")
+def question_summary(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """One entry per training and test with linked questions (pre-test, then post-test).
+
+    question_count is exactly what GET /admin/questions?training_id=…&test_type=… lists with no other filter:
+    every linked question once (Active and Inactive), counting an unclassified legacy link for both tests.
+    """
+    counts: dict[tuple[uuid.UUID, str], dict[str, int]] = {}
+    rows = db.execute(
+        select(QuestionTrainingTag.training_id, QuestionTrainingTag.test_type, Question.status, func.count())
+        .join(Question, Question.id == QuestionTrainingTag.question_id)
+        .group_by(QuestionTrainingTag.training_id, QuestionTrainingTag.test_type, Question.status)
+    ).all()
+    for training_id, link_type, status, n in rows:
+        for test in AssessmentType:
+            if not link_serves(link_type, test):
+                continue
+            entry = counts.setdefault((training_id, test), {"question_count": 0, "active": 0, "inactive": 0, "unclassified": 0})
+            entry["question_count"] += n
+            entry["active" if status == QuestionStatus.ACTIVE else "inactive"] += n
+            if link_type is None:
+                entry["unclassified"] += n
+    return ok(
+        [
+            {"training_id": str(t.id), "title": t.title, "code": t.training_code, "status": t.status, "test_type": test.value, **counts[t.id, test]}
+            for t in db.scalars(select(Training).order_by(Training.title))
+            for test in (AssessmentType.PRE_TEST, AssessmentType.POST_TEST)
+            if (t.id, test) in counts
+        ]
+    )
 
 
 @router.get("/{question_id}")
@@ -211,6 +259,12 @@ def create_question(body: QuestionIn, user: CurrentUser = Depends(require_admin)
     except IntegrityError as exc:
         db.rollback()
         raise conflict("DUPLICATE_CODE", "A question with this ID already exists.") from exc
+    for training_id, test in body.training_test_types.items():
+        link = db.get(QuestionTrainingTag, (question.id, training_id))
+        link.test_type = test.value
+    if body.training_test_types:
+        db.flush()
+        db.expire(question, ["training_links"])
     set_content(db, question, body.options, body.correct_option_indexes)
     db.add(QuestionRevision(question_id=question.id, version=1, content_snapshot=revision_snapshot(db, question), changed_by=user.id))
     record_audit(db, user.id, "QUESTION_CREATED", "question", question.id, after={"code": question.question_code})

@@ -9,10 +9,16 @@ import { MonthlyTrend } from "@/features/dashboard/charts";
 import { ActionItem, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, ViewAll, Welcome } from "@/features/dashboard/widgets";
 import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
-import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref } from "@/features/admin/completionView";
+import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref, type EnrolmentRow, type SchedulingOutcome } from "@/features/admin/completionView";
 import { allShownSelected, filterPeople, toggleOne, toggleShown } from "@/features/admin/assignView";
+import { canSelectCompletion } from "@/features/admin/bulkCompletion";
+import { BulkCompletionDialog } from "@/features/admin/BulkCompletionDialog";
+import { WaiveSelectedDialog } from "@/features/admin/WaiveSelectedDialog";
+import { canWaiveAssessment, type WaiverEmployee } from "@/features/admin/waiver";
 import { activeDepartments, assignmentCounts, assignmentsHref, confirmBlockedReason, createdMessage, departmentOptions, departmentShown, EMPLOYEE_COLUMNS, EMPLOYEE_FILE_TYPES, filterEmployeeList, findEmployee, isEmployeeId, isInactive, joiningShown, NO_TRAINING_ASSIGNED, PASSWORD_RULE, plural, previewSummary, rowProblems, STATUS_OPTIONS, type AddEmployeeMode, type EmployeeImportResult, type EmployeeListItem, type EmployeePreview } from "@/features/admin/employeeView";
-import { acceptedFiles, commitSelection, fileTypesLabel, importFields, importSummary, needsRevalidation, selectionChanged, selectionProblem, templatePath, TEST_TYPE_HELP, TEST_TYPE_LABEL, TEST_TYPE_OPTIONS, testTypeLabel, type ImportCounts, type ImportSelection } from "@/features/admin/importView";
+import { acceptedFiles, commitSelection, fileTypesLabel, importFields, importSummary, needsRevalidation, selectionChanged, selectionProblem, templatePath, TEST_TYPE_HELP, TEST_TYPE_LABEL, TEST_TYPE_OPTIONS, testTypeLabel, type ImportCounts, type ImportSelection, type TestType } from "@/features/admin/importView";
+import { QuestionDocIcon, QuestionSheetsArt } from "@/features/admin/QuestionCardArt";
+import { contextTestTypes, importQuestionsHref, linkedTestType, questionBankHref, questionCardsHref, questionTableHref, testTypeFromSlug, type QuestionCard } from "@/features/admin/questionBankView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
@@ -891,39 +897,6 @@ export function Batches() {
 
 /* ---------- Assignments and completion ---------- */
 
-interface EnrolmentRow {
-  id: string;
-  employee_id: string;
-  employee_name: string;
-  employee_code: string;
-  department: string | null;
-  training_id: string;
-  training_title: string;
-  batch_name: string | null;
-  assigned_at: string;
-  attendance_status: string;
-  completed_at: string | null;
-  completion_source: string | null;
-  due_at: string | null;
-  assessment_state: string;
-  assessment_issue: { code: string; message: string; action: string | null } | null;
-  outcome: string | null;
-  retraining_flag: string;
-  obligation_id: string | null;
-  attempts_used: number;
-  max_attempts: number | null;
-  retrainings: number;
-  refresher_acknowledged_at: string | null;
-}
-
-interface SchedulingOutcome {
-  status: "SCHEDULED" | "NOT_SCHEDULED" | "ALREADY_SCHEDULED";
-  reason: string | null;
-  message: string;
-  action: string | null;
-  due_at: string | null;
-}
-
 function resultOf(e: EnrolmentRow): string {
   if (e.retraining_flag === "NEEDS_RETRAINING") return "NEEDS_RETRAINING";
   return e.outcome ?? "PENDING";
@@ -1682,36 +1655,44 @@ function CompletionCards() {
                     const counts = completionCounts(t);
                     const attention = t.pending_scheduling_count + t.unavailable_count;
                     return (
-                      <article className="panel course-card completion-card" key={t.id} aria-labelledby={`completion-${t.id}`}>
-                        <div className="row between">
+                      <article className="panel course-card completion-card training-card" key={t.id} aria-labelledby={`completion-${t.id}`}>
+                        <div className="training-card-head">
                           <Glyph index={i} />
-                          <Badge status={t.status} />
+                          <div className="training-card-title">
+                            <Badge status={t.status} />
+                            <h2 id={`completion-${t.id}`}>{t.title}</h2>
+                            <p>{shortDescription(t.description) || "No description."}</p>
+                          </div>
                         </div>
-                        <h2 id={`completion-${t.id}`}>{t.title}</h2>
-                        <p>{shortDescription(t.description) || "No description."}</p>
                         <h3 className="completion-counts-title">Training completion</h3>
                         <dl className="completion-counts">
                           <div>
-                            <dt>Assigned employees</dt>
+                            <dt>Assigned</dt>
                             <dd>{counts.assigned}</dd>
                           </div>
-                          <div>
-                            <dt>Completion recorded</dt>
+                          <div className="recorded">
+                            <dt>Completed</dt>
                             <dd>{counts.recorded}</dd>
                           </div>
                           <div>
-                            <dt>Completion awaiting</dt>
+                            <dt>Awaiting</dt>
                             <dd>{counts.awaiting}</dd>
                           </div>
                         </dl>
-                        <small className="completion-note">Attendance-based. Assessment status and results are shown per employee.</small>
+                        {counts.assigned ? (
+                          <div className="training-card-progress">
+                            <span>{counts.recorded} of {counts.assigned} completed</span>
+                            <progress max={counts.assigned} value={counts.recorded} aria-label={`${counts.recorded} of ${counts.assigned} employees completed`} />
+                          </div>
+                        ) : null}
+                        <small className="completion-note">Attendance-based. Assessment results are shown per employee.</small>
                         {attention ? (
                           <div className="course-next">
                             <strong>Assessment needs attention for {attention} employee(s)</strong>
                             <small>Open the training to see who is affected.</small>
                           </div>
                         ) : null}
-                        <div className="row wrap">
+                        <div className="row wrap training-card-foot">
                           <BtnLink href={trainingCompletionHref(t.id, search)} kind="primary">
                             View Employees<span className="sr-only"> for {t.title}</span> <Icon name="arrow" />
                           </BtnLink>
@@ -1774,7 +1755,7 @@ function TrainingCompletionInner() {
       </>
     );
   }
-  return <TrainingEmployees training={training!} eyebrow={eyebrow} back={back} />;
+  return <TrainingEmployees key={training!.id} training={training!} eyebrow={eyebrow} back={back} />;
 }
 
 function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmin; eyebrow: string; back: ReactNode }) {
@@ -1785,15 +1766,49 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
   const [completing, setCompleting] = useState<EnrolmentRow | null>(null);
   const [waiving, setWaiving] = useState<EnrolmentRow | null>(null);
   const [lastOutcome, setLastOutcome] = useState<SchedulingOutcome | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkEmployees, setBulkEmployees] = useState<{ rows: EnrolmentRow[]; excludedCount: number } | null>(null);
+  const [waiveEmployees, setWaiveEmployees] = useState<{ rows: EnrolmentRow[]; excludedCount: number } | null>(null);
+  const [confirmedWaivers, setConfirmedWaivers] = useState<Record<string, string>>({});
+  const [waiverErrors, setWaiverErrors] = useState<Record<string, string>>({});
+  const [completionErrors, setCompletionErrors] = useState<Record<string, string>>({});
+  const [confirmedCompletions, setConfirmedCompletions] = useState<Record<string, EnrolmentRow>>({});
   const toast = useToast();
   // An attendance change shows at once (and is what the completion dialog starts from), so nothing acts on
   // the attendance from before the change while it saves or while the list reloads (that takes seconds).
   // Kept only until the reloaded list, which already holds the change, replaces the list it was made on.
   const [updated, setUpdated] = useState<{ source: EnrolmentRow[] | null; rows: Record<string, EnrolmentRow> }>({ source: null, rows: {} });
   const [saving, setSaving] = useState<Record<string, boolean>>({});
-  const latest = (e: EnrolmentRow) => (updated.source === state.data ? (updated.rows[e.id] ?? e) : e);
+  const latest = (e: EnrolmentRow) => {
+    const current = updated.source === state.data ? (updated.rows[e.id] ?? e) : e;
+    // Completion records cannot be undone. An older GET must not erase a confirmed save; use fresh
+    // server fields again once the list includes that completion (including later assessment changes).
+    const row = current.completed_at ? current : (confirmedCompletions[e.id] ?? current);
+    // Keep an acknowledged waiver visible across older reads, without masking a later assessment cycle.
+    return row.obligation_id && confirmedWaivers[e.id] === row.obligation_id ? { ...row, assessment_state: "Waived", assessment_issue: null } : row;
+  };
+  const rememberWaiver = (employee: WaiverEmployee) => {
+    if (!employee.obligation_id) return;
+    setConfirmedWaivers((saved) => ({ ...saved, [employee.id]: employee.obligation_id! }));
+    setSelected((ids) => new Set([...ids].filter((id) => id !== employee.id)));
+    setWaiverErrors((errors) => {
+      const next = { ...errors };
+      delete next[employee.id];
+      return next;
+    });
+  };
+  const rememberCompletion = (row: EnrolmentRow) => {
+    setConfirmedCompletions((saved) => ({ ...saved, [row.id]: row }));
+    setSelected((ids) => new Set([...ids].filter((id) => id !== row.id)));
+    setCompletionErrors((errors) => {
+      const next = { ...errors };
+      delete next[row.id];
+      return next;
+    });
+  };
   const remember = (row: EnrolmentRow) => setUpdated((u) => ({ source: state.data, rows: { ...(u.source === state.data ? u.rows : {}), [row.id]: row } }));
   const setAttendance = async (e: EnrolmentRow, status: string) => {
+    setSelected((ids) => new Set([...ids].filter((id) => id !== e.id)));
     remember({ ...e, attendance_status: status });
     setSaving((s) => ({ ...s, [e.id]: true }));
     try {
@@ -1826,7 +1841,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           </div>
         </div>
       ) : null}
-      {state.data ? <SchedulingAttention rows={state.data} onChanged={() => void state.reload()} /> : null}
+      {state.data ? <SchedulingAttention rows={state.data.map(latest)} onChanged={() => void state.reload()} /> : null}
       <section className="panel">
         <Loaded state={state}>
           {(all) => {
@@ -1839,8 +1854,15 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                   </div>
                 </>
               );
-            const counts = rowCounts(all);
+            const counts = rowCounts(all.map(latest));
             const rows = filterEmployees(all.map(latest), search);
+            // Selection follows the individual action; the completion API validates training status on confirmation.
+            const selectable = rows.filter((e) => (canSelectCompletion(e) || canWaiveAssessment(e)) && !saving[e.id]);
+            const selectableIds = new Set(selectable.map((e) => e.id));
+            const selectedRows = selectable.filter((e) => selected.has(e.id));
+            const completionRows = selectedRows.filter(canSelectCompletion);
+            const waiverRows = selectedRows.filter(canWaiveAssessment);
+            const allSelected = selectable.length > 0 && selectable.every((e) => selected.has(e.id));
             return (
               <>
                 <Metrics
@@ -1851,19 +1873,29 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                   ]}
                 />
                 <form className="filters" role="search" aria-label="Employees" onSubmit={(e) => e.preventDefault()}>
-                  <TextField label="Search employees" name="employee_search" type="search" placeholder="Name or employee code" autoComplete="off" value={search} onChange={(e) => setSearch(e.target.value)} />
+                  <TextField label="Search employees" name="employee_search" type="search" placeholder="Name or employee code" autoComplete="off" value={search} onChange={(e) => { setSearch(e.target.value); setSelected(new Set()); }} />
                 </form>
                 <p className="small" role="status" aria-live="polite">
                   {search.trim() ? `${rows.length} of ${all.length} employees match.` : `${all.length} employees assigned.`}
                 </p>
+                <div className="row wrap completion-bulk-actions" role="group" aria-label="Completion actions">
+                  <Btn disabled={!selectable.length || allSelected} onClick={() => setSelected(new Set(selectable.map((e) => e.id)))}>Select All</Btn>
+                  <Btn disabled={!selected.size} onClick={() => setSelected(new Set())}>Clear selection</Btn>
+                  <span role="status" aria-live="polite">{selectedRows.length} {selectedRows.length === 1 ? "employee" : "employees"} selected</span>
+                  <Btn tone="success" disabled={!completionRows.length} onClick={() => setBulkEmployees({ rows: completionRows, excludedCount: selectedRows.length - completionRows.length })}>Mark Selected Completed</Btn>
+                  <Btn disabled={!waiverRows.length} onClick={() => setWaiveEmployees({ rows: waiverRows, excludedCount: selectedRows.length - waiverRows.length })}>Waive Selected</Btn>
+                </div>
+                <p className="small">Select All includes matching employees eligible for completion or an assessment waiver across all table pages. Each action applies to eligible selected employees. Changing the search clears selection.</p>
                 {rows.length ? (
                   <DataTable
                     headers={["Employee", "Attendance", "Completion", "Assessment Due", "Assessment", "Result", ""]}
                     emptyTitle="No assignments yet."
                     rows={rows.map((e) => [
                       <div key="p" data-sort={e.employee_name}>
-                        {e.employee_name}
-                        <small>{e.employee_code}</small>
+                        <label className="completion-select">
+                          <input type="checkbox" aria-label={`Select ${e.employee_name} (${e.employee_code})`} checked={selectableIds.has(e.id) && selected.has(e.id)} disabled={!selectableIds.has(e.id)} onChange={() => setSelected((ids) => toggleOne(ids, e.id))} />
+                          <span>{e.employee_name}<small>{e.employee_code}</small></span>
+                        </label>
                       </div>,
                       <select key="a" aria-label={`Attendance for ${e.employee_name} (${e.employee_code})`} value={e.attendance_status} onChange={(ev) => void setAttendance(e, ev.target.value)}>
                         {ATTENDANCE.map((a) => (
@@ -1872,11 +1904,16 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                           </option>
                         ))}
                       </select>,
-                      e.completed_at ? `${day(e.completed_at)} (${e.completion_source === "IMPORT" ? "import" : "manual"})` : "Not recorded",
+                      <div key="c" data-sort={e.completed_at ?? ""}>
+                        <span className={`badge ${e.completed_at ? "success" : "warning"}`}>{e.completed_at ? "Completed" : "Awaiting completion"}</span>
+                        {e.completed_at ? <small>{day(e.completed_at)} ({e.completion_source === "IMPORT" ? "import" : "manual"})</small> : null}
+                        {completionErrors[e.id] && !e.completed_at ? <small className="form-error" role="alert">{completionErrors[e.id]}</small> : null}
+                      </div>,
                       day(e.due_at, e.completed_at ? "Not scheduled" : "After completion"),
                       <div key="s" data-sort={e.assessment_state}>
-                        {e.assessment_state}
+                        {e.assessment_state === "Waived" ? <span className="badge info">Waived</span> : e.assessment_state}
                         {e.assessment_issue ? <small className="form-error">{e.assessment_issue.code === "UNAVAILABLE" ? "Cannot start: question pool" : "No assessment scheduled"}</small> : null}
+                        {waiverErrors[e.id] && e.assessment_state !== "Waived" ? <small className="form-error" role="alert">{waiverErrors[e.id]}</small> : null}
                       </div>,
                       resultOf(e),
                       <div className="row wrap" key="x">
@@ -1885,7 +1922,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                             Mark Completed<span className="sr-only"> for {e.employee_name}</span>
                           </Btn>
                         )}
-                        {["Due", "Scheduled", "Awaiting refresher", "Awaiting approval", "Unavailable"].includes(e.assessment_state) && e.obligation_id ? (
+                        {canWaiveAssessment(e) ? (
                           <Btn kind="text" onClick={() => setWaiving(e)}>
                             Waive<span className="sr-only"> assessment for {e.employee_name}</span>
                           </Btn>
@@ -1906,6 +1943,55 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           }}
         </Loaded>
       </section>
+      {bulkEmployees ? (
+        <BulkCompletionDialog
+          trainingTitle={training.title}
+          employees={bulkEmployees.rows}
+          excludedCount={bulkEmployees.excludedCount}
+          onClose={() => setBulkEmployees(null)}
+          onRecorded={rememberCompletion}
+          onFinished={(results) => {
+            setCompletionErrors((errors) => {
+              const next = { ...errors };
+              for (const result of results) {
+                if (result.status === "FAILED" || result.status === "NOT_ATTEMPTED") next[result.employee.id] = result.message;
+                else delete next[result.employee.id];
+              }
+              return next;
+            });
+            setBulkEmployees(null);
+            const finished = new Set(results.filter((result) => result.status === "COMPLETED" || result.status === "ALREADY_COMPLETED").map((result) => result.employee.id));
+            setSelected((ids) => new Set([...ids].filter((id) => !finished.has(id))));
+            const recorded = results.filter((result) => result.status === "COMPLETED").length;
+            const failed = results.filter((result) => result.status === "FAILED" || result.status === "NOT_ATTEMPTED").length;
+            toast(`${recorded} completions recorded.${failed ? ` ${failed} not confirmed; check the employee rows.` : ""}`);
+            void state.reload();
+          }}
+        />
+      ) : null}
+      {waiveEmployees ? (
+        <WaiveSelectedDialog
+          employees={waiveEmployees.rows}
+          excludedCount={waiveEmployees.excludedCount}
+          onClose={() => setWaiveEmployees(null)}
+          onWaived={rememberWaiver}
+          onFinished={(results) => {
+            setWaiverErrors((errors) => {
+              const next = { ...errors };
+              for (const result of results) {
+                if (result.status === "WAIVED") delete next[result.employee.id];
+                else next[result.employee.id] = result.message;
+              }
+              return next;
+            });
+            setWaiveEmployees(null);
+            const waived = results.filter((result) => result.status === "WAIVED").length;
+            const failed = results.length - waived;
+            toast(`${waived} assessments waived.${failed ? ` ${failed} not confirmed; check the employee rows.` : ""}`);
+            void state.reload();
+          }}
+        />
+      ) : null}
       {completing ? (
         <DialogForm
           title="Record training completion"
@@ -1913,6 +1999,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           onClose={() => setCompleting(null)}
           onSubmit={async (form) => {
             const done = await api.post<EnrolmentRow & { assessment_scheduling: SchedulingOutcome }>(`/admin/enrolments/${completing.id}/completion`, { completion_date: form.get("completion_date"), attendance_status: form.get("attendance_status") });
+            rememberCompletion(done);
             const scheduling = done.assessment_scheduling;
             setLastOutcome(scheduling);
             toast(scheduling.status === "SCHEDULED" ? `Completion recorded. ${scheduling.message}` : "Completion recorded, but the assessment was not scheduled. See the notice at the top of the page.");
@@ -1946,6 +2033,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           onClose={() => setWaiving(null)}
           onConfirm={async (reason) => {
             await api.post(`/admin/obligations/${waiving.obligation_id}/waive`, { reason });
+            rememberWaiver(waiving);
             toast("Assessment waived.");
             void state.reload();
           }}
@@ -1981,7 +2069,9 @@ interface QuestionRow {
   options?: { id: string; text: string; is_correct: boolean }[];
 }
 
-function QuestionForm({ question, onClose, onSaved, defaultTrainingId }: { question: QuestionRow | null; onClose: () => void; onSaved: () => void; defaultTrainingId?: string }) {
+function QuestionForm({ question, onClose, onSaved, defaultTrainingId, context }: { question: QuestionRow | null; onClose: () => void; onSaved: () => void; defaultTrainingId?: string; context?: { trainingId: string; testType: TestType; title: string } }) {
+  // Added from a training's pre-test or post-test table: that training starts ticked and its link is for that test.
+  const startTrainingId = context?.trainingId ?? defaultTrainingId;
   const c = useCatalogue();
   const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
   const toast = useToast();
@@ -2012,6 +2102,8 @@ function QuestionForm({ question, onClose, onSaved, defaultTrainingId }: { quest
           randomise_options: form.has("randomise_options"),
           training_ids: form.getAll("training_ids"),
           status: question?.status ?? "ACTIVE",
+          // New questions only: edits never change an existing link's test type.
+          ...(question ? {} : { training_test_types: contextTestTypes(context, form.getAll("training_ids").map(String)) }),
         };
         if (question) await api.patch(`/admin/questions/${question.id}`, body);
         else await api.post("/admin/questions", body);
@@ -2043,10 +2135,11 @@ function QuestionForm({ question, onClose, onSaved, defaultTrainingId }: { quest
       <fieldset>
         <legend>Used by these trainings</legend>
         <p className="small">A question counts towards a training&apos;s assessment only when it is linked here, Active, has a correct answer and has at least two options.</p>
+        {context && !question ? <p className="small">While ticked, {context.title} uses this question for its {TEST_TYPE_LABEL[context.testType].toLowerCase()} only. Other trainings ticked here can use it for both of their tests.</p> : null}
         <div className="checkbox-list">
           {(trainings.data ?? []).map((t) => (
             <label key={t.id}>
-              <input type="checkbox" name="training_ids" value={t.id} defaultChecked={question ? question.trainings.some((x) => x.id === t.id) : t.id === defaultTrainingId} /> {t.title}
+              <input type="checkbox" name="training_ids" value={t.id} defaultChecked={question ? question.trainings.some((x) => x.id === t.id) : t.id === startTrainingId} /> {t.title}
             </label>
           ))}
         </div>
@@ -2062,32 +2155,173 @@ function QuestionForm({ question, onClose, onSaved, defaultTrainingId }: { quest
 export function QuestionBank() {
   return (
     <Suspense fallback={<Loading />}>
-      <QuestionBankInner />
+      <QuestionCards />
     </Suspense>
   );
 }
 
-function QuestionBankInner() {
-  const trainingFromLink = useSearchParams().get("training_id") ?? "";
-  const [filters, setFilters] = useState<Record<string, string>>(trainingFromLink ? { training_id: trainingFromLink } : {});
-  const state = useApi<QuestionRow[]>(`/admin/questions${toQuery(filters)}`);
-  const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
+/** Opening the Question Bank: one card per training and test, each opening that test's question table. */
+function QuestionCards() {
+  const params = useSearchParams();
+  // An older link (/lnd/questions?training_id=…) names a training but no test: the search starts as that
+  // training's name once the cards are known (null until the user types).
+  const linkedTraining = params.get("training_id");
+  const [typed, setTyped] = useState<string | null>(null);
+  const state = useApi<QuestionCard[]>("/admin/questions/summary");
+  const linkedTitle = linkedTraining ? state.data?.find((c) => c.training_id === linkedTraining)?.title : undefined;
+  const search = typed ?? (linkedTraining ? linkedTitle : params.get("q")) ?? "";
+  const changeSearch = (value: string) => {
+    setTyped(value);
+    // Replace, not push: typing is not navigation (as on the Training Completion cards).
+    window.history.replaceState(window.history.state, "", questionCardsHref(value));
+  };
+  useEffect(() => {
+    // Rewrites the older link as the cards' own link, so refresh and Back to Trainings keep the same search.
+    if (linkedTraining && typed === null && state.data) window.history.replaceState(window.history.state, "", questionCardsHref(linkedTitle ?? ""));
+  }, [linkedTraining, linkedTitle, typed, state.data]);
+  return (
+    <>
+      <PageTitle eyebrow={EYEBROW} title="Question Bank" description="Choose a training and test to search, preview and maintain the reusable questions that verify learning." />
+      <form className="filters" role="search" aria-label="Trainings" onSubmit={(e) => e.preventDefault()}>
+        <TextField label="Search trainings" name="q" type="search" placeholder="Training name" autoComplete="off" value={search} onChange={(e) => changeSearch(e.target.value)} />
+      </form>
+      <Loaded state={state}>
+        {(all) => {
+          // Also ignore zero-count entries in an older cached summary while the API refreshes.
+          const linked = all.filter((card) => card.question_count > 0);
+          const shown = filterTrainings(linked, search);
+          if (!linked.length) return (
+            <>
+              <Empty title="No questions linked yet." hint="Import questions and choose their training and test type. A card appears once questions are linked." />
+              <div className="row"><BtnLink href="/lnd/imports?type=QUESTIONS" kind="primary">Import Questions</BtnLink></div>
+            </>
+          );
+          return (
+            <>
+              <p className="small" role="status" aria-live="polite">
+                {search.trim() ? `${new Set(shown.map((c) => c.training_id)).size} of ${plural(new Set(linked.map((c) => c.training_id)).size, "training")} match.` : `${plural(new Set(linked.map((c) => c.training_id)).size, "training")}.`}
+              </p>
+              {shown.length ? (
+                <section className="question-cards" aria-label="Trainings and tests">
+                  {shown.map((card) => {
+                    const label = TEST_TYPE_LABEL[card.test_type];
+                    const pre = card.test_type === "PRE_TEST";
+                    const id = `questions-${card.training_id}-${card.test_type}`;
+                    return (
+                      <article className={`question-card ${pre ? "is-pre" : "is-post"}`} key={`${card.training_id}-${card.test_type}`} aria-labelledby={id}>
+                        <div className="question-card-head">
+                          <span className="question-card-icon">
+                            <QuestionDocIcon />
+                          </span>
+                          <h2 id={id}>{card.title}</h2>
+                          <span className="question-card-pill">{label}</span>
+                        </div>
+                        <div className="question-card-body">
+                          <div>
+                            <p className="question-card-count">
+                              <strong>{card.question_count}</strong> {card.question_count === 1 ? "Question" : "Questions"}
+                            </p>
+                            <small>{pre ? "Before training" : "After training"}</small>
+                          </div>
+                          <QuestionSheetsArt />
+                        </div>
+                        <div className="question-card-foot">
+                          <BtnLink href={questionTableHref(card.training_id, card.test_type, search)} kind="primary">
+                            View Questions<span className="sr-only"> for {card.title} {label}</span> <Icon name="arrow" />
+                          </BtnLink>
+                          <span className="question-card-tag">Question Bank</span>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </section>
+              ) : (
+                <>
+                  <Empty title={`No question sets match “${search.trim()}”.`} hint="Only trainings with linked questions are listed. Check the spelling, or clear the search." />
+                  <div className="row">
+                    <Btn onClick={() => changeSearch("")}>Clear search</Btn>
+                  </div>
+                </>
+              )}
+            </>
+          );
+        }}
+      </Loaded>
+    </>
+  );
+}
+
+export function QuestionBankTraining() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <QuestionBankTrainingInner />
+    </Suspense>
+  );
+}
+
+/** /lnd/questions/[trainingId]/[pre-test|post-test]: the training and test come from the URL, so refresh, direct
+    links and Back/Forward keep them. */
+function QuestionBankTrainingInner() {
+  const { trainingId, test } = useParams<{ trainingId: string; test: string }>();
+  const cardSearch = useSearchParams().get("q") ?? "";
+  const testType = testTypeFromSlug(test);
+  const valid = isTrainingId(trainingId) && testType !== null;
+  const trainings = useApi<TrainingAdmin[]>(valid ? "/admin/trainings" : null);
+  const training = valid ? trainings.data?.find((t) => t.id.toLowerCase() === trainingId.toLowerCase()) : undefined;
+  const back = (
+    <BtnLink href={questionCardsHref(cardSearch)}>
+      <Icon name="back" /> Back to Trainings
+    </BtnLink>
+  );
+  const eyebrow = `${EYEBROW} · QUESTION BANK`;
+  if (!valid || (trainings.data && !training)) {
+    return (
+      <>
+        <PageTitle eyebrow={eyebrow} title="Training not found" description="This training or test does not exist or was removed." action={back} />
+        <Empty title="No training test has this link." hint="Go back to the trainings and choose a training and test from the list." />
+      </>
+    );
+  }
+  if (!trainings.data) {
+    return (
+      <>
+        <PageTitle eyebrow={eyebrow} title="Question Bank" description={trainings.error ? "The training could not be loaded." : "Loading the training…"} action={back} />
+        {trainings.error ? <ErrorPanel error={trainings.error} retry={() => void trainings.reload()} /> : <Loading />}
+      </>
+    );
+  }
+  return <QuestionBankInner key={`${training!.id}-${testType}`} training={training!} testType={testType!} trainings={trainings} eyebrow={eyebrow} back={back} />;
+}
+
+/** The question table, restricted on the server to one training's pre-test or post-test. Every filter narrows
+    within that selection; the training and test cannot be removed. */
+function QuestionBankInner({ training, testType, trainings, eyebrow, back }: { training: TrainingAdmin; testType: TestType; trainings: { data: TrainingAdmin[] | null }; eyebrow: string; back: ReactNode }) {
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const state = useApi<QuestionRow[]>(`/admin/questions${toQuery({ ...filters, training_id: training.id, test_type: testType })}`);
   const c = useCatalogue();
   const [form, setForm] = useState<{ question: QuestionRow | null } | null>(null);
   const [preview, setPreview] = useState<QuestionRow | null>(null);
   const [toggling, setToggling] = useState<QuestionRow | null>(null);
   const toast = useToast();
   const load = async (id: string) => api.get<QuestionRow>(`/admin/questions/${id}`);
+  const testLabel = TEST_TYPE_LABEL[testType];
   return (
     <>
       <PageTitle
-        eyebrow={EYEBROW}
-        title="Question Bank"
-        description="One central bank. Search, preview and maintain the reusable questions that verify learning."
+        eyebrow={eyebrow}
+        title={training.title}
+        description={
+          <>
+            Test type: <strong>{testLabel}</strong>. Only the questions this training&apos;s {testLabel.toLowerCase()} can use are listed, including questions not yet classified (used by both tests).
+          </>
+        }
         action={
-          <Btn kind="primary" onClick={() => setForm({ question: null })}>
-            <Icon name="plus" /> Add Question
-          </Btn>
+          <div className="row wrap">
+            {back}
+            <Btn kind="primary" onClick={() => setForm({ question: null })}>
+              <Icon name="plus" /> Add Question
+            </Btn>
+          </div>
         }
       />
       <section className="panel">
@@ -2099,7 +2333,8 @@ function QuestionBankInner() {
           }}
         >
           <TextField label="Search questions" name="search" type="search" placeholder="Question, topic or ID" />
-          <SelectField key={trainings.data ? "loaded" : "loading"} label="Training" name="training_id" placeholder="All training" options={(trainings.data ?? []).map((t) => ({ value: t.id, label: t.title }))} defaultValue={filters.training_id ?? ""} />
+          {/* Locked to the training this table belongs to (the server filters by it on every request). */}
+          <SelectField key={trainings.data ? "loaded" : "loading"} label="Training" name="training_id" options={[{ value: training.id, label: training.title }]} value={training.id} disabled title="This table shows one training. Use Back to Trainings to choose another." onChange={() => {}} />
           <SelectField label="Competency" name="competency_id" placeholder="All competencies" options={names(c.competencies.data ?? [])} />
           <SelectField label="Department" name="department_id" placeholder="All departments" options={names(c.departments.data ?? [])} />
           <SelectField label="Function" name="function_id" placeholder="All functions" options={names(c.functions.data ?? [])} />
@@ -2110,7 +2345,7 @@ function QuestionBankInner() {
           <button className="btn secondary" type="submit">
             Apply Filters
           </button>
-          <BtnLink href="/lnd/imports" kind="text" tone="data">
+          <BtnLink href={importQuestionsHref(training.id, testType)} kind="text" tone="data">
             Import Questions
           </BtnLink>
         </form>
@@ -2158,7 +2393,7 @@ function QuestionBankInner() {
           )}
         </Loaded>
       </section>
-      {form ? <QuestionForm question={form.question} defaultTrainingId={filters.training_id} onClose={() => setForm(null)} onSaved={() => void state.reload()} /> : null}
+      {form ? <QuestionForm question={form.question} context={{ trainingId: training.id, testType, title: training.title }} onClose={() => setForm(null)} onSaved={() => void state.reload()} /> : null}
       {preview ? (
         <Modal title="Question Preview" onClose={() => setPreview(null)}>
           <span className="badge info">Admin Preview · Answer Key Visible</span>
@@ -2267,7 +2502,7 @@ function ImportTrainingLinks({ job }: { job: ImportJob }) {
             <span key={t.id}>
               {i ? "; " : ""}
               <strong>{t.title}</strong> ({t.code}){t.status === "DRAFT" ? " · Draft" : ""} ·{" "}
-              <Link href={`/lnd/questions?training_id=${t.id}`}>Open in Question Bank</Link>
+              <Link href={questionBankHref(t, job.test_type)}>Open in Question Bank</Link>
             </span>
           ))}
         </p>
@@ -2286,10 +2521,22 @@ function ImportTrainingLinks({ job }: { job: ImportJob }) {
 }
 
 export function ImportCentre() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <ImportCentreInner />
+    </Suspense>
+  );
+}
+
+function ImportCentreInner() {
+  // Import Questions from a training's pre-test or post-test table arrives with that training and test chosen
+  // (?type=QUESTIONS&training_id=…&test_type=…); L&D can still change either before validating.
+  const linked = useSearchParams();
+  const fromQuestionBank = (linked.get("type") ?? "QUESTIONS") === "QUESTIONS";
   const [kind, setKind] = useState("QUESTIONS");
-  const [trainingId, setTrainingId] = useState("");
-  // No default: L&D chooses Pre-test or Post-test for every question import.
-  const [testType, setTestType] = useState("");
+  const [trainingId, setTrainingId] = useState(fromQuestionBank ? (linked.get("training_id") ?? "") : "");
+  // No default otherwise: L&D chooses Pre-test or Post-test for every question import.
+  const [testType, setTestType] = useState<string>(fromQuestionBank ? linkedTestType(linked.get("test_type")) : "");
   const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
   const [job, setJob] = useState<ImportJob | null>(null);
   const [error, setError] = useState("");
@@ -2680,7 +2927,7 @@ const UNAPPLIED_IMPORT = ["READY", "CANCELLED", "FAILED"];
 /** Live question pool readiness inside the settings form. Counts come from the backend. */
 function PoolPanel({ training, report, count, mix, check, reload, onUseEligible }: { training: TrainingAdmin; report: PoolReport; count: number | null; mix: Record<Difficulty, number> | null; check: PlanCheck; reload: () => void; onUseEligible: () => void }) {
   const exclusions = exclusionNotes(report);
-  const bankHref = `/lnd/questions?training_id=${training.id}`;
+  const bankHref = questionTableHref(training.id, report.assessment_type);
   const actions = (
     <div className="row wrap">
       <a className="btn secondary" href={bankHref} target="_blank" rel="noopener noreferrer">
@@ -3175,4 +3422,3 @@ export function AuditLogs() {
     </>
   );
 }
-

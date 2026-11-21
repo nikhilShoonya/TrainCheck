@@ -66,106 +66,96 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .impact-login-card .login-reset-demo{margin-top:16px}
 .impact-login-card .login-reset-notice{margin:0 0 16px;padding:10px 14px;border-radius:8px;background:#e7f2e9;color:#0b5a35;font-size:14px}
 
-/* Sign-in page: fits one window, never scrolls.
-   Every vertical size (spacing, logos, headline, text, tiles, card, fields, buttons) scales with the window
-   height and stops at the original size on tall screens, so large monitors look exactly as designed. The office
-   photo is pinned to the bottom-left: it keeps its full width (--scene-w) unless the window is short, where its
-   height is limited (--scene-h) so it fits under the Learning / Behaviour tiles. The story column reserves
-   that height, so the photo never covers the tiles. */
-.green-impact-login{--scene-w:58vw}
-@media(max-width:1449px){.green-impact-login{--scene-w:57vw}}
-@media(max-width:1100px){.green-impact-login{--scene-w:55vw}}
-@media(min-width:701px){
+/* Sign-in layout: fluid columns, readable controls and natural document scrolling.
+   The story's three parts (logos, headline block, Learning) become rows of the page grid, so the card starts
+   at the headline row instead of the logos: its heading lines up with the h1. The logos stay above the headline
+   in the left column. Spacer rows centre the logos-to-card group above the office artwork (the top one is smaller
+   because the card hangs below the Learning tile). Only the left text keeps clear of the building, above its roofline;
+   the opaque card may sit over the artwork, so no artwork-sized band is reserved under the card. */
+.green-impact-login{
+  /* The office artwork follows the window's width, and also its height so wide, short windows keep room for the text. */
+  --scene-w:min(58vw,1120px,110vh);
+  --scene-h:calc(var(--scene-w) * 291 / 845);
+  /* The logo header's measurements, shared with the Learning block so it can centre under the divider. */
+  --brand-logo-w:285px;--brand-logo-max:47%;--brand-gap:clamp(16px,2vw,32px);
+  display:grid;
+  grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);
+  grid-template-rows:[space-top] minmax(0,2fr) [brand] auto [story] auto [levels] auto [space-bottom] minmax(0,3fr) [art] calc(var(--scene-h) * .93);
+  justify-content:center;align-items:start;column-gap:clamp(32px,5vw,96px);row-gap:0;
+  min-height:100dvh;height:auto;overflow:visible;
+  padding:clamp(20px,4vh,52px) max(clamp(24px,5vw,96px),(100% - 1400px) / 2) 0;
+}
+.green-impact-login .impact-login-story{display:contents}
+.green-impact-login .login-office-scene{display:block;width:var(--scene-w);max-width:100%}
+.green-impact-login .login-canopy{width:min(24vw,312px)}
+.green-impact-login .green-login-wave{width:min(36vw,840px);height:clamp(160px,16vw,310px)}
+.green-impact-login .login-brand-head{grid-column:1;grid-row:brand;height:auto;min-height:52px;gap:var(--brand-gap);margin-bottom:clamp(20px,4.5vh,44px)}
+.green-impact-login .login-traincheck-logo{width:var(--brand-logo-w);max-width:var(--brand-logo-max)}
+.green-impact-login .login-finvasia-logo{width:196px;max-width:32%}
+.green-impact-login .login-brand-head>i{height:clamp(32px,3vw,53px)}
+.green-impact-login .login-positioning{grid-column:1;grid-row:story;margin-top:0}
+.green-impact-login .login-positioning .eyebrow{font-size:13px;letter-spacing:clamp(1.4px,.2vw,4px);margin-bottom:28px}
+.green-impact-login .login-positioning .eyebrow:after{bottom:-12px}
+.green-impact-login .login-positioning h1{font-size:clamp(32px,min(2.9vw,6vh),55px)}
+.green-impact-login .login-positioning h1>span{white-space:normal}
+.green-impact-login .login-positioning>p{font-size:clamp(16px,1.1vw,19px);margin:20px 0 0;max-width:645px}
+.green-impact-login .login-levels{grid-column:1;grid-row:levels;margin-top:clamp(20px,3vh,28px)}
+/* The single Learning tile is centred under the divider between the two logos. The header and this block span the
+   same width, so the divider's centre is the TrainCheck logo's width plus the header gap plus half the 1px line,
+   computed from the same variables the header uses. The tile is at most 230px wide, and narrows on very small
+   screens so it stays centred on the divider without leaving the column. */
+.green-impact-login .login-levels.one-level{
+  --divider-x:calc(min(var(--brand-logo-w),var(--brand-logo-max)) + var(--brand-gap) + .5px);
+  --levels-w:min(230px,calc(var(--divider-x) * 2),calc((100% - var(--divider-x)) * 2));
+  width:var(--levels-w);max-width:none;
+  margin-left:calc(var(--divider-x) - var(--levels-w) / 2);margin-right:0;
+}
+.green-impact-login .login-levels>div{min-height:0;gap:7px}
+.green-impact-login .login-levels>div>span{width:52px;height:52px}
+.green-impact-login .login-levels>div>span>svg{width:32px;height:32px}
+.green-impact-login .login-levels h2{font-size:17px}
+.green-impact-login .login-levels p{font-size:14px;margin-bottom:0}
+/* The card runs from the headline row to the bottom. Its top margin is the eyebrow's height and gap (13px at
+   line-height 1.6, plus 28px) minus the card's border and top padding (1px + 36px), so the two headings align. */
+.green-impact-login .impact-login-card{grid-column:2;grid-row:story / -1;width:100%;max-width:600px;min-width:0;align-self:start;justify-self:center;margin:calc(13px * 1.6 + 28px - 37px) 0 0;padding:36px clamp(24px,2.5vw,40px)}
+.green-impact-login .impact-login-card>h2{font-size:clamp(26px,1.8vw,34px);white-space:normal}
+.green-impact-login .login-subtitle{font-size:16px;margin:6px 0 28px}
+.green-impact-login .demo-roles{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:0 0 24px}
+.green-impact-login .role-choice{min-height:80px;gap:8px;padding:12px 8px}
+.green-impact-login .login-input-field{min-width:0;gap:8px;margin-bottom:20px}
+.green-impact-login .login-input-field>span{min-width:0;height:48px}
+.green-impact-login .login-input-field input{font-size:16px;min-width:0;flex:1}
+.green-impact-login .password-toggle{width:44px;height:44px;margin-right:-10px}
+.green-impact-login .login-options{flex-wrap:wrap;gap:8px 16px;margin:0 0 24px}
+.green-impact-login .login-options>label,.green-impact-login .login-options>button{min-height:44px;font-size:14px}
+.green-impact-login .login-sign-in{min-height:52px;font-size:18px}
+.green-impact-login .impact-login-card .form-error{margin-bottom:16px;overflow-wrap:anywhere}
+.green-impact-login .impact-login-card .login-reset-demo{margin-top:16px;min-height:44px}
+.green-impact-login .impact-login-card .login-reset-notice{margin-bottom:16px;padding:10px 14px;font-size:14px;overflow-wrap:anywhere}
+/* Stack before either column becomes cramped. All content remains in its existing order, in one column whose
+   story and card share the same left and right edges. The top and bottom artwork each have their own clearance. */
+@media(max-width:1000px){
   .green-impact-login{
-    --pt:clamp(14px,3.2vh,52px);--pb:clamp(10px,2.2vh,40px);
-    --scene-h:min(calc(var(--scene-w) * 291 / 845),44dvh);
-    padding-top:var(--pt);padding-bottom:var(--pb);min-height:100dvh;align-items:start;
+    --scene-w:min(100vw,600px);--canopy-w:clamp(100px,18vw,180px);
+    grid-template-columns:minmax(0,600px);grid-template-rows:none;align-items:start;gap:32px;
+    padding:calc(24px + var(--canopy-w) * 135 / 312) clamp(16px,4vw,32px) calc(var(--scene-h) + 24px);
   }
-  .green-impact-login .login-office-scene{width:calc(var(--scene-h) * 845 / 291)}
-  /* The photo's top ~10% is pale sky fading in, so the tiles may sit over it. */
-  .green-impact-login .impact-login-story{min-height:0;padding-bottom:max(0px,calc(var(--scene-h) * .9 - var(--pb) - 2px))}
-  .green-impact-login .login-brand-head{height:clamp(42px,7.4vh,72px);gap:clamp(18px,3.6vh,42px)}
-  .green-impact-login .login-traincheck-logo{width:clamp(160px,29vh,285px)}
-  .green-impact-login .login-finvasia-logo{width:clamp(110px,20vh,196px)}
-  .green-impact-login .login-brand-head>i{height:clamp(30px,5.4vh,53px)}
-  .green-impact-login .login-positioning{margin-top:clamp(10px,3.2vh,50px)}
-  .green-impact-login .login-positioning .eyebrow{font-size:clamp(11px,1.6vh,14px);letter-spacing:clamp(2px,.4vh,4px);margin-bottom:clamp(16px,3.1vh,31px)}
-  .green-impact-login .login-positioning .eyebrow:after{bottom:clamp(-15px,-1.4vh,-8px)}
-  .green-impact-login .login-positioning h1{font-size:clamp(26px,min(3.3vw,5.6vh),55px)}
-  .green-impact-login .login-positioning>p{font-size:clamp(13px,min(1.15vw,2.2vh),19px);margin-top:clamp(8px,2vh,23px)}
-  .green-impact-login .login-levels{margin-top:clamp(10px,2.8vh,34px)}
-  .green-impact-login .login-levels>div{min-height:0;gap:clamp(3px,.8vh,7px)}
-  .green-impact-login .login-levels>div>span{width:clamp(36px,6.6vh,58px);height:clamp(36px,6.6vh,58px);border-radius:clamp(10px,1.8vh,16px)}
-  .green-impact-login .login-levels>div>span>svg{width:clamp(22px,4vh,35px);height:clamp(22px,4vh,35px)}
-  .green-impact-login .login-levels>div+div:before{top:clamp(14px,3vh,29px);height:clamp(48px,9vh,76px)}
-  .green-impact-login .login-levels h2{font-size:clamp(14px,2.1vh,18px)}
-  .green-impact-login .login-levels p{font-size:clamp(12px,1.75vh,14px)}
+  .green-impact-login .impact-login-story{display:block;min-width:0;min-height:0;padding-bottom:0}
+  .green-impact-login .login-brand-head{margin-bottom:28px}
+  .green-impact-login .login-canopy{width:var(--canopy-w)}
+  .green-impact-login .green-login-wave{width:min(80vw,620px);height:clamp(120px,20vw,200px)}
+  .green-impact-login .impact-login-card{grid-column:auto;grid-row:auto;max-width:none;margin:0}
 }
-/* The sign-in card, on every screen size. */
-.green-impact-login .impact-login-card{margin-top:0;padding:clamp(16px,3.4vh,29px) clamp(18px,2.6vw,44px) clamp(14px,2.8vh,24px)}
-/* Laptops and desktops: 20px taller card (10px more at the top and bottom), as requested. */
-@media(min-width:701px){.green-impact-login .impact-login-card{padding-top:calc(clamp(16px,3.4vh,29px) + 10px);padding-bottom:calc(clamp(14px,2.8vh,24px) + 10px)}}
-/* Tablets, laptops and desktops: the card sits in the vertical middle of the window instead of at the top.
-   When the window is too short for the card, the row grows to fit it, so nothing is cut off. */
-@media(min-width:701px){.green-impact-login .impact-login-card{align-self:center}}
-/* Tablets: the two role buttons share the card width (the prototype grid has four slots, so two buttons
-   left half the card empty and "L&D Admin" wrapped). */
-@media(max-width:1100px){.green-impact-login .demo-roles{grid-template-columns:repeat(2,minmax(0,1fr))}}
-/* The heading and subtitle also scale with the window width, so the narrow card on tablets keeps
-   "Welcome to TrainCheck" on one line. Laptops and desktops are unchanged. */
-.green-impact-login .impact-login-card>h2{font-size:clamp(21px,min(4.2vh,2.9vw),34px)}
-.green-impact-login .login-subtitle{font-size:clamp(13px,min(2.2vh,1.5vw),19px);margin:2px 0 clamp(10px,3vh,28px)}
-.green-impact-login .demo-roles{margin:0 0 clamp(10px,2.6vh,23px)}
-.green-impact-login .role-choice{min-height:clamp(56px,11.5vh,100px);gap:clamp(4px,1vh,10px);padding:clamp(6px,1.2vh,12px) 6px}
-.green-impact-login .role-choice>svg{width:clamp(20px,3.4vh,28px);height:clamp(20px,3.4vh,28px)}
-.green-impact-login .login-input-field{margin-bottom:clamp(8px,1.9vh,16px);gap:clamp(4px,.8vh,7px)}
-.green-impact-login .login-input-field>span{height:clamp(38px,5.8vh,46px)}
-.green-impact-login .login-options{margin-bottom:clamp(10px,2.6vh,23px)}
-.green-impact-login .login-sign-in{min-height:clamp(42px,6.6vh,55px);font-size:clamp(15px,2.3vh,19px)}
-.green-impact-login .impact-login-card .form-error{margin-bottom:clamp(8px,1.6vh,16px)}
-.green-impact-login .impact-login-card .login-reset-demo{margin-top:clamp(8px,1.8vh,16px);min-height:clamp(36px,5.2vh,42px)}
-.green-impact-login .impact-login-card .login-reset-notice{margin-bottom:clamp(8px,1.6vh,16px);padding:clamp(6px,1.1vh,10px) 14px;font-size:clamp(12px,1.7vh,14px)}
-/* Phones: one compact column (the photo is already hidden). The long description is left out; on shorter phones
-   the tile descriptions, and on the shortest the tiles, tagline and subtitle, so the sign-in form always fits. */
 @media(max-width:700px){
-  .green-impact-login{padding:14px 16px;gap:14px;min-height:100dvh;justify-content:center}
-  .green-impact-login .impact-login-story{min-height:0;padding-bottom:0}
-  .green-impact-login .login-brand-head{height:40px;gap:14px}
-  .green-impact-login .login-traincheck-logo{width:160px}
-  .green-impact-login .login-finvasia-logo{width:104px}
-  .green-impact-login .login-brand-head>i{height:26px}
-  .green-impact-login .login-positioning{margin-top:12px}
-  .green-impact-login .login-positioning .eyebrow{font-size:11px;letter-spacing:1.4px;margin-bottom:16px}
-  .green-impact-login .login-positioning .eyebrow:after{bottom:-8px;width:36px}
-  .green-impact-login .login-positioning h1{font-size:26px;line-height:1.15;letter-spacing:-.8px}
-  .green-impact-login .login-positioning>p{display:none}
-  .green-impact-login .login-levels{margin-top:12px}
-  .green-impact-login .login-levels>div{min-height:0;gap:4px}
-  .green-impact-login .login-levels>div>span{width:34px;height:34px;border-radius:10px}
-  .green-impact-login .login-levels>div>span>svg{width:20px;height:20px}
-  .green-impact-login .login-levels>div+div:before{top:6px;height:60px}
-  .green-impact-login .login-levels h2{font-size:14px}
-  .green-impact-login .login-levels p{font-size:12px;line-height:1.4;margin-top:2px}
-  .green-impact-login .impact-login-card{padding:16px 16px 14px;border-radius:18px}
-  .green-impact-login .impact-login-card>h2{font-size:22px}
-  .green-impact-login .login-subtitle{font-size:13px;margin:2px 0 10px}
-  .green-impact-login .demo-roles{margin-bottom:10px;grid-template-columns:repeat(2,minmax(0,1fr))}
-  .green-impact-login .role-choice{min-height:56px;padding:6px;gap:4px}
-  .green-impact-login .role-choice>svg{width:20px;height:20px}
-  .green-impact-login .login-input-field{margin-bottom:8px;gap:4px}
-  .green-impact-login .login-input-field>span{height:40px}
-  .green-impact-login .login-options{margin-bottom:10px}
-  .green-impact-login .login-sign-in{min-height:44px;font-size:15px}
-  .green-impact-login .impact-login-card .login-reset-demo{margin-top:8px;min-height:36px}
-}
-@media(max-width:700px) and (max-height:820px){
-  .green-impact-login .login-levels p{display:none}
-  .green-impact-login .login-levels>div+div:before{height:46px}
-}
-@media(max-width:700px) and (max-height:720px){
-  .green-impact-login .login-levels,.green-impact-login .login-positioning .eyebrow,.green-impact-login .login-subtitle{display:none}
-  .green-impact-login .login-positioning{margin-top:10px}
-  .green-impact-login .impact-login-card>h2{margin-bottom:10px}
+  .green-impact-login{--brand-logo-w:200px;--brand-logo-max:52%;--brand-gap:clamp(12px,3vw,20px)}
+  .green-impact-login .login-brand-head{min-height:40px}
+  .green-impact-login .login-finvasia-logo{width:138px;max-width:32%}
+  .green-impact-login .login-brand-head>i{height:30px}
+  .green-impact-login .login-positioning .eyebrow{font-size:12px;letter-spacing:1.4px}
+  .green-impact-login .login-positioning h1{font-size:clamp(28px,6.5vw,36px)}
+  .green-impact-login .login-levels{margin-top:24px}
+  .green-impact-login .impact-login-card{padding:28px 20px}
+  .green-impact-login .impact-login-card>h2{font-size:26px}
 }
 
 /* Assessment, gate and result pages: the same TrainCheck logo as the sign-in page and the sidebar,
@@ -313,6 +303,13 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .waiting-countdown{display:inline-block;font-variant-numeric:tabular-nums;white-space:nowrap}
 .assessment-waiting>.notice{display:flex;gap:10px;align-items:flex-start;text-align:left}
 .assessment-waiting>.btn{margin:4px 6px 0}
+/* The five-minute countdown above the system check, full-screen and instruction steps of a scheduled start. */
+.scheduled-banner{display:grid;gap:6px;margin:0 0 14px;padding:14px 16px;border:1px solid var(--border);border-radius:9px;background:var(--blue-bg);color:var(--primary)}
+.scheduled-banner .assessment-waiting{display:grid;gap:6px}
+.scheduled-banner h2{margin:0;font-size:20px;line-height:1.3}
+.scheduled-banner p.small{margin:0;color:var(--secondary)}
+.scheduled-readiness{display:flex;gap:8px;align-items:flex-start;margin:4px 0 0;font-size:14px;line-height:1.5}
+.scheduled-readiness.ready{font-weight:600}
 
 /* Training Completion cards: the My Trainings course card, plus the three training-completion counts. */
 .completion-card .completion-counts-title{margin:14px 0 8px;font-size:13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--secondary)}
@@ -322,6 +319,36 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .completion-counts dd{margin:0;font-size:20px;font-weight:700;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
 .completion-card .completion-note{display:block;margin:8px 0 4px;font-size:12px;line-height:1.45;color:var(--secondary)}
 @media(max-width:420px){.completion-counts{grid-template-columns:1fr}.completion-counts>div{flex-direction:row-reverse;justify-content:space-between;align-items:center}}
+/* Question Bank cards: one training and one test. Two per row, so a training's Pre-test and Post-test sit side by side. */
+.question-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,380px));gap:18px}
+.question-card{position:relative;overflow:hidden;display:flex;flex-direction:column;gap:14px;padding:18px 20px 16px;background:var(--surface);border:1px solid var(--border);border-top:4px solid var(--primary);border-radius:14px;box-shadow:0 6px 20px #0b152c0d}
+.question-card::after{content:"";position:absolute;top:-44px;right:-44px;width:130px;height:116px;pointer-events:none;background:radial-gradient(circle at 100% 0,#d3eedf 0 38%,transparent 39%),radial-gradient(circle at 100% 0,#e3f5eb 0 56%,transparent 57%),radial-gradient(circle at 100% 0,#f1faf5 0 74%,transparent 75%)}
+.question-card>*{position:relative;z-index:1}
+.question-card-head{display:flex;align-items:center;gap:12px;min-width:0}
+.question-card-icon{display:inline-grid;place-items:center;width:38px;height:38px;flex-shrink:0;border-radius:9px;background:var(--green-bg);color:var(--text)}
+.question-card-icon svg{width:22px;height:22px}
+.question-card-head h2{flex:1;min-width:0;font-size:18px;font-weight:700;letter-spacing:-.3px;color:var(--text);overflow-wrap:anywhere}
+.question-card-pill{flex-shrink:0;margin-right:14px;padding:4px 11px;border-radius:999px;font-size:13px;font-weight:700;white-space:nowrap;background:#eef1f7;color:var(--text)}
+.question-card.is-post .question-card-pill{background:var(--green-bg);color:var(--primary)}
+.question-card-body{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:84px}
+.question-card-count{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin:0;font-size:16px;font-weight:650;color:var(--text)}
+.question-card-count strong{font-size:38px;line-height:1;font-weight:800;letter-spacing:-1.2px;font-variant-numeric:tabular-nums}
+.question-card-body small{margin-top:6px;font-size:13px;color:var(--secondary)}
+.question-card-art{width:92px;height:auto;flex-shrink:0}
+.question-card-art .art-back{fill:#e3f5eb;stroke:var(--primary)}
+.question-card-art .art-front{fill:#fff;stroke:var(--text)}
+.question-card-art .art-mark{font-size:22px;font-weight:800;fill:var(--text)}
+.question-card-art .art-green{fill:#4fb683}
+.question-card-art .art-green-soft{fill:#a9dcc2}
+.question-card-art .art-grey{fill:#c4ccd8}
+.question-card-art .art-ring{stroke:#8a96a8}
+.question-card-art .art-ring-green{stroke:#7cc8a1}
+.question-card-art .art-ring-dark{stroke:var(--text)}
+.question-card-art .art-burst{stroke:var(--primary)}
+.question-card-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--border)}
+.question-card-foot .btn{min-height:38px;padding:8px 14px;font-size:14px}
+.question-card-tag{font-size:13px;color:var(--secondary)}
+@media(max-width:480px){.question-cards{grid-template-columns:1fr}.question-card-pill{margin-right:0}.question-card-art{width:76px}}
 
 /* Employee Assignments: Add Employee next to Assign Employees, and the dialog's two ways to add people. */
 .page-actions{display:flex;flex:none;flex-wrap:nowrap;align-items:center;justify-content:flex-end;gap:12px}
@@ -342,3 +369,62 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .btn.employee-open{padding:0;min-height:0;font-weight:600;text-align:left;justify-content:flex-start}
 td .badge.warning{margin-left:8px}
 .employee-heading{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 0}
+.completion-bulk-actions { margin: 16px 0 8px; }
+.completion-select { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; cursor: pointer; }
+.completion-select input { flex: 0 0 18px; width: 18px; height: 18px; margin: 3px 0; }
+.completion-select:has(input:disabled) { cursor: default; }
+.completion-selection-list { max-height: 180px; overflow: auto; padding-left: 24px; }
+.completion-bulk-fields { display: grid; gap: 16px; min-width: 0; padding: 0; margin: 16px 0; border: 0; }
+/* Training cards (My Trainings and Training Completion): icon, title and description in one header row, then the facts. */
+.training-card{position:relative;overflow:hidden}
+.training-card::before{content:"";position:absolute;top:0;right:0;width:96px;height:96px;pointer-events:none;background:linear-gradient(225deg,var(--green-bg) 0 20%,transparent 20% 28%,var(--green-bg) 28% 40%,transparent 40%)}
+.training-card>p{flex:none}
+.training-card-head{position:relative;min-height:52px;padding-left:66px;margin-bottom:18px}
+.training-card-head .course-glyph{position:absolute;top:0;left:0;width:52px;height:52px;margin:0;border-radius:10px}
+.training-card-head .course-glyph svg{width:28px;height:28px}
+.training-card-head .glyph-0{background:var(--green-bg);color:var(--primary)}
+/* The badge floats right, so a long title continues at full width below it instead of breaking inside a word. */
+.training-card-title{display:flow-root;min-width:0}
+.training-card-title h2{margin:0;font-size:22px;line-height:1.25;overflow-wrap:break-word}
+.training-card-title p{margin:4px 0 0;font-size:14px;line-height:1.5;color:var(--secondary);overflow-wrap:break-word}
+.training-card-title .badge{float:right;max-width:none;margin:0 0 6px 12px;padding:5px 12px;border-radius:7px;font-size:14px}
+.training-card-meta{display:flex;flex-wrap:wrap;align-items:center;row-gap:6px;margin:0 0 14px;font-size:14px;color:var(--text)}
+.training-card-meta span{display:inline-flex;align-items:center;gap:8px;padding-right:16px}
+.training-card-meta span.questions+span{padding-left:16px;border-left:1px solid var(--border)}
+.training-card-meta svg{width:18px;height:18px;color:var(--secondary)}
+.training-card-scores{display:grid;grid-auto-columns:minmax(0,1fr);grid-auto-flow:column;margin:0 0 16px;padding:14px 0;border-radius:10px;background:var(--green-bg)}
+.training-card-scores>div{padding:0 20px}
+.training-card-scores:has(>div:nth-child(3))>div{padding:0 14px}
+.training-card-scores:has(>div:nth-child(3)) dd{font-size:28px}
+.training-card-scores>div+div{border-left:1px solid var(--border)}
+.training-card-scores dt{font-size:14px;color:var(--secondary)}
+.training-card-scores dd{margin:2px 0 0;font-size:34px;font-weight:700;line-height:1.15;color:var(--primary);font-variant-numeric:tabular-nums}
+.training-card-scores dd.missing{padding-top:8px;font-size:15px;font-weight:600;color:var(--secondary)}
+.training-card-done{display:flex;align-items:center;gap:8px;margin:0 0 16px;font-size:14px;color:var(--secondary)}
+.training-card-done svg{width:20px;height:20px;flex-shrink:0}
+.training-card-done.done svg circle{fill:var(--primary);stroke:var(--primary)}
+.training-card-done.done svg path{stroke:#fff}
+.training-card-materials{margin:0 0 16px;font-size:14px}
+.training-card-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:auto;padding-top:16px;border-top:1px solid var(--border)}
+.training-card-status{flex:1 1 auto;display:grid;gap:4px;min-width:0}
+.training-card-status strong{display:inline-flex;align-items:center;gap:8px;font-size:15px;color:var(--primary)}
+.training-card-status.finished strong{color:var(--text)}
+.training-card-status svg{width:18px;height:18px;flex-shrink:0;color:var(--primary)}
+.training-card-status small{font-size:13px;line-height:1.45;color:var(--secondary)}
+.training-card-status+.row{margin-left:auto}
+.training-card.completion-card .completion-counts-title{display:flex;align-items:center;gap:12px;margin:0 0 10px;font-size:14px;font-weight:700;letter-spacing:.08em;color:var(--text)}
+.training-card.completion-card .completion-counts-title::after{content:"";flex:1;height:1px;background:var(--border)}
+.training-card .completion-counts{grid-template-columns:repeat(3,minmax(0,1fr));gap:0;padding:14px 0;border-radius:10px;background:var(--muted)}
+.training-card .completion-counts>div{flex-direction:column-reverse;justify-content:flex-end;align-items:stretch;padding:0 20px;border:0;border-radius:0;background:none}
+.training-card .completion-counts>div+div{border-left:1px solid var(--border)}
+.training-card .completion-counts dt{font-size:15px;color:var(--secondary)}
+.training-card .completion-counts dd{font-size:30px;line-height:1.2}
+.training-card .completion-counts .recorded dd{color:var(--primary)}
+.training-card-progress{display:grid;gap:8px;margin:14px 0 0;font-size:15px;color:var(--text)}
+.training-card-progress progress{width:100%;height:10px;border:0;border-radius:999px;overflow:hidden;background:var(--border);appearance:none;-webkit-appearance:none}
+.training-card-progress progress::-webkit-progress-bar{background:var(--border);border-radius:999px}
+.training-card-progress progress::-webkit-progress-value{background:var(--primary);border-radius:999px}
+.training-card-progress progress::-moz-progress-bar{background:var(--primary);border-radius:999px}
+.training-card.completion-card .completion-note{margin:12px 0 16px;font-size:14px}
+.training-card .course-next{margin:0 0 16px}
+@media(max-width:420px){.training-card-scores>div,.training-card .completion-counts>div{padding:0 12px}.training-card-scores dd{font-size:28px}.training-card .completion-counts dd{font-size:24px}.training-card .completion-counts dt{font-size:13px}.training-card-title h2{font-size:20px}}

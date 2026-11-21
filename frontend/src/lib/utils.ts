@@ -24,6 +24,17 @@ export const day = (iso: string | null | undefined, missing = "Not recorded") =>
   return Number.isNaN(moment.getTime()) ? iso.slice(0, 10) : orgDate.format(moment);
 };
 
+const orgLongDate = new Intl.DateTimeFormat("en-GB", { timeZone: ORG_TIMEZONE, day: "numeric", month: "short", year: "numeric" });
+
+/** "20 Nov 2026" in the organisation timezone, for cards. A plain YYYY-MM-DD date is shown as that calendar day. */
+export const longDay = (iso: string | null | undefined, missing = "Not recorded") => {
+  if (!iso) return missing;
+  const plain = /^\d{4}-\d{2}-\d{2}$/.test(iso);
+  const moment = new Date(plain ? `${iso}T12:00:00Z` : iso);
+  if (Number.isNaN(moment.getTime())) return day(iso, missing);
+  return plain ? new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }).format(moment) : orgLongDate.format(moment);
+};
+
 /** Today's date in the organisation timezone, for date inputs (defaults, min and max). */
 export const todayInOrg = () => orgDate.format(new Date());
 

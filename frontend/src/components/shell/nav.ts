@@ -48,12 +48,20 @@ export const HOME: Record<RoleCode, string> = {
   LD_ADMIN: "/lnd",
 };
 
-/** Where a signed-in person must go first: a due assessment, then owed feedback, then their workspace.
-    The backend makes the same decision and refuses workspace APIs until it is met. */
+/** Where a signed-in person must go first: a due assessment, then owed feedback, then the countdown of a post-test
+    opening within five minutes, then their workspace. The backend makes the same decision for the first two and
+    refuses workspace APIs until they are met; the countdown is presentation only and opens nothing early. */
 export function landingPath(user: User, access: AccessState | null): string {
   if (access?.access_status === "ASSESSMENT_REQUIRED") return "/access/assessment-required";
   if (access?.access_status === "FEEDBACK_REQUIRED" && access.feedback_due) return `/results/${access.feedback_due.attempt_id}`;
+  const countdown = countdownTarget(access);
+  if (countdown) return `/assessment/start/${countdown.obligation_id}`;
   return HOME[user.primary_role];
+}
+
+/** The scheduled post-test whose countdown should be showing, per the server's latest answer. */
+export function countdownTarget(access: AccessState | null) {
+  return access?.access_status === "DASHBOARD_ALLOWED" ? (access.countdown ?? null) : null;
 }
 
 const PREFIX: [string, RoleCode][] = [

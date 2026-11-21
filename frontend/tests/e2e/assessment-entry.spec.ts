@@ -192,17 +192,17 @@ test.describe("assessment entry from My Trainings (mocked API)", () => {
     expect(world.starts).toBe(0);
   });
 
-  test("at the opening time the backend is asked again and the usual Start flow follows", async ({ context, page }) => {
+  test("at the opening time the backend is asked again and normal preparation opens without starting", async ({ context, page }) => {
     const world = newWorld();
     await openWaiting(context, page, world);
     await expect(countdownHeading(page)).toContainText("00:10:00");
     const before = world.detailCalls;
     await advance(page, world, 9 * 60_000 + 58_000);
-    await expect(page).toHaveURL(/\/assessment\/start\/o1/); // Not before the moment.
+    await expect(countdownHeading(page)).toContainText("00:02"); // Not before the moment.
     await advance(page, world, 3_000);
-    await page.waitForURL(/\/access\/assessment-required/);
+    await expect(page.getByRole("heading", { name: "System check" })).toBeVisible();
     expect(world.detailCalls).toBeGreaterThan(before); // Re-checked with the server, not decided by the device.
-    await expect(page.getByRole("button", { name: /Start assessment/ })).toBeVisible();
+    await expect(page).toHaveURL(/\/access\/assessment-required\?fromCountdown=o1/);
     expect(world.starts).toBe(0); // The employee still goes through the system check and instructions.
   });
 
@@ -288,7 +288,7 @@ test.describe("assessment entry from My Trainings (mocked API)", () => {
     world.offline = false;
     await context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await page.waitForURL(/\/access\/assessment-required/);
+    await expect(page.getByRole("heading", { name: "System check" })).toBeVisible(); // Confirmed only once connected.
     expect(world.starts).toBe(0);
   });
 

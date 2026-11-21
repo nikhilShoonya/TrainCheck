@@ -315,7 +315,7 @@ interface Detail extends Item {
   refresher: { text: string | null; url: string | null };
 }
 
-export function GateFlow() {
+export function GateFlow({ openPreparationFor }: { openPreparationFor?: string } = {}) {
   const router = useRouter();
   const { user, ready, access, refresh } = useSession();
   const [secure, setSecure] = useState(false);
@@ -374,7 +374,8 @@ export function GateFlow() {
   if (!ready || !user || !access) return <Loading label="Checking your access…" />;
   if (!item) return <Loading label="Opening your workspace…" />;
 
-  if (secure) {
+  // Countdown expiry opens preparation; the employee still starts the attempt explicitly.
+  if (secure || (detail && !error && openPreparationFor === item.obligation_id)) {
     return (
       <SecureStart
         key={running?.attempt_id ?? "new"}
