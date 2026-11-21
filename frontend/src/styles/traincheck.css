@@ -27,6 +27,27 @@
 a.btn{text-decoration:none}
 a.recent-training,a.calendar-event,.dashboard-quick-actions a{text-decoration:none;color:inherit}
 .dashboard-quick-actions a{display:flex}
+/* Quick actions: the prototype styled each action as a tile on .dashboard-quick-actions>button. They are links here,
+   so the same tile rules (values and breakpoints from role-dashboards.css) apply to the links. Columns are equal
+   widths, so a long label wraps inside its own tile instead of widening its column. */
+.dashboard-quick-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
+.dashboard-quick-actions>a{align-items:center;justify-content:center;flex-direction:column;gap:8px;text-align:center;background:linear-gradient(140deg,#f6f7f8,#f9fafb);border:1px solid transparent;border-radius:8px;padding:12px 6px;min-height:86px;font-size:13px;color:#1d2940;line-height:1.45;overflow-wrap:break-word}
+.dashboard-quick-actions>a:hover{border-color:#c8e1d6;background:#f0f2f4}
+.dashboard-quick-actions>a>svg{color:#107f4d;width:27px;height:27px;flex-shrink:0}
+@media(min-width:1450px){
+  .dashboard-quick-actions>a{min-height:92px;font-size:14px}
+  .dashboard-quick-actions>a>svg{width:30px;height:30px}
+}
+@media(max-width:1200px){
+  .dashboard-quick-actions{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .dashboard-quick-actions>a{min-height:85px}
+}
+@media(max-width:700px){
+  .dashboard-quick-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .dashboard-quick-actions>a{font-size:14px;min-height:98px;padding:13px 8px}
+}
+/* Very narrow phones: three tiles are too narrow for "Assessment", so two per row. */
+@media(max-width:340px){.dashboard-quick-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .profile-dropdown a.btn{justify-content:flex-start}
 
 /* Import steps: same look as the prototype's labels, but each reachable step is a working button. */

@@ -61,7 +61,7 @@ export function LoginPage() {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [dialog, setDialog] = useState<"recovery" | "reset" | null>(null);
+  const [dialog, setDialog] = useState<"reset" | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState("");
   const [notice, setNotice] = useState("");
@@ -239,9 +239,6 @@ export function LoginPage() {
             <label>
               <input name="remember" type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember my email
             </label>
-            <button type="button" onClick={() => setDialog("recovery")}>
-              Forgot password?
-            </button>
           </div>
           {resetRunning ? (
             <p className="login-reset-notice running" role="status">
@@ -274,11 +271,6 @@ export function LoginPage() {
           </button>
         ) : null}
       </section>
-      {dialog === "recovery" ? (
-        <Modal title="Forgot your password?" onClose={() => setDialog(null)}>
-          <p>Employees: your password is set by L&amp;D and cannot be changed or reset here. Contact your L&amp;D Admin. L&amp;D Admins: ask your TrainCheck system administrator for a one-time password, then change it in My profile.</p>
-        </Modal>
-      ) : null}
       {dialog === "reset" ? (
         <Modal title="Reset demo data?" onClose={() => !resetting && setDialog(null)}>
           <p>This erases everything done in this demo, for every employee and admin account: assessment attempts, results, enrolments, trainings, questions, imports and changed passwords. The original demo data is then loaded again, as on a fresh install.</p>
