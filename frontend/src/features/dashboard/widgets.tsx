@@ -79,7 +79,7 @@ export function EvidenceTiles({ learning, assessed, behaviour, behaviourEnabled 
     <div className={`level-tiles ${behaviourEnabled ? "two-level" : "one-level"}`}>
       <div className="level-tile learning">
         <Icon name="cap" />
-        <h3>L2 Learning</h3>
+        <h3>Learning</h3>
         <strong>
           {learning === null ? (
             "—"
@@ -119,14 +119,14 @@ export function EvidenceHelp() {
     <>
       <Btn kind="icon-btn" onClick={() => setOpen(true)}>
         <Icon name="help" />
-        <span className="sr-only">Explain learning and behaviour evidence</span>
+        <span className="sr-only">Explain learning evidence</span>
       </Btn>
       {open ? (
-        <Modal title="Two distinct kinds of evidence" onClose={() => setOpen(false)}>
+        <Modal title="Learning evidence" onClose={() => setOpen(false)}>
           <p>
-            <strong>L2 Learning</strong> records demonstrated knowledge. <strong>L3 Behaviour</strong> records how the learning is applied at work, through self-assessment.
+            <strong>Learning</strong> records demonstrated knowledge.
           </p>
-          <p>A quiz pass does not prove behaviour change. Missing evidence is shown as Not collected, never as zero.</p>
+          <p>Missing evidence is shown as Not collected, never as zero.</p>
         </Modal>
       ) : null}
     </>

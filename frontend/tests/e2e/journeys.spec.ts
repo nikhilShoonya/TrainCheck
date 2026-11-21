@@ -6,11 +6,11 @@ const GREETING = (name = "") => new RegExp(`Good (morning|afternoon|evening)${na
 
 /* The order matters: the first test uses up the employee's first assessment in the seeded data. */
 
-test("no-pending employee reaches the dashboard with two-level evidence only", async ({ page }) => {
+test("no-pending employee reaches the dashboard with learning evidence only", async ({ page }) => {
   await signIn(page, ACCOUNTS.clear);
   await expect(page).toHaveURL(/\/employee$/);
   await expect(page.getByRole("heading", { name: GREETING("Isha") })).toBeVisible();
-  await expect(page.getByText("L2 Learning")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Learning", exact: true })).toBeVisible();
   await expect(page.getByText("L3 Behaviour")).toHaveCount(0); // Level 3 is switched off (outside the approved scope).
   for (const removed of ["L1 Reaction", "L4 Results", "Feedback (L1)", "Results (L4)", "ROI"]) await expect(page.getByText(removed, { exact: false })).toHaveCount(0);
 });
