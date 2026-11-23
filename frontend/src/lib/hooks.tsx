@@ -3,7 +3,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, reloadAt } from "./api";
-import { browserStorage, purgePendingAnswers } from "./pendingAnswers";
+import { browserStorage, purgePendingAnswers, stopPendingAnswerQueues } from "./pendingAnswers";
+import { signOutFlow } from "./signOut";
 import { apiQuery, clearApiCache } from "./query";
 import type { AccessState, User } from "./types";
 
@@ -118,16 +119,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    // First: every live answer queue (here and in other tabs) is stopped, so a save finishing while signing out
-    // cannot write answers back to this device. Then again after, in case anything slipped in.
-    purgePendingAnswers(browserStorage(), null, Date.now());
-    try {
-      await api.post("/auth/logout");
-    } finally {
-      clearApiCache();
-      purgePendingAnswers(browserStorage(), null, Date.now()); // Nothing of this account's answers stays behind.
-      reloadAt("/login"); // A full load, so nothing from the signed-in session stays in memory.
-    }
+    // Every live answer queue (here and in other tabs) is stopped first, so a save finishing while signing out cannot
+    // write answers back to this device. Answers and cached data are removed, and the sign-in page opened, only once
+    // the server confirms the session is over (or had already ended). A failed sign-out throws: the person is still
+    // signed in, nothing is cleared, and the caller shows the error and offers to try again.
+    await signOutFlow({
+      stopAnswerQueues: () => stopPendingAnswerQueues(null),
+      logout: () => api.post("/auth/logout"),
+      finish: () => {
+        clearApiCache();
+        purgePendingAnswers(browserStorage(), null, Date.now()); // Nothing of this account's answers stays behind.
+        reloadAt("/login"); // A full load, so nothing from the signed-in session stays in memory.
+      },
+    });
   }, []);
 
   useEffect(() => {

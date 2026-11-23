@@ -47,6 +47,9 @@ class QuestionIn(BaseModel):
     # an existing link's classification is never changed by the form.
     training_test_types: dict[uuid.UUID, AssessmentType] = Field(default_factory=dict, max_length=1)
     status: QuestionStatus = QuestionStatus.ACTIVE
+    # Edits only, and required there: the version the editor loaded. An edit made from an older version is refused
+    # (409 QUESTION_CHANGED) instead of overwriting a newer one. Ignored when a question is created.
+    expected_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def check_answer_key(self) -> "QuestionIn":
@@ -281,10 +284,22 @@ def create_question(body: QuestionIn, user: CurrentUser = Depends(require_admin)
 
 @router.patch("/{question_id}")
 def update_question(question_id: uuid.UUID, body: QuestionIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    """Creates a new version. Running and past attempts keep their snapshot (TC-SCORE-011)."""
-    question = db.get(Question, question_id)
+    """Creates a new version. Running and past attempts keep their snapshot (TC-SCORE-011).
+
+    Two admins editing the same question take turns: the question row is locked and read again, and an edit based on
+    a version that is no longer current is refused with 409 QUESTION_CHANGED. The options, answer key and revision
+    history are therefore only ever changed by one edit at a time, from the version it was made against."""
+    if body.expected_version is None:
+        raise validation("Reload the question and edit it again: the version being edited is missing.")
+    question = db.scalar(select(Question).where(Question.id == question_id).with_for_update().execution_options(populate_existing=True))
     if question is None:
         raise not_found()
+    if question.version != body.expected_version:
+        raise conflict(
+            "QUESTION_CHANGED",
+            f"Someone else saved this question meanwhile (version {question.version}; you edited version {body.expected_version}). Reload it and make your change again.",
+            {"current_version": question.version, "expected_version": body.expected_version},
+        )
     _check_references(db, body)
     question.version += 1
     question.topic = body.topic
@@ -298,7 +313,11 @@ def update_question(question_id: uuid.UUID, body: QuestionIn, user: CurrentUser 
     set_content(db, question, body.options, body.correct_option_indexes)
     db.add(QuestionRevision(question_id=question.id, version=question.version, content_snapshot=revision_snapshot(db, question), changed_by=user.id))
     record_audit(db, user.id, "QUESTION_UPDATED", "question", question.id, after={"version": question.version})
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:  # Defence in depth: the row lock makes a duplicate revision impossible.
+        db.rollback()
+        raise conflict("QUESTION_CHANGED", "Someone else saved this question at the same moment. Reload it and make your change again.") from exc
     db.refresh(question)
     return ok(question_view(question, _keys(db, question.id)))
 

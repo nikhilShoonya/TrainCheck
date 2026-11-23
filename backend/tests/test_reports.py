@@ -497,3 +497,54 @@ def test_every_report_row_matches_its_columns_and_batch_columns_are_where_approv
     assert "Batch" not in header
     body = [line for line in lines[header_at + 1 :] if len(line) > 1]
     assert body and all(len(line) == len(header) for line in body)
+
+
+# ---------- Submission labels (TRAINING_COMPLETED) ----------
+
+def test_every_submission_reason_has_a_label():
+    from app.core.enums import SubmissionReason
+    from app.modules.reports.catalogue import SUBMISSION_LABELS
+
+    assert set(SUBMISSION_LABELS) == {reason.value for reason in SubmissionReason}
+    assert all(label.strip() for label in SUBMISSION_LABELS.values())
+
+
+def test_pre_test_submitted_when_completion_is_recorded_is_labelled_in_history_and_exports(world, db, client_for):
+    """A pre-test still running when L&D records completion is submitted automatically (TRAINING_COMPLETED). The
+    Employee History report, and its CSV and Excel exports, say so instead of leaving Submission blank."""
+    import csv
+    import io
+
+    from openpyxl import load_workbook
+
+    from app.core.enums import AssessmentType
+    from app.models import AssessmentAttempt, AssessmentConfig
+
+    training = world.training()
+    training.pretest_enabled = True
+    db.add(AssessmentConfig(training_id=training.id, assessment_type=AssessmentType.PRE_TEST, version=1, question_count=10, duration_seconds=600, max_attempts=1))
+    enrolment = world.enrol(world.employee, training)
+    db.commit()
+    started = client_for(world.employee).post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    assert started.status_code == 200, started.text
+    admin = client_for(world.admin)
+    assert admin.post(f"/admin/enrolments/{enrolment.id}/completion", json={"completion_date": NOW.date().isoformat()}).status_code == 200
+    db.expire_all()
+    assert db.get(AssessmentAttempt, started.json()["data"]["attempt_id"]).submission_reason == "TRAINING_COMPLETED"
+
+    label = "Training completion recorded"
+    report = admin.get(f"/reports/employee-history?training_id={training.id}").json()["data"]
+    pre = [dict(zip(report["columns"], row, strict=True)) for row in report["rows"] if row[report["columns"].index("Type")] == "Pre-test"]
+    assert [row["Submission"] for row in pre] == [label]
+
+    def export(fmt: str) -> bytes:
+        record = admin.post("/reports/exports", json={"report_code": "employee-history", "export_format": fmt, "filters": {"training_id": str(training.id)}}).json()["data"]
+        return admin.get(f"/reports/exports/{record['id']}/download").content
+
+    rows = list(csv.reader(io.StringIO(export("CSV").decode("utf-8-sig"))))
+    header = next(r for r in rows if r and r[0] == "Employee")
+    assert [r[header.index("Submission")] for r in rows if len(r) == len(header) and r[header.index("Type")] == "Pre-test"] == [label]
+    sheet = load_workbook(io.BytesIO(export("XLSX"))).active
+    values = [[cell for cell in row] for row in sheet.iter_rows(values_only=True)]
+    header = next(list(r) for r in values if r and r[0] == "Employee")
+    assert [r[header.index("Submission")] for r in values if r and len(r) >= len(header) and r[header.index("Type")] == "Pre-test"] == [label]

@@ -9,6 +9,7 @@ import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
 import { navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
 import { useQueryClient } from "@tanstack/react-query";
+import { ApiError } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { NAV_PREFETCH, prefetchPaths } from "@/lib/query";
 import type { RoleCode, User } from "@/lib/types";
@@ -90,7 +91,7 @@ function SearchDialog({ query, onClose, role }: { query: string; onClose: () => 
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { user, signOut } = useSession();
+  const { user } = useSession();
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
@@ -277,9 +278,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                     My own training
                   </Link>
                 ) : null}
-                <Btn kind="text" tone="danger" onClick={() => void signOut()}>
-                  Sign out
-                </Btn>
+                <SignOutButton />
               </div>
             </details>
           </div>
@@ -301,6 +300,49 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
+/** Sign out, which leaves only once the server confirms it. If it fails the person is still signed in: say so and
+    offer to try again. Answer saving was stopped while trying, so on pages that save answers (`reloadToStay`),
+    staying reloads the page to start it again; answers not yet saved stay on this device. */
+function SignOutButton({ reloadToStay = false }: { reloadToStay?: boolean }) {
+  const { signOut } = useSession();
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const attempt = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await signOut(); // On success the sign-in page opens.
+    } catch (e) {
+      setFailure(e instanceof ApiError ? e.message : "TrainCheck could not be reached. Check your connection and try again.");
+      setBusy(false);
+    }
+  };
+  const stay = () => {
+    setFailure(null);
+    if (reloadToStay) window.location.reload();
+  };
+  return (
+    <>
+      <Btn kind="text" tone="danger" disabled={busy} onClick={() => void attempt()}>
+        {busy ? "Signing out…" : "Sign out"}
+      </Btn>
+      {failure !== null ? (
+        <Modal title="Sign-out did not complete" onClose={stay}>
+          <p role="alert">
+            {failure} You are still signed in.
+          </p>
+          <div className="dialog-actions">
+            <Btn onClick={stay}>Stay signed in</Btn>
+            <Btn kind="primary" onClick={() => void attempt()}>
+              Try again
+            </Btn>
+          </div>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
 function BackButton() {
   const router = useRouter();
   return (
@@ -311,7 +353,6 @@ function BackButton() {
 }
 
 export function FocusShell({ children, footer = "Your answers and timer are managed securely by TrainCheck." }: { children: ReactNode; footer?: string }) {
-  const { signOut } = useSession();
   return (
     <div className="assessment-layout">
       <header className="focus-header">
@@ -320,9 +361,7 @@ export function FocusShell({ children, footer = "Your answers and timer are mana
           <span className="sr-only">TrainCheck · Finvasia L&D Evaluation</span>
         </div>
         <span className="muted">Learning verification</span>
-        <Btn kind="text" tone="danger" onClick={() => void signOut()}>
-          Sign out
-        </Btn>
+        <SignOutButton reloadToStay />
       </header>
       <main id="main" className="assessment-main">
         {children}

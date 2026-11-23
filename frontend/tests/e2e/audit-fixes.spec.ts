@@ -14,9 +14,18 @@ interface World {
   requested: string[];
   trainers: { id: string; name: string; email: string | null; is_active: boolean }[];
   notifications: { id: string; type: string; title: string; message: string; link: string | null; read: boolean; created_at: string }[];
+  /** When set, "Load older" replies are computed when requested but sent only once released (a slow network). */
+  hold: { released: Promise<void>; release: () => void } | null;
+  held: number;
 }
 
-const newWorld = (): World => ({ unknown: [], posts: [], requested: [], trainers: [], notifications: [] });
+const newWorld = (): World => ({ unknown: [], posts: [], requested: [], trainers: [], notifications: [], hold: null, held: 0 });
+
+function holdOlderPages(world: World) {
+  let release = () => {};
+  const released = new Promise<void>((resolve) => (release = resolve));
+  world.hold = { released, release };
+}
 
 /** 250 synthetic notifications, newest first, several sharing one timestamp. */
 const manyNotifications = () =>
@@ -51,9 +60,17 @@ async function mockApi(context: BrowserContext, world: World) {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? 100), 100);
       const before = url.searchParams.get("before");
       const start = before ? world.notifications.findIndex((n) => n.id === before) + 1 : 0;
-      const items = world.notifications.slice(start, start + limit);
+      const items = world.notifications.slice(start, start + limit).map((n) => ({ ...n })); // The state when asked.
       const hasMore = start + limit < world.notifications.length;
+      if (before && world.hold) {
+        world.held++;
+        await world.hold.released;
+      }
       return json(items, { unread: 73, has_more: hasMore, next_before: hasMore ? items[items.length - 1].id : null });
+    }
+    if (path === "/me/notifications/mark-all-read" && method === "POST") {
+      for (const n of world.notifications) n.read = true;
+      return json({ marked: true });
     }
     const notification = /^\/me\/notifications\/([^/]+)$/.exec(path);
     if (notification && method === "PATCH") {
@@ -204,5 +221,39 @@ test.describe("audit fixes (mocked API)", () => {
     await expect(page.getByRole("button", { name: "Open navigation" })).toBeHidden();
     await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Training Management" }).focus();
     await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Training Management" })).toBeFocused();
+  });
+
+  test("a delayed older page cannot undo a Mark All Read made while it was loading (notification race)", async ({ page }) => {
+    world.notifications = manyNotifications();
+    await page.goto("/notifications");
+    const items = page.locator("article.notification-item");
+    await expect(items).toHaveCount(100);
+    holdOlderPages(world);
+    await page.getByRole("button", { name: "Load older notifications" }).click();
+    await expect.poll(() => world.held).toBe(1); // The page was read on the server while everything was unread...
+    await page.getByRole("button", { name: "Mark All Read" }).click();
+    await expect(items.nth(0).getByRole("button", { name: "Mark unread" })).toBeVisible(); // ...then all were marked read.
+    world.hold?.release();
+    await expect(items).toHaveCount(200);
+    await expect(page.locator("article.notification-item").getByRole("button", { name: "Mark read" })).toHaveCount(0);
+    expect(await items.locator(".badge").allTextContents()).toEqual(Array(200).fill("Read"));
+  });
+
+  test("a delayed older page cannot undo a Mark Read made on an older notification while it was loading", async ({ page }) => {
+    world.notifications = manyNotifications();
+    await page.goto("/notifications");
+    const items = page.locator("article.notification-item");
+    await page.getByRole("button", { name: "Load older notifications" }).click();
+    await expect(items).toHaveCount(200);
+    holdOlderPages(world);
+    await page.getByRole("button", { name: "Load older notifications" }).click();
+    await expect.poll(() => world.held).toBe(1);
+    await items.nth(150).getByRole("button", { name: "Mark read" }).click();
+    await expect(items.nth(150).getByRole("button", { name: "Mark unread" })).toBeVisible();
+    world.hold?.release();
+    await expect(items).toHaveCount(250);
+    await expect(items.nth(150).getByRole("button", { name: "Mark unread" })).toBeVisible();
+    const titles = await items.locator("h3").allTextContents();
+    expect(titles).toEqual(world.notifications.map((n) => n.title)); // Order kept, nothing repeated or missing.
   });
 });

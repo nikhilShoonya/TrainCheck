@@ -262,6 +262,11 @@ def assessment_readiness(db: Session, training: Training) -> Readiness:
     return readiness_from(training, config, report)
 
 
+def lock_enrolment(db: Session, enrolment_id: uuid.UUID) -> None:
+    """Holds the enrolment's row lock until the transaction ends (the lock recording completion takes)."""
+    db.execute(select(Enrolment.id).where(Enrolment.id == enrolment_id).with_for_update())
+
+
 def latest_post_obligation(db: Session, enrolment_id: uuid.UUID) -> AssessmentObligation | None:
     return db.scalar(
         select(AssessmentObligation)
@@ -293,6 +298,10 @@ def schedule_post_test(db: Session, enrolment: Enrolment, completed_at: datetime
     """
     employee, training = enrolment.employee, enrolment.training
     label = employee_label(employee)
+    # Every path that creates a post-test (completion, the import, applying new rules, L&D recovery) comes here. Take
+    # the enrolment's row lock, as completion, cancellation and attendance do, and look again: a request creating this
+    # enrolment's assessment at the same moment is waited for, and its assessment is found instead of duplicated.
+    lock_enrolment(db, enrolment.id)
     existing = latest_post_obligation(db, enrolment.id)
     if existing is not None:
         return {"status": "ALREADY_SCHEDULED", "reason": None, "message": f"An assessment already exists for {label}.", "action": None, "due_at": iso(existing.due_at), "obligation": existing}
@@ -564,7 +573,11 @@ def schedule_pending_assessments(db: Session, training: Training, actor_id: uuid
 
     config = readiness.config
     moved, still_blocked = [], []
-    for obligation in unavailable_for_training(db, training.id):
+    for candidate in unavailable_for_training(db, training.id):
+        # Locked and read again: another recovery may have moved it, or the employee started or finished it, meanwhile.
+        obligation = db.scalar(select(AssessmentObligation).where(AssessmentObligation.id == candidate.id).with_for_update().execution_options(populate_existing=True))
+        if obligation is None or obligation.status not in OPEN_OBLIGATION_STATUSES or obligation.config_id == config.id or obligation_startable(db, obligation, {}):
+            continue
         employee = obligation.employee
         if counted_attempts(obligation) >= config.max_attempts:
             still_blocked.append({"employee_code": employee.employee_code, "employee_name": employee.full_name, "reason": "Attempts already used reach the current maximum. Waive it or open a new cycle."})

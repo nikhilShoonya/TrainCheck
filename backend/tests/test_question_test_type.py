@@ -217,6 +217,7 @@ def test_classification_belongs_to_the_training_link(world, db, client_for):
     body = {k: full[k] for k in ("question_code", "topic", "question_type", "question_text", "difficulty", "marks", "language", "status", "explanation", "randomise_options")}
     body.update(options=[o["text"] for o in full["options"]], correct_option_indexes=[i for i, o in enumerate(full["options"]) if o["is_correct"]], training_ids=[str(first.id), str(second.id)])
     body["question_text"] = "SHARED-1, reworded?"
+    body["expected_version"] = full["version"]
     assert admin.patch(f"/admin/questions/{question['id']}", json=body).status_code == 200
     assert links_of(db, question["id"]) == {(first.id, "PRE_TEST"), (second.id, None)}
     shown = {t["code"]: t["test_type"] for t in admin.get(f"/admin/questions/{question['id']}").json()["data"]["trainings"]}

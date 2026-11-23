@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.clock import utcnow
-from app.core.enums import AttemptStatus, ReportCode, ReviewerType
+from app.core.enums import AttemptStatus, ReportCode, ReviewerType, SubmissionReason
 from app.core.responses import display_percent
 from app.models import AttemptQuestion, Training
 from app.modules.assessment.scheduling import load_calendar
@@ -142,11 +142,21 @@ def question_analytics(db: Session, rows: list[Row]) -> Report:
     return report
 
 
+# How each attempt was submitted, as the Employee History report and its exports show it. Every SubmissionReason
+# has a label, so no attempt is shown with a blank Submission.
+SUBMISSION_LABELS = {
+    SubmissionReason.MANUAL.value: "By employee",
+    SubmissionReason.TIME_EXPIRED.value: "Time expired",
+    SubmissionReason.VIOLATION_LIMIT.value: "Violation limit",
+    SubmissionReason.TRAINING_COMPLETED.value: "Training completion recorded",
+}
+
+
 def employee_history(db: Session, rows: list[Row]) -> Report:
     calendar = load_calendar(db)
     # Submission times are shown in the organisation timezone, which the column names.
     report = Report(ReportCode.EMPLOYEE_HISTORY, *TITLES[ReportCode.EMPLOYEE_HISTORY], ["Employee", "Employee ID", "Training", "Batch", "Type", "Attempt", "Score %", "Result", f"Submitted ({calendar.timezone})", "Submission"])
-    labels = {"MANUAL": "By employee", "TIME_EXPIRED": "Time expired", "VIOLATION_LIMIT": "Violation limit"}
+    labels = SUBMISSION_LABELS
     for r in rows:
         e, t = r.enrolment.employee, r.enrolment.training
         batch = r.enrolment.batch.name if r.enrolment.batch else "Unassigned"

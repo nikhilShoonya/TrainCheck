@@ -20,7 +20,9 @@ interface FilterOptions {
 type Filters = Record<string, string>;
 const toOptions = (items: Named[] = []) => items.map((i) => ({ value: i.id, label: i.name }));
 
-export function FilterBar({ filters, onApply, showDates = true }: { filters: Filters; onApply: (f: Filters) => void; showDates?: boolean }) {
+/** `showTraining={false}` where the page already has its own training selector (the Learning Scorecard): a second
+    Training control could only disagree with it. */
+export function FilterBar({ filters, onApply, showDates = true, showTraining = true }: { filters: Filters; onApply: (f: Filters) => void; showDates?: boolean; showTraining?: boolean }) {
   const options = useApi<FilterOptions>("/reports/filter-options");
   const [error, setError] = useState("");
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -44,7 +46,7 @@ export function FilterBar({ filters, onApply, showDates = true }: { filters: Fil
       ) : null}
       <SelectField label="Department" name="department_id" placeholder="All departments" options={toOptions(o?.departments)} defaultValue={filters.department_id ?? ""} />
       <SelectField label="Location" name="location_id" placeholder="All locations" options={toOptions(o?.locations)} defaultValue={filters.location_id ?? ""} />
-      <SelectField label="Training" name="training_id" placeholder="All training" options={toOptions(o?.trainings)} defaultValue={filters.training_id ?? ""} />
+      {showTraining ? <SelectField label="Training" name="training_id" placeholder="All training" options={toOptions(o?.trainings)} defaultValue={filters.training_id ?? ""} /> : null}
       <SelectField label="Trainer" name="trainer_id" placeholder="All trainers" options={toOptions(o?.trainers)} defaultValue={filters.trainer_id ?? ""} />
       <SelectField label="Employee grade" name="grade" placeholder="All grades" options={(o?.grades ?? []).map((g) => ({ value: g, label: g }))} defaultValue={filters.grade ?? ""} />
       <button className="btn secondary" type="submit">

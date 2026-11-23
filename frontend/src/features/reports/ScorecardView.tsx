@@ -84,7 +84,8 @@ export function ScorecardPage({ eyebrow, description = "Learning evidence for on
             <>
               <section className="panel">
                 <SelectField label="Training programme" value={trainingId} onChange={(e) => setSelected(e.target.value)} options={items.map((t) => ({ value: t.id, label: t.title }))} />
-                <FilterBar filters={filters} onApply={setFilters} />
+                {/* The Training programme above is the one training shown, requested and exported. */}
+                <FilterBar filters={filters} onApply={({ training_id: _ignored, ...rest }) => setFilters(rest)} showTraining={false} />
               </section>
               <Loaded state={card}>{(data) => <ScorecardBody card={data} />}</Loaded>
             </>

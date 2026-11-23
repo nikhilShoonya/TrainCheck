@@ -252,6 +252,7 @@ def test_defaults_ids_status_and_language_are_set_by_traincheck(world, db, clien
     question = questions[hindi]
     full = admin.get(f"/admin/questions/{question.id}").json()["data"]
     body = {k: full[k] for k in ("question_code", "topic", "question_text", "status", "randomise_options")}
+    body["expected_version"] = full["version"]
     body.update(question_type="SCENARIO", language="Hindi", difficulty="HARD", marks=2, explanation="Because.", competency_id=str(world.competency.id), options=[o["text"] for o in full["options"]], correct_option_indexes=[i for i, o in enumerate(full["options"]) if o["is_correct"]], training_ids=[str(training.id)])
     edited = admin.patch(f"/admin/questions/{question.id}", json=body)
     assert edited.status_code == 200, edited.text

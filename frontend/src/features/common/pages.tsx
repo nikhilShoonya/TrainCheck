@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Icon } from "@/components/icons";
 import { ROLE_LABEL } from "@/components/shell/nav";
 import { Badge, Btn, BtnLink, Empty, ErrorPanel, Loaded, PageTitle, TextField, useToast } from "@/components/ui";
@@ -8,7 +8,7 @@ import { ApiError, api } from "@/lib/api";
 import { canChangeOwnPassword } from "@/features/admin/employeeView";
 import { useApi, useSession } from "@/lib/hooks";
 import { dateTime } from "@/lib/utils";
-import { mayHaveOlder, olderPagePath, replaceInOlder, shownNotifications, withOlderPage, type Older } from "./notificationPages";
+import { mayHaveOlder, noReadChanges, olderPagePath, reconcileReadState, replaceInOlder, shownNotifications, withMark, withMarkAll, withOlderPage, type Older } from "./notificationPages";
 
 interface NotificationView {
   id: string;
@@ -27,9 +27,17 @@ export function NotificationsPage() {
   const [older, setOlder] = useState<Older<NotificationView> | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderStatus, setOlderStatus] = useState("");
+  // Read-state changes, numbered, so an older page requested before one of them cannot undo it when it arrives.
+  const readChanges = useRef(noReadChanges());
+  // The first page as it is now (it is refetched after changes), for merging a page that arrives later.
+  const latestFirst = useRef<NotificationView[]>([]);
+  useEffect(() => {
+    latestFirst.current = state.data ?? [];
+  }, [state.data]);
   const markAll = async () => {
     try {
       await api.post("/me/notifications/mark-all-read");
+      readChanges.current = withMarkAll(readChanges.current);
       setOlder((o) => (o ? { ...o, items: o.items.map((n) => ({ ...n, read: true })) } : o));
       toast("Notifications marked read.");
       void state.reload();
@@ -39,14 +47,21 @@ export function NotificationsPage() {
   };
   const mark = async (n: NotificationView) => {
     const changed = await api.patch<NotificationView>(`/me/notifications/${n.id}`, { read: !n.read }).catch(() => null);
-    if (changed) setOlder((o) => replaceInOlder(o, changed));
+    if (changed) {
+      readChanges.current = withMark(readChanges.current, changed.id, changed.read);
+      setOlder((o) => replaceInOlder(o, changed));
+    }
     void state.reload();
   };
   const loadOlder = async (first: NotificationView[]) => {
     setLoadingOlder(true);
     try {
+      const since = readChanges.current.seq;
       const page = await api.getEnvelope<NotificationView[], { has_more: boolean }>(olderPagePath(shownNotifications(first, older)));
-      setOlder(withOlderPage(first, older, page.data, page.meta.has_more));
+      // Changes made while the page was loading win over the page's older read state, and the page is merged into the
+      // older pages as they are now, so a Mark Read made meanwhile is kept.
+      const items = reconcileReadState(page.data, readChanges.current, since);
+      setOlder((current) => withOlderPage(latestFirst.current.length ? latestFirst.current : first, current, items, page.meta.has_more));
       setOlderStatus(page.data.length ? `Loaded ${page.data.length} older notification${page.data.length === 1 ? "" : "s"}.` : "There are no older notifications.");
     } catch (e) {
       toast((e as ApiError).message);

@@ -46,3 +46,41 @@ export function withOlderPage<T extends { id: string }>(first: T[], older: Older
 export function replaceInOlder<T extends { id: string }>(older: Older<T> | null, changed: T): Older<T> | null {
   return older ? { ...older, items: older.items.map((n) => (n.id === changed.id ? changed : n)) } : older;
 }
+
+/* ---------- Read-state changes made while an older page is loading ----------
+   A page that was requested before a Mark Read, Mark Unread or Mark All Read carries the read state from before it.
+   Every such change is numbered; a page is reconciled with the changes made after it was requested, so a delayed
+   page can never undo a newer change. */
+
+export interface ReadChanges {
+  /** Number of the latest change. */
+  seq: number;
+  /** The latest Mark Read / Mark Unread of each notification, with its number. */
+  marks: Record<string, { read: boolean; seq: number }>;
+  /** Number of the latest Mark All Read, or 0. */
+  allReadSeq: number;
+}
+
+export const noReadChanges = (): ReadChanges => ({ seq: 0, marks: {}, allReadSeq: 0 });
+
+export function withMark(changes: ReadChanges, id: string, read: boolean): ReadChanges {
+  const seq = changes.seq + 1;
+  return { ...changes, seq, marks: { ...changes.marks, [id]: { read, seq } } };
+}
+
+export function withMarkAll(changes: ReadChanges): ReadChanges {
+  const seq = changes.seq + 1;
+  return { ...changes, seq, allReadSeq: seq };
+}
+
+/** The notifications of a page requested when `since` was the latest change, with every later change applied. */
+export function reconcileReadState<T extends { id: string; read: boolean }>(items: T[], changes: ReadChanges, since: number): T[] {
+  return items.map((n) => {
+    const mark = changes.marks[n.id];
+    const markSeq = mark && mark.seq > since ? mark.seq : 0;
+    const allSeq = changes.allReadSeq > since ? changes.allReadSeq : 0;
+    if (!markSeq && !allSeq) return n;
+    const read = markSeq > allSeq ? mark.read : true;
+    return read === n.read ? n : { ...n, read };
+  });
+}

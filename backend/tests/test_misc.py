@@ -377,7 +377,7 @@ def test_question_create_edit_version_deactivate_search(world, client_for, db): 
     assert created["version"] == 1 and len(created["trainings"]) == 2  # One question, reused by two trainings.
     assert admin.post("/admin/questions", json=question_body()).status_code == 409
 
-    edited = admin.patch(f"/admin/questions/{created['id']}", json=question_body(question_text="A better question?", options=["A", "B", "C"], correct_option_indexes=[2], training_ids=[str(training.id)])).json()["data"]
+    edited = admin.patch(f"/admin/questions/{created['id']}", json=question_body(question_text="A better question?", options=["A", "B", "C"], correct_option_indexes=[2], training_ids=[str(training.id)], expected_version=created["version"])).json()["data"]
     assert edited["version"] == 2
     assert [o["is_correct"] for o in edited["options"]] == [False, False, True]
     assert db.scalar(select(func.count()).select_from(QuestionRevision)) == 2

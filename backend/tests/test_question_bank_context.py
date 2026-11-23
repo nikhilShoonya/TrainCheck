@@ -192,7 +192,7 @@ def test_a_question_added_for_a_test_keeps_that_context(world, db, client_for):
     assert [t["test_type"] for t in plain["trainings"]] == [None]
 
     # An edit never changes an existing classification, even if a test type is sent.
-    edit = question_body([str(alpha.id)], "Added for the ALPHA pre-test, reworded?", question_code=created["question_code"], training_test_types={str(alpha.id): "POST_TEST"})
+    edit = question_body([str(alpha.id)], "Added for the ALPHA pre-test, reworded?", question_code=created["question_code"], training_test_types={str(alpha.id): "POST_TEST"}, expected_version=created["version"])
     assert admin.patch(f"/admin/questions/{created['id']}", json=edit).status_code == 200
     links = set(db.execute(select(QuestionTrainingTag.training_id, QuestionTrainingTag.test_type).where(QuestionTrainingTag.question_id == uuid.UUID(created["id"]))).all())
     assert links == {(alpha.id, "PRE_TEST")}
@@ -237,7 +237,7 @@ def test_unknown_competency_department_or_function_is_a_400_not_a_500(world, db,
     assert db.scalar(select(func.count()).select_from(Question).where(Question.question_text == "Which is the approved process?")) == 0
 
     question = db.scalar(select(Question).where(Question.question_code == "ALPHA-Q01"))
-    edited = admin.patch(f"/admin/questions/{question.id}", json=question_body([str(training.id)], "Edited text", **{field: missing}))
+    edited = admin.patch(f"/admin/questions/{question.id}", json=question_body([str(training.id)], "Edited text", expected_version=question.version, **{field: missing}))
     assert edited.status_code == 400, edited.text
     assert edited.json()["error"]["message"] == f"The selected {label} no longer exists."
     db.expire_all()

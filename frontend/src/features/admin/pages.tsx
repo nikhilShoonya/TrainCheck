@@ -2024,7 +2024,8 @@ function QuestionForm({ question, onClose, onSaved, defaultTrainingId, context }
       onClose={onClose}
       onSubmit={async (form) => {
         const body = {
-          ...(question ? { question_code: question.question_code } : { question_code: form.get("question_code") || null }),
+          // An edit names the version it was made from; if someone saved meanwhile the server refuses it (409).
+          ...(question ? { question_code: question.question_code, expected_version: question.version } : { question_code: form.get("question_code") || null }),
           topic: form.get("topic"),
           competency_id: form.get("competency_id") || null,
           department_id: form.get("department_id") || null,

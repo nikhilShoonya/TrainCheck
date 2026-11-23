@@ -5,7 +5,7 @@ writes, exactly the window a row lock closes. The outcome must be a clear 409, n
 """
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core import db as database
 from app.models import AssessmentAttempt, AssessmentConfig, AssessmentObligation, Enrolment, TrainingCompletion
@@ -330,3 +330,140 @@ def test_attendance_changes_still_work_when_nothing_races(world, db, client_for)
     for status in ("PRESENT", "ABSENT", "EXCUSED", "PENDING"):
         response = admin.patch(f"/admin/enrolments/{enrolment.id}/attendance", json={"attendance_status": status})
         assert response.status_code == 200 and response.json()["data"]["attendance_status"] == status
+
+
+# ---------- Two admins editing one question ----------
+
+def _question_edit(training_id, version, text, options):
+    return {
+        "topic": "Topic", "question_type": "MCQ_SINGLE", "question_text": text, "options": options, "correct_option_indexes": [0],
+        "difficulty": "EASY", "marks": 1, "language": "English", "training_ids": [str(training_id)], "expected_version": version,
+    }
+
+
+def test_two_question_edits_at_once_the_stale_one_is_refused_not_a_server_error(world, db, client_for):
+    """Admin 1 is part-way through saving (holding the question's row lock, options, answer key and revision N+1
+    written). Admin 2's edit, made against version N, must wait, then be refused with 409: no 500, no duplicate
+    revision, and admin 1's options and answer key are kept."""
+    import threading
+    import time
+
+    from app.models import Question, QuestionAnswerKey, QuestionOption, QuestionRevision
+    from app.modules.question_bank.router import set_content
+
+    training = world.training("QED", questions=1, count=1)
+    question = db.scalar(select(Question).where(Question.question_code == "QED-Q01"))
+    question_id, version = question.id, question.version
+    revisions_before = db.scalars(select(QuestionRevision.version).where(QuestionRevision.question_id == question_id).order_by(QuestionRevision.version)).all()
+    admin = client_for(world.admin)
+
+    other = database.session_factory()()
+    mine = other.scalar(select(Question).where(Question.id == question_id).with_for_update())
+    mine.version, mine.question_text = version + 1, "Admin one's text?"
+    set_content(other, mine, ["One right", "One wrong"], [0])
+    other.add(QuestionRevision(question_id=question_id, version=version + 1, content_snapshot={"question_text": "Admin one's text?"}))
+    other.flush()
+
+    outcome: dict = {}
+    body = _question_edit(training.id, version, "Admin two's text?", ["Two right", "Two wrong"])
+    editor = threading.Thread(target=lambda: outcome.setdefault("response", admin.patch(f"/admin/questions/{question_id}", json=body)))
+    editor.start()
+    time.sleep(1.5)
+    assert editor.is_alive(), "the second edit must wait for the first one's lock"
+    other.commit()
+    other.close()
+    editor.join(timeout=30)
+    response = outcome["response"]
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "QUESTION_CHANGED"
+    assert response.json()["error"]["details"] == {"current_version": version + 1, "expected_version": version}
+
+    db.expire_all()
+    saved = db.get(Question, question_id)
+    assert (saved.version, saved.question_text) == (version + 1, "Admin one's text?")
+    assert db.scalars(select(QuestionRevision.version).where(QuestionRevision.question_id == question_id).order_by(QuestionRevision.version)).all() == [*revisions_before, version + 1]
+    options = db.scalars(select(QuestionOption).where(QuestionOption.question_id == question_id).order_by(QuestionOption.display_order)).all()
+    assert [o.option_text for o in options] == ["One right", "One wrong"]
+    assert db.scalars(select(QuestionAnswerKey.option_id).where(QuestionAnswerKey.question_id == question_id)).all() == [options[0].id]
+
+    # Reloaded, admin 2's edit is made against the current version and saves; an edit without a version is refused.
+    again = admin.patch(f"/admin/questions/{question_id}", json=_question_edit(training.id, version + 1, "Admin two's text?", ["Two right", "Two wrong"]))
+    assert again.status_code == 200 and again.json()["data"]["version"] == version + 2, again.text
+    missing = {k: v for k, v in body.items() if k != "expected_version"}
+    assert admin.patch(f"/admin/questions/{question_id}", json=missing).status_code == 400
+
+
+def test_a_stale_question_edit_is_refused_even_after_the_other_save_finished(world, db, client_for):
+    """Two admins load version N; the first saves; the second's save from version N is refused, not applied over it."""
+    from app.models import Question
+
+    training = world.training("QED", questions=1, count=1)
+    question = db.scalar(select(Question).where(Question.question_code == "QED-Q01"))
+    first, second = client_for(world.admin), client_for(world.admin)
+    assert first.patch(f"/admin/questions/{question.id}", json=_question_edit(training.id, question.version, "First save?", ["A", "B"])).status_code == 200
+    stale = second.patch(f"/admin/questions/{question.id}", json=_question_edit(training.id, question.version, "Second save?", ["C", "D"]))
+    assert stale.status_code == 409 and stale.json()["error"]["code"] == "QUESTION_CHANGED"
+    db.expire_all()
+    assert db.get(Question, question.id).question_text == "First save?"
+
+
+# ---------- Schedule pending assessments twice at once ----------
+
+def _completed_without_assessment(world, db):
+    """A completion recorded while the training could not run an assessment: no post-test obligation exists."""
+    training = world.training("REC")
+    enrolment = world.enrol(world.employee, training)
+    db.add(TrainingCompletion(enrolment_id=enrolment.id, completed_at=NOW - timedelta(days=1), completion_source="MANUAL"))
+    enrolment.enrolment_status, enrolment.attendance_status = "COMPLETED", "PRESENT"
+    db.commit()
+    return training, enrolment
+
+
+def _post_tests(db, enrolment_id) -> list:
+    db.expire_all()
+    return db.scalars(select(AssessmentObligation).where(AssessmentObligation.enrolment_id == enrolment_id, AssessmentObligation.assessment_type == "POST_TEST")).all()
+
+
+def test_two_recoveries_at_once_create_one_assessment_not_a_server_error(world, db, client_for):
+    """The first "Schedule pending assessments" is part-way through (holding the enrolment's lock, its assessment
+    created but not committed). The second must wait, find that assessment and create none: no 500, no duplicate."""
+    import threading
+    import time
+
+    from app.models import AuditLog
+
+    training, enrolment = _completed_without_assessment(world, db)
+    config_id = db.scalar(select(AssessmentConfig.id).where(AssessmentConfig.training_id == training.id, AssessmentConfig.assessment_type == "POST_TEST", AssessmentConfig.is_active))
+    admin = client_for(world.admin)
+
+    other = database.session_factory()()
+    other.scalar(select(Enrolment).where(Enrolment.id == enrolment.id).with_for_update())
+    other.add(AssessmentObligation(enrolment_id=enrolment.id, employee_id=enrolment.employee_id, training_id=training.id, config_id=config_id, assessment_type="POST_TEST", status="SCHEDULED", completed_training_at=NOW - timedelta(days=1), due_at=NOW))
+    other.flush()
+    created_before = db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "ASSESSMENT_OBLIGATION_CREATED"))
+
+    outcome: dict = {}
+    second = threading.Thread(target=lambda: outcome.setdefault("response", admin.post(f"/admin/trainings/{training.id}/schedule-assessments")))
+    second.start()
+    time.sleep(1.5)
+    assert second.is_alive(), "the second recovery must wait for the enrolment lock"
+    other.commit()
+    other.close()
+    second.join(timeout=30)
+    response = outcome["response"]
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["scheduled"] == []
+    obligations = _post_tests(db, enrolment.id)
+    assert len(obligations) == 1 and obligations[0].due_at == NOW
+    assert db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "ASSESSMENT_OBLIGATION_CREATED")) == created_before
+
+
+def test_recovery_is_safely_repeatable(world, db, client_for):
+    training, enrolment = _completed_without_assessment(world, db)
+    admin = client_for(world.admin)
+    first = admin.post(f"/admin/trainings/{training.id}/schedule-assessments").json()["data"]
+    assert [s["employee_code"] for s in first["scheduled"]] == [world.employee.employee_code]
+    created = _post_tests(db, enrolment.id)
+    second = admin.post(f"/admin/trainings/{training.id}/schedule-assessments").json()["data"]
+    assert second["scheduled"] == [] and second["reconfigured"] == []
+    assert [o.id for o in _post_tests(db, enrolment.id)] == [o.id for o in created]  # The existing assessment is kept.

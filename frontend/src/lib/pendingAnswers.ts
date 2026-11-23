@@ -236,6 +236,19 @@ function storedKeys(storage: KeyValueStorage): string[] {
   return keys;
 }
 
+/** Stops every live store of any other account (every store, with null), in this tab and this browser's other tabs,
+    without removing what they saved. Sign-out calls it before asking the server, so a save finishing meanwhile
+    cannot write a record back; the records are removed only once the sign-out is confirmed (purgePendingAnswers).
+    A stopped store stays stopped: a page whose sign-out failed reloads to save answers again. Never throws. */
+export function stopPendingAnswerQueues(keepAccount: string | null): void {
+  revoke(keepAccount);
+  try {
+    tabs()?.postMessage({ keep: keepAccount });
+  } catch {
+    /* Other tabs learn of it when their own requests are refused. */
+  }
+}
+
 /** Removes records left by another account and records long past their attempt's deadline. With no
     account (sign-out), removes every record. Live stores of any other account (every store, on sign-out) are
     revoked first, in this tab and in this browser's other tabs, so a save finishing later cannot write a record

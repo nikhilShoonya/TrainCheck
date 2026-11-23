@@ -73,13 +73,17 @@ const field = (page: Page, label: string) => {
   return page.locator("#main label.field").filter({ has: page.locator("select") }).filter({ hasText: new RegExp(`^${label}`) }).locator("select");
 };
 
-async function expectNoBatchFilter(page: Page) {
+const REPORT_FILTERS = ["Completed from", "Completed to", "Department", "Location", "Training", "Trainer", "Employee grade"];
+// The scorecard's own Training programme selector is the only training control there.
+const SCORECARD_FILTERS = REPORT_FILTERS.filter((label) => label !== "Training");
+
+async function expectNoBatchFilter(page: Page, labels: string[] = REPORT_FILTERS) {
   await expect(field(page, "Department")).toBeVisible();
   await expect(page.locator("#main label.field").filter({ hasText: /^Batch/ })).toHaveCount(0);
   await expect(page.locator('select[name="batch_id"]')).toHaveCount(0);
   await expect(page.getByRole("option", { name: "All batches" })).toHaveCount(0);
   await expect(page.getByRole("option", { name: "Synthetic batch" })).toHaveCount(0);
-  for (const label of ["Completed from", "Completed to", "Department", "Location", "Training", "Trainer", "Employee grade"]) await expect(field(page, label)).toBeVisible();
+  for (const label of labels) await expect(field(page, label)).toBeVisible();
 }
 
 test.describe("report filters without Batch (mocked API)", () => {
@@ -95,7 +99,7 @@ test.describe("report filters without Batch (mocked API)", () => {
   test("Learning Scorecards: no Batch dropdown; training, filters and export still work", async ({ page }) => {
     await page.goto("/lnd/scorecards");
     await expect(page.getByRole("heading", { name: "Synthetic training", exact: true })).toBeVisible();
-    await expectNoBatchFilter(page);
+    await expectNoBatchFilter(page, SCORECARD_FILTERS);
 
     await field(page, "Department").selectOption("dep-1");
     await field(page, "Employee grade").selectOption("G1");
@@ -131,5 +135,38 @@ test.describe("report filters without Batch (mocked API)", () => {
     await expect(page.getByRole("heading", { name: "Pass/Fail and Red-Flag Employees" })).toBeVisible();
     await expectNoBatchFilter(page);
     expect(world.requested.some((r) => r.includes("batch_id"))).toBe(false);
+  });
+
+  test("Learning Scorecard: one training selection drives the display, the request and the export", async ({ page }) => {
+    await page.goto("/lnd/scorecards");
+    await expect(page.getByRole("heading", { name: "Synthetic training", exact: true })).toBeVisible();
+    // No second Training control in the filter bar to disagree with the Training programme selector.
+    await expect(field(page, "Training")).toHaveCount(0);
+    await expect(page.locator('#main select[name="training_id"]')).toHaveCount(0);
+
+    await field(page, "Training programme").selectOption(OTHER);
+    await expect(page.getByRole("heading", { name: "Second synthetic training", exact: true })).toBeVisible();
+    await field(page, "Department").selectOption("dep-1");
+    await page.getByRole("button", { name: "Apply filters" }).click();
+    await expect.poll(() => world.requested.includes(`GET /scorecards/${OTHER}?department_id=dep-1`)).toBe(true);
+    await expect(page.getByRole("heading", { name: "Second synthetic training", exact: true })).toBeVisible();
+    expect(world.requested.filter((r) => r.startsWith("GET /scorecards/")).every((r) => !r.includes("training_id="))).toBe(true);
+
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: "CSV", exact: true }).click();
+    await download;
+    expect(world.exports).toEqual([{ report_code: "scorecard", export_format: "CSV", filters: { department_id: "dep-1", training_id: OTHER }, own_record: false }]);
+  });
+
+  test("Reports & Analytics keeps its Training filter, and it reaches the request and the export", async ({ page }) => {
+    await page.goto("/lnd/reports");
+    await expect(page.getByRole("heading", { name: "Training Completion and Compliance" })).toBeVisible();
+    await field(page, "Training").selectOption(TRAINING);
+    await page.getByRole("button", { name: "Apply filters" }).click();
+    await expect.poll(() => world.requested.includes(`GET /reports/compliance?training_id=${TRAINING}`)).toBe(true);
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: "CSV", exact: true }).click();
+    await download;
+    expect(world.exports).toEqual([{ report_code: "compliance", export_format: "CSV", filters: { training_id: TRAINING }, own_record: false }]);
   });
 });
