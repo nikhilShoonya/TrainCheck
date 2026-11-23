@@ -4,10 +4,11 @@ import io
 import uuid
 from datetime import date
 
+from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import Response
 from openpyxl import Workbook
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -43,16 +44,34 @@ class FunctionIn(Strict):
     is_active: bool = True
 
 
+def _blank_to_none(value: str | None) -> str | None:
+    """An emptied optional field is stored as missing (None), never as an empty string."""
+    return value or None
+
+
 class TrainerIn(Strict):
     name: str = Field(min_length=1, max_length=160)
     email: str | None = Field(default=None, max_length=254)
     is_active: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str | None) -> str | None:
+        value = _blank_to_none(value)
+        if value is not None:
+            try:
+                validate_email(value, check_deliverability=False)
+            except EmailNotValidError as exc:
+                raise ValueError("Enter a valid email address, such as name@company.com.") from exc
+        return value
 
 
 class CompetencyIn(Strict):
     name: str = Field(min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
     is_active: bool = True
+
+    _description = field_validator("description")(_blank_to_none)
 
 
 class CalendarIn(Strict):
@@ -349,10 +368,10 @@ def update_calendar(body: CalendarIn, user: CurrentUser = Depends(require_admin)
 
     try:
         ZoneInfo(body.timezone)
-    except Exception as exc:
-        raise conflict("INVALID_TIMEZONE", "Use a valid timezone name such as Asia/Kolkata.") from exc
+    except Exception as exc:  # Invalid input, so 400 VALIDATION_ERROR (it conflicts with no stored record).
+        raise validation("Use a valid timezone name such as Asia/Kolkata.") from exc
     if any(day < 0 or day > 6 for day in body.working_weekdays):
-        raise conflict("INVALID_WEEKDAY", "Weekdays must be numbers from 0 (Monday) to 6 (Sunday).")
+        raise validation("Weekdays must be numbers from 0 (Monday) to 6 (Sunday).")
     calendar = _default_calendar(db)
     before = {"timezone": calendar.timezone, "working_weekdays": calendar.working_weekdays}
     calendar.name, calendar.timezone, calendar.working_weekdays = body.name, body.timezone, sorted(set(body.working_weekdays))

@@ -106,6 +106,8 @@ export function ResultPage() {
             <p className="notice left">Submitted automatically after {r.violations.length} security violations. Your saved answers were scored.</p>
           ) : r.submission_reason === "TIME_EXPIRED" ? (
             <p className="notice left">Time expired. Your saved answers were submitted automatically.</p>
+          ) : r.submission_reason === "TRAINING_COMPLETED" ? (
+            <p className="notice left">{REASONS.TRAINING_COMPLETED}. Your saved answers were scored.</p>
           ) : null}
           {unconfirmedNotice}
           <p>This score is a baseline, not a post-training pass. Training completion will create a separate post-training assessment.</p>

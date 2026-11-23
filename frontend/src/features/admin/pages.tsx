@@ -682,7 +682,8 @@ function SimpleList({ title, path, label, fields, editFields, columns, rowOf }: 
           submitLabel="Save"
           onClose={() => setAdding(false)}
           onSubmit={async (form) => {
-            await api.post(path, { ...Object.fromEntries(form.entries()), is_active: true });
+            // As in Edit: a blank optional field is sent as missing (null), not as an empty string.
+            await api.post(path, { ...Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v).trim() || null])), is_active: true });
             toast("Saved.");
             void state.reload();
           }}
@@ -828,104 +829,6 @@ export function Organisation() {
         }
       />
       <CalendarPanel />
-    </>
-  );
-}
-
-/* ---------- Batches ---------- */
-
-interface Batch {
-  id: string;
-  name: string;
-  batch_code: string;
-  training_id: string;
-  training_title: string;
-  trainer_name: string | null;
-  start_date: string | null;
-  end_date: string | null;
-  assigned_count: number;
-  sessions: { id: string; title: string; session_date: string; delivery_mode: string | null; venue: string | null }[];
-}
-
-export function Batches() {
-  const state = useApi<Batch[]>("/admin/batches");
-  const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
-  const trainers = useApi<Named[]>("/admin/trainers");
-  const [creating, setCreating] = useState(false);
-  const [sessionFor, setSessionFor] = useState<Batch | null>(null);
-  const toast = useToast();
-  return (
-    <>
-      <PageTitle
-        eyebrow={EYEBROW}
-        title="Batches & Sessions"
-        description="Create delivery cohorts, then assign employees and record completion separately."
-        action={
-          <Btn kind="primary" onClick={() => setCreating(true)}>
-            <Icon name="plus" /> Create Batch
-          </Btn>
-        }
-      />
-      <section className="panel">
-        <Loaded state={state}>
-          {(rows) => (
-            <DataTable
-              headers={["Batch", "Training", "Trainer", "Dates", "Sessions", "Assigned", ""]}
-              emptyTitle="No batches yet."
-              rows={rows.map((b) => [
-                b.name,
-                b.training_title,
-                b.trainer_name ?? "Not assigned",
-                b.start_date ? `${b.start_date} to ${b.end_date ?? "open"}` : "Not scheduled",
-                b.sessions.map((s) => `${s.title} (${s.session_date})`).join("; ") || "None",
-                b.assigned_count,
-                <Btn key="s" kind="text" onClick={() => setSessionFor(b)}>
-                  Add Session
-                </Btn>,
-              ])}
-            />
-          )}
-        </Loaded>
-      </section>
-      {creating ? (
-        <DialogForm
-          title="Create training batch"
-          submitLabel="Create batch"
-          onClose={() => setCreating(false)}
-          onSubmit={async (form) => {
-            await api.post("/admin/batches", { training_id: form.get("training_id"), name: form.get("name"), trainer_id: form.get("trainer_id") || null, start_date: form.get("start_date") || null, end_date: form.get("end_date") || null });
-            toast("Batch created.");
-            void state.reload();
-          }}
-        >
-          <SelectField label="Training *" name="training_id" required options={(trainings.data ?? []).map((t) => ({ value: t.id, label: t.title }))} />
-          <TextField label="Batch name *" name="name" required maxLength={160} />
-          <SelectField label="Trainer" name="trainer_id" placeholder="Use the training's trainer" options={names(trainers.data ?? [])} />
-          <div className="form-grid">
-            <TextField label="Start date" name="start_date" type="date" />
-            <TextField label="End date" name="end_date" type="date" />
-          </div>
-        </DialogForm>
-      ) : null}
-      {sessionFor ? (
-        <DialogForm
-          title={`Add session · ${sessionFor.name}`}
-          submitLabel="Add session"
-          onClose={() => setSessionFor(null)}
-          onSubmit={async (form) => {
-            await api.post(`/admin/batches/${sessionFor.id}/sessions`, { title: form.get("title"), session_date: form.get("session_date"), delivery_mode: form.get("delivery_mode") || null, venue: form.get("venue") || null });
-            toast("Session added.");
-            void state.reload();
-          }}
-        >
-          <TextField label="Session title *" name="title" required maxLength={160} />
-          <TextField label="Session date *" name="session_date" type="date" required />
-          <div className="form-grid">
-            <TextField label="Delivery mode" name="delivery_mode" maxLength={40} placeholder="Virtual or in person" />
-            <TextField label="Venue" name="venue" maxLength={160} />
-          </div>
-        </DialogForm>
-      ) : null}
     </>
   );
 }
@@ -3385,7 +3288,7 @@ export function BehaviourTemplates() {
   );
 }
 
-/* ---------- Scorecards, reports and audit ---------- */
+/* ---------- Scorecards and reports ---------- */
 
 export const AdminScorecards = () => <ScorecardPage eyebrow={EYEBROW} />;
 
@@ -3394,61 +3297,6 @@ export function AdminReports() {
     <>
       <PageTitle eyebrow={EYEBROW} title="Reports & Analytics" description="Select any report. Every export uses the same scope and filters." />
       <ReportsHub />
-    </>
-  );
-}
-
-export function AuditLogs() {
-  const [action, setAction] = useState("");
-  const state = useApi<{ id: string; created_at: string; actor: string; action: string; target_type: string | null; target_id: string | null; reason: string | null; before: unknown; after: unknown }[]>(`/admin/audit-logs${toQuery({ action })}`);
-  const [detail, setDetail] = useState<{ action: string; reason: string | null; before: unknown; after: unknown } | null>(null);
-  return (
-    <>
-      <PageTitle eyebrow={EYEBROW} title="Audit Logs" description="Read-only history of administrative and security-relevant actions." />
-      <section className="panel">
-        <form
-          className="filters"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setAction(String(new FormData(e.currentTarget).get("action")));
-          }}
-        >
-          <TextField label="Action contains" name="action" placeholder="For example ASSESSMENT or LOGIN" />
-          <button className="btn secondary" type="submit">
-            Apply filters
-          </button>
-        </form>
-        <Loaded state={state}>
-          {(rows) => (
-            <DataTable
-              headers={["Time (UTC)", "Actor", "Action", "Target", ""]}
-              emptyTitle="No audit records match."
-              rows={rows.map((a) => [
-                dateTime(a.created_at),
-                a.actor,
-                a.action,
-                a.target_type ?? "—",
-                <Btn key="d" kind="text" onClick={() => setDetail(a)}>
-                  Details
-                </Btn>,
-              ])}
-            />
-          )}
-        </Loaded>
-      </section>
-      {detail ? (
-        <Modal title={detail.action} onClose={() => setDetail(null)}>
-          {detail.reason ? (
-            <p>
-              <strong>Reason:</strong> {detail.reason}
-            </p>
-          ) : null}
-          <h3>Before</h3>
-          <pre className="tc-audit-json">{detail.before ? JSON.stringify(detail.before, null, 2) : "Not recorded"}</pre>
-          <h3>After</h3>
-          <pre className="tc-audit-json">{detail.after ? JSON.stringify(detail.after, null, 2) : "Not recorded"}</pre>
-        </Modal>
-      ) : null}
     </>
   );
 }

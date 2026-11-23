@@ -170,9 +170,6 @@
 .login-sign-in svg{height:22px;width:22px}
 .login-divider{display:flex;align-items:center;gap:18px;color:#3f495a;font-size:14px;margin:28px 0 17px}
 .login-divider:before,.login-divider:after{content:'';height:1px;background:#d3e8df;flex:1}
-.login-sso{display:grid;grid-template-columns:1fr 1fr;gap:13px}
-.login-sso>button{display:flex;align-items:center;justify-content:center;gap:12px;background:#fcfdfd;border:1px solid #cde4da;border-radius:13px;min-height:48px;padding:9px 8px;color:#141d2e;font-size:14px;font-weight:600;white-space:nowrap}
-.login-sso>button:hover{border-color:#118852;background:#f4f6f7}
 .google-g{font-size:24px;font-family:Arial,sans-serif;font-weight:750;background:conic-gradient(#4285f4 0 100deg,#34a853 100deg 180deg,#fbbc05 180deg 245deg,#ea4335 245deg 300deg,#4285f4 300deg 360deg);color:transparent;background-clip:text;-webkit-background-clip:text;line-height:1}
 .microsoft-mark{width:21px;height:21px;display:grid;grid-template-columns:1fr 1fr;gap:2px;flex-shrink:0}
 .microsoft-mark i:nth-child(1){background:#f1511b}
@@ -204,9 +201,6 @@
 .global-search>svg{width:19px;height:19px}
 .global-search kbd{font-size:13px}
 .reference-workspace .top-actions{gap:28px}
-.language-control{height:43px;padding:8px 13px;font-size:14px}
-.language-control select{font-size:14px}
-.language-control svg{height:19px;width:19px}
 .profile-menu>summary{min-width:234px;min-height:52px;padding:6px 10px;gap:12px}
 .profile-copy strong{font-size:14px}
 .profile-copy small{font-size:14px}
@@ -364,7 +358,6 @@
 .login-options>label{font-size:13px}
 .login-options>button{font-size:13px}
 .login-sign-in{min-height:45px;font-size:15px}
-.login-sso>button{font-size:13px;gap:9px;min-height:43px}
 .login-demo-disclosure{padding:12px 14px;margin-top:24px}
 .login-demo-disclosure strong{font-size:14px}
 .login-demo-disclosure p{font-size:13px}
@@ -424,8 +417,6 @@
 .impact-login-card .login-subtitle{font-size:14px}
 .login-options{gap:8px}
 .login-options>label,.login-options>button{font-size:13px}
-.login-sso{gap:8px}
-.login-sso>button{font-size:12px;gap:6px}
 .login-brand-head{gap:20px;height:60px}
 .login-positioning{margin-top:45px}
 .login-brand-head>i{height:40px}
@@ -453,8 +444,6 @@
 .login-levels h2{font-size:14px}
 .login-levels p{font-size:13px;max-width:150px}
 
-.login-sso{grid-template-columns:1fr}
-.login-sso>button{font-size:13px;min-height:40px}
 .login-demo-disclosure p{font-size:12px}
 .login-demo-disclosure>svg{width:25px;height:28px}
 }
@@ -552,8 +541,6 @@
 .login-options input{width:18px;height:18px}
 .login-sign-in{font-size:15px;min-height:47px;border-radius:9px}
 .login-divider{margin:24px 0 18px;font-size:13px}
-.login-sso{grid-template-columns:1fr 1fr;gap:8px}
-.login-sso>button{font-size:12px;gap:7px;min-height:44px;white-space:normal;border-radius:9px;padding:8px 7px}
 .google-g{font-size:22px}
 .microsoft-mark{height:18px;width:18px}
 .login-demo-disclosure{margin-top:23px;padding:13px;min-height:67px;gap:10px}
@@ -571,7 +558,6 @@
 .impact-login-card>h2{font-size:22px}
 .impact-login-card .role-choice>strong{font-size:12px}
 .login-options>label{font-size:12px}
-.login-sso>button{font-size:12px;gap:6px}
 .image-metric{padding:11px 9px;gap:8px}
 .image-metric h2{font-size:13px}
 .image-metric strong{font-size:23px}

@@ -66,9 +66,6 @@ h1,h2,h3{color:var(--text)}
 .green-impact-login .login-sign-in:hover{background:#004e39}
 .green-impact-login .login-divider{font-size:14px;color:#45516b;margin:27px 0 18px}
 .green-impact-login .login-divider:before,.green-impact-login .login-divider:after{background:#d4dce6}
-.green-impact-login .login-sso{gap:16px}
-.green-impact-login .login-sso>button{min-height:49px;font-size:14px;color:#172031;border-color:#cbd5e1;background:#fcfdfe;border-radius:16px}
-.green-impact-login .login-sso>button:hover{background:#f0f6f3;border-color:#72a18c}
 .green-impact-login .login-demo-disclosure{background:linear-gradient(100deg,#e7f2e9,#edf5ee);margin-top:27px;border-radius:16px;min-height:70px;padding:13px 20px}
 .green-impact-login .login-demo-disclosure>svg{color:#087443;width:32px;height:35px}
 .green-impact-login .login-demo-disclosure strong{font-size:14px;color:#101a28}
@@ -93,7 +90,6 @@ h1,h2,h3{color:var(--text)}
   .green-impact-login .demo-roles{gap:10px}
   .green-impact-login .role-choice{min-height:88px}
   .green-impact-login .role-choice>strong{font-size:13px}
-  .green-impact-login .login-sso>button{font-size:13px;gap:9px}
   .green-impact-login .login-demo-disclosure{padding:12px 15px}
   .green-impact-login .login-demo-disclosure p{font-size:13px}
   .login-office-scene{width:57vw}
@@ -112,7 +108,6 @@ h1,h2,h3{color:var(--text)}
   .green-impact-login .login-subtitle{font-size:14px}
   .green-impact-login .role-choice>strong{font-size:13px}
   .green-impact-login .login-options>label,.green-impact-login .login-options>button{font-size:13px}
-  .green-impact-login .login-sso>button{font-size:12px}
   .green-impact-login .login-demo-disclosure strong{font-size:14px}
   .green-impact-login .login-demo-disclosure p{font-size:12px}
   .green-impact-login .login-levels p{max-width:150px}
@@ -148,8 +143,6 @@ h1,h2,h3{color:var(--text)}
   .green-impact-login .login-input-field input{font-size:14px}
   .green-impact-login .login-sign-in{min-height:49px;font-size:17px;border-radius:12px}
   .green-impact-login .login-divider{font-size:14px;margin:24px 0 18px}
-  .green-impact-login .login-sso{gap:8px}
-  .green-impact-login .login-sso>button{font-size:13px;min-height:46px;border-radius:12px;gap:7px}
   .green-impact-login .login-demo-disclosure{border-radius:12px;padding:13px;gap:10px}
   .green-impact-login .login-demo-disclosure p{font-size:13px}
   .green-impact-login .login-demo-help{font-size:13px}
@@ -164,6 +157,5 @@ h1,h2,h3{color:var(--text)}
   .green-impact-login .impact-login-card{padding:23px 17px}
   .green-impact-login .impact-login-card>h2{font-size:22px}
   .green-impact-login .role-choice>strong{font-size:12px}
-  .green-impact-login .login-sso>button{font-size:12px}
 }
 @media print{.login-office-scene,.login-canopy,.green-login-wave{display:none!important}}

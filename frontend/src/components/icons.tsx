@@ -117,8 +117,6 @@ const ICONS: Record<string, LucideIcon> = {
   x: X,
 };
 
-export type IconName = keyof typeof ICONS;
-
 export function Icon({ name }: { name: string }) {
   const Glyph = ICONS[name] ?? File;
   return <Glyph strokeWidth={1.7} aria-hidden="true" />;

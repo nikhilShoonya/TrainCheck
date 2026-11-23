@@ -188,7 +188,15 @@ def test_calendar_api_is_ld_managed(world, client_for):
     admin = client_for(world.admin)
     response = admin.patch("/admin/calendar", json={"name": "Six day", "timezone": "Asia/Kolkata", "working_weekdays": [0, 1, 2, 3, 4, 5]})
     assert response.status_code == 200, response.text
-    assert admin.patch("/admin/calendar", json={"name": "Bad", "timezone": "Not/AZone", "working_weekdays": [0]}).status_code == 409
+    # Audit B7: invalid input is a 400 VALIDATION_ERROR (it was a 409 CONFLICT), with the same message, and changes nothing.
+    bad_zone = admin.patch("/admin/calendar", json={"name": "Bad", "timezone": "Not/AZone", "working_weekdays": [0]})
+    assert bad_zone.status_code == 400 and bad_zone.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert bad_zone.json()["error"]["message"] == "Use a valid timezone name such as Asia/Kolkata."
+    bad_day = admin.patch("/admin/calendar", json={"name": "Bad", "timezone": "UTC", "working_weekdays": [0, 7]})
+    assert bad_day.status_code == 400 and bad_day.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert bad_day.json()["error"]["message"] == "Weekdays must be numbers from 0 (Monday) to 6 (Sunday)."
+    unchanged = admin.get("/admin/calendar").json()["data"]
+    assert (unchanged["name"], unchanged["timezone"], unchanged["working_weekdays"]) == ("Six day", "Asia/Kolkata", [0, 1, 2, 3, 4, 5])
     holiday = admin.post("/admin/calendar/holidays", json={"holiday_date": "2026-12-25", "name": "Holiday"}).json()["data"]["holidays"][0]
     assert admin.delete(f"/admin/calendar/holidays/{holiday['id']}").status_code == 200
     assert client_for(world.hr).patch("/admin/calendar", json={"name": "No", "timezone": "UTC", "working_weekdays": [0]}).status_code == 403
@@ -295,17 +303,13 @@ def test_training_with_history_cannot_be_deleted(world, client_for, db):
     assert db.scalar(select(func.count()).select_from(Enrolment).where(Enrolment.training_id == training.id)) == 1
 
 
-def test_materials_batches_sessions_and_trainers(world, client_for):
+def test_materials_and_trainers(world, client_for):
     admin = client_for(world.admin)
     training = world.training()
     assert admin.post(f"/admin/trainings/{training.id}/materials", json={"title": "Deck", "url": "http://not-secure.example"}).status_code == 400
     material = admin.post(f"/admin/trainings/{training.id}/materials", json={"kind": "RECORDING", "title": "Recording", "url": "https://example.com/r"})
     assert material.status_code == 200, material.text
-    # Batches & Sessions is withdrawn from L&D Admin: existing batches stay listed, creating them is refused.
-    batches = admin.get(f"/admin/batches?training_id={training.id}").json()["data"]
-    assert [b["batch_code"] for b in batches] == ["B1"]
-    assert admin.post("/admin/batches", json={"training_id": str(training.id), "name": "Batch 2", "start_date": "2026-11-10", "end_date": "2026-11-11"}).status_code == 403
-    assert admin.post(f"/admin/batches/{batches[0]['id']}/sessions", json={"title": "Day 1", "session_date": "2026-11-10"}).status_code == 403
+    # The Batches & Sessions APIs are removed (audit P5); test_rbac checks they are gone and batches still work.
     assert admin.post("/admin/trainers", json={"name": "New Trainer"}).status_code == 200
     assert admin.post("/admin/functions", json={"code": "RISK", "name": "Risk"}).status_code == 200
     assert admin.post("/admin/functions", json={"code": "RISK", "name": "Risk again"}).status_code == 409
@@ -742,9 +746,9 @@ def test_policy_changes_are_audited_with_before_and_after(world, db, client_for)
     log = db.scalar(select(AuditLog).where(AuditLog.action == "ASSESSMENT_CONFIG_CHANGED"))
     assert log.before_summary["pass_mark_percent"] == 70.0 and log.after_summary["pass_mark_percent"] == 80.0
     assert log.request_id and log.actor_user_id
-    # The Audit Logs reader is withdrawn from every role; the record above is still written.
-    assert admin.get("/admin/audit-logs?action=ASSESSMENT_CONFIG").status_code == 403
-    assert client_for(world.hr).get("/admin/audit-logs").status_code == 403
+    # The Audit Logs reader is removed for every role (audit P5); the record above is still written.
+    assert admin.get("/admin/audit-logs?action=ASSESSMENT_CONFIG").status_code == 404
+    assert client_for(world.hr).get("/admin/audit-logs").status_code == 404
 
 
 def test_answer_keys_are_not_written_to_the_audit_log(world, db, client_for):
@@ -861,3 +865,199 @@ def test_an_import_being_processed_does_not_hold_up_other_requests(world, db, cl
     waited, status = asyncio.run(scenario())
     assert status == 200
     assert waited < 0.5, f"a ping waited {waited:.2f} s for the import to finish"
+
+
+def test_completion_import_accepts_the_organisation_date_before_utc_catches_up(world, db, client_for):
+    """Audit B2. At 02:00 in Asia/Kolkata it is still the previous day in UTC. A row dated today (local) is not in the
+    future; a row dated tomorrow (local) still is."""
+    from app.models import WorkingCalendar
+
+    db.scalar(select(WorkingCalendar).where(WorkingCalendar.is_default)).timezone = "Asia/Kolkata"
+    training = world.training()
+    db.commit()
+    early_morning = datetime(2026, 11, 4, 20, 30, tzinfo=UTC)  # 2026-11-05 02:00 in Asia/Kolkata.
+    clock.freeze(early_morning)
+    try:
+        admin = client_for(world.admin)  # Signed in at the frozen time, so the session is not idle-expired.
+        text = f"employee,training,completion_date\nE1,{training.training_code},2026-11-05\nE2,{training.training_code},2026-11-06\n"
+        job = upload(admin, "COMPLETIONS", "c.csv", text.encode()).json()["data"]
+        assert [r["status"] for r in job["rows"]] == ["VALID", "INVALID"]
+        assert job["rows"][1]["errors"] == [{"field": "completion_date", "message": "The date cannot be in the future."}]
+        committed = admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]
+        assert [r["status"] for r in committed["rows"]] == ["IMPORTED", "INVALID"]
+        db.expire_all()
+        stored = db.scalar(select(TrainingCompletion.completed_at).where(TrainingCompletion.import_job_id == job["id"]))
+        assert stored == datetime(2026, 11, 4, 18, 30, tzinfo=UTC)  # Local midnight of 5 Nov.
+    finally:
+        clock.freeze(NOW)
+
+
+def test_trainer_and_competency_blank_optional_fields_are_saved_as_missing(world, client_for):
+    """Audit B8. A blank email or description is stored as null (shown as "—"), and a trainer email must be valid."""
+    admin = client_for(world.admin)
+    trainer = admin.post("/admin/trainers", json={"name": "Blank Email", "email": "", "is_active": True})
+    assert trainer.status_code == 200, trainer.text
+    assert trainer.json()["data"]["email"] is None
+    spaced = admin.post("/admin/trainers", json={"name": "Spaced Email", "email": "   ", "is_active": True}).json()["data"]
+    assert spaced["email"] is None
+    good = admin.post("/admin/trainers", json={"name": "Has Email", "email": "trainer@example.com", "is_active": True}).json()["data"]
+    assert good["email"] == "trainer@example.com"
+    bad = admin.post("/admin/trainers", json={"name": "Bad Email", "email": "not-an-email", "is_active": True})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert [d["field"] for d in bad.json()["error"]["details"]] == ["email"]
+    assert admin.patch(f"/admin/trainers/{good['id']}", json={"name": "Has Email", "email": "", "is_active": True}).json()["data"]["email"] is None
+    assert "Bad Email" not in {t["name"] for t in admin.get("/admin/trainers").json()["data"]}
+
+    competency = admin.post("/admin/competencies", json={"name": "Blank Description", "description": "", "is_active": True})
+    assert competency.status_code == 200, competency.text
+    assert competency.json()["data"]["description"] is None
+
+
+def test_unread_notification_count_is_exact_beyond_the_list_limit(world, db, client_for):
+    """Audit B9. The header bell reads /me/notifications/unread-count; a limited list cannot count past its limit."""
+    from app.models import UserAccount
+    from app.modules.notifications.service import notify_account
+
+    account_id = db.scalar(select(UserAccount.id).where(UserAccount.employee_id == world.employee.id))
+    for i in range(60):
+        notify_account(db, account_id, "SYNTHETIC", f"Synthetic {i}", "Synthetic message", None, f"synthetic:{i}", NOW)
+    db.commit()
+    client = client_for(world.employee)
+    before = client.get("/me/notifications/unread-count").json()["data"]["unread"]
+    assert before >= 60
+    listed = client.get("/me/notifications?unread_only=true&limit=50").json()
+    assert len(listed["data"]) == 50 and listed["meta"]["unread"] == before
+    assert client.patch(f"/me/notifications/{listed['data'][0]['id']}", json={"read": True}).status_code == 200
+    assert client.get("/me/notifications/unread-count").json()["data"]["unread"] == before - 1
+    assert client.post("/me/notifications/mark-all-read").status_code == 200
+    assert client.get("/me/notifications/unread-count").json()["data"]["unread"] == 0
+    assert client_for(world.teammate).get("/me/notifications/unread-count").json()["data"]["unread"] >= 0  # Own count only.
+
+
+# ---------- Training references (audit B19) ----------
+
+def test_unknown_training_references_are_refused_and_nothing_is_saved(world, db, client_for):
+    import uuid as _uuid
+
+    from app.models import AuditLog, Training
+
+    admin = client_for(world.admin)
+    ops = str(world.departments["OPS"].id)
+    ghost = str(_uuid.uuid4())
+
+    def create(code, **fields):
+        return admin.post("/admin/trainings", json={"training_code": code, "title": f"Training {code}", **fields})
+
+    refused = create("REF1", target_scope="DEPARTMENT", department_ids=[ops, ghost])
+    assert refused.status_code == 400 and refused.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert [d["field"] for d in refused.json()["error"]["details"]] == ["department_ids"]
+    assert ghost in refused.json()["error"]["details"][0]["message"]
+    competency = admin.post("/admin/competencies", json={"name": "Synthetic competency", "is_active": True}).json()["data"]["id"]
+    mixed = create("REF2", competency_ids=[competency, ghost])
+    assert mixed.status_code == 400 and [d["field"] for d in mixed.json()["error"]["details"]] == ["competency_ids"]
+    assert db.scalar(select(func.count()).select_from(Training).where(Training.training_code.in_(["REF1", "REF2"]))) == 0
+
+    created = create("REF3", target_scope="DEPARTMENT", department_ids=[ops], competency_ids=[competency])
+    assert created.status_code == 200, created.text
+    training_id = created.json()["data"]["id"]
+    audits = db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "TRAINING_UPDATED"))
+    edit = admin.patch(f"/admin/trainings/{training_id}", json={"title": "Renamed", "target_scope": "COMBINED", "department_ids": [ops], "function_ids": [ghost], "competency_ids": []})
+    assert edit.status_code == 400 and [d["field"] for d in edit.json()["error"]["details"]] == ["function_ids"]
+    after = admin.get(f"/admin/trainings/{training_id}").json()["data"]
+    assert (after["title"], after["target_scope"]) == ("Training REF3", "DEPARTMENT")
+    assert [d["id"] for d in after["departments"]] == [ops] and [c["id"] for c in after["competencies"]] == [competency]
+    assert after["functions"] == []
+    assert db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "TRAINING_UPDATED")) == audits
+
+    # Valid references still save, in every targeting scope.
+    compliance = str(world.functions["COMPLIANCE"].id)
+    ok_edit = admin.patch(f"/admin/trainings/{training_id}", json={"title": "Renamed", "target_scope": "COMBINED", "department_ids": [ops], "function_ids": [compliance], "competency_ids": []})
+    assert ok_edit.status_code == 200, ok_edit.text
+    assert [f["id"] for f in ok_edit.json()["data"]["functions"]] == [compliance] and ok_edit.json()["data"]["competencies"] == []
+
+
+def test_notifications_page_through_more_than_100_without_repeats_or_gaps(world, db, client_for):
+    """Audit B21. 250 notifications, 60 of them created at the same moment: walking the pages with `before` returns
+    every notification exactly once, newest first, in pages of at most 100."""
+    from app.models import UserAccount
+    from app.modules.notifications.service import notify_account
+
+    account_id = db.scalar(select(UserAccount.id).where(UserAccount.employee_id == world.employee.id))
+    for i in range(250):
+        moment = NOW - timedelta(minutes=10) if 100 <= i < 160 else NOW - timedelta(minutes=i)  # A tie across a page edge.
+        notify_account(db, account_id, "SYNTHETIC", f"Synthetic {i}", "Synthetic message", None, f"page:{i}", moment)
+    db.commit()
+    client = client_for(world.employee)
+    expected = client.get("/me/notifications/unread-count").json()["data"]["unread"]  # Includes any the setup created.
+
+    seen, before, pages = [], None, 0
+    while True:
+        response = client.get("/me/notifications", params={"before": before} if before else None)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        page = body["data"]
+        pages += 1
+        assert len(page) <= 100
+        seen += [n["id"] for n in page]
+        if not body["meta"]["has_more"]:
+            assert body["meta"]["next_before"] is None
+            break
+        assert len(page) == 100 and body["meta"]["next_before"] == page[-1]["id"]
+        before = page[-1]["id"]
+    assert pages == 3 and len(seen) == len(set(seen)) == expected >= 250
+    times = [n["created_at"] for n in client.get("/me/notifications").json()["data"]]
+    assert times == sorted(times, reverse=True)
+    # Unread-only pages the same way; a page size over the bound is refused.
+    unread_first = client.get("/me/notifications", params={"unread_only": "true", "limit": 100}).json()
+    unread_rest = client.get("/me/notifications", params={"unread_only": "true", "before": unread_first["data"][-1]["id"]}).json()
+    assert len({n["id"] for n in unread_first["data"] + unread_rest["data"]}) == len(unread_first["data"]) + len(unread_rest["data"])
+    assert client.get("/me/notifications", params={"limit": 101}).status_code == 400
+    # Another person's notification cannot be used as a position.
+    assert client_for(world.teammate).get("/me/notifications", params={"before": seen[0]}).status_code == 404
+
+
+def test_training_trainer_and_owner_references_are_validated(world, db, client_for):
+    """Follow-up to B19: an unknown trainer or owner is a clear 400 naming the field (it was reported as a duplicate
+    training code), valid references save, and both stay optional."""
+    import uuid as _uuid
+
+    from app.models import AuditLog, Training
+
+    admin = client_for(world.admin)
+    ghost = str(_uuid.uuid4())
+    trainer, owner = str(world.trainer.id), str(world.admin.id)
+
+    def create(code, **fields):
+        return admin.post("/admin/trainings", json={"training_code": code, "title": f"Training {code}", **fields})
+
+    def fields_of(response):
+        assert response.status_code == 400 and response.json()["error"]["code"] == "VALIDATION_ERROR", response.text
+        return [d["field"] for d in response.json()["error"]["details"]]
+
+    assert fields_of(create("OWN1", trainer_id=ghost)) == ["trainer_id"]
+    assert fields_of(create("OWN2", owner_employee_id=ghost)) == ["owner_employee_id"]
+    assert fields_of(create("OWN3", trainer_id=ghost, owner_employee_id=ghost)) == ["trainer_id", "owner_employee_id"]
+    assert db.scalar(select(func.count()).select_from(Training).where(Training.training_code.in_(["OWN1", "OWN2", "OWN3"]))) == 0
+
+    optional = create("OWN4")  # Neither given: both stay empty.
+    assert optional.status_code == 200, optional.text
+    assert (optional.json()["data"]["trainer_id"], optional.json()["data"]["owner_employee_id"]) == (None, None)
+    created = create("OWN5", trainer_id=trainer, owner_employee_id=owner)
+    assert created.status_code == 200, created.text
+    data = created.json()["data"]
+    assert (data["trainer_id"], data["owner_employee_id"], data["trainer_name"], data["owner_name"]) == (trainer, owner, world.trainer.name, world.admin.full_name)
+
+    training_id = data["id"]
+    audits = db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "TRAINING_UPDATED"))
+    for bad in ({"trainer_id": ghost, "owner_employee_id": owner}, {"trainer_id": trainer, "owner_employee_id": ghost}):
+        refused = admin.patch(f"/admin/trainings/{training_id}", json={"title": "Renamed", **bad})
+        assert fields_of(refused) == [next(k for k, v in bad.items() if v == ghost)]
+    after = admin.get(f"/admin/trainings/{training_id}").json()["data"]
+    assert (after["title"], after["trainer_id"], after["owner_employee_id"]) == ("Training OWN5", trainer, owner)
+    assert db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "TRAINING_UPDATED")) == audits
+
+    kept = admin.patch(f"/admin/trainings/{training_id}", json={"title": "Renamed", "trainer_id": trainer}).json()["data"]
+    assert kept["owner_employee_id"] == owner  # An edit that does not mention the owner keeps it.
+    cleared = admin.patch(f"/admin/trainings/{training_id}", json={"title": "Renamed", "trainer_id": None, "owner_employee_id": None}).json()["data"]
+    assert (cleared["trainer_id"], cleared["owner_employee_id"]) == (None, None)
+    assert create("OWN5", title="Same code").json()["error"]["code"] == "DUPLICATE_CODE"  # A real duplicate is still one.

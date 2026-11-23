@@ -2,6 +2,7 @@
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import tzinfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -10,6 +11,7 @@ from app.core.clock import utcnow
 from app.core.enums import AttemptStatus, ReportCode, ReviewerType
 from app.core.responses import display_percent
 from app.models import AttemptQuestion, Training
+from app.modules.assessment.scheduling import load_calendar
 from app.modules.behaviour.service import review_status
 from app.modules.reports.data import Row, assessment_timing, behaviour_reviews, mean
 from app.modules.reports.scorecard import behaviour_state, gain_values, learning_state
@@ -39,8 +41,9 @@ TITLES = {
 }
 
 
-def _date(value) -> str:
-    return value.strftime("%Y-%m-%d") if value else ""
+def _date(value, tz: tzinfo) -> str:
+    """A stored UTC moment as the organisation's local date (a completion for 24 Nov is stored as 23 Nov 18:30 UTC)."""
+    return value.astimezone(tz).strftime("%Y-%m-%d") if value else ""
 
 
 def _percent(value) -> float | str:
@@ -53,22 +56,24 @@ def _name(item) -> str:
 
 
 def compliance(db: Session, rows: list[Row]) -> Report:
-    report = Report(ReportCode.COMPLIANCE, *TITLES[ReportCode.COMPLIANCE], ["Employee", "Employee ID", "Department", "Location", "Training", "Trainer", "Batch", "Assigned", "Completed", "Assessment Timing", "Result"])
+    report = Report(ReportCode.COMPLIANCE, *TITLES[ReportCode.COMPLIANCE], ["Employee", "Employee ID", "Department", "Location", "Training", "Trainer", "Assigned", "Completed", "Assessment Timing", "Result"])
     now = utcnow()
+    tz = load_calendar(db).tz
     for r in rows:
         e, t = r.enrolment.employee, r.enrolment.training
-        report.rows.append([e.full_name, e.employee_code, _name(e.department), _name(e.location), t.title, _name(t.trainer), r.enrolment.batch.name if r.enrolment.batch else "Unassigned", _date(r.enrolment.assigned_at), _date(r.enrolment.completion.completed_at) if r.enrolment.completion else "Not completed", assessment_timing(r, now), r.result])
+        report.rows.append([e.full_name, e.employee_code, _name(e.department), _name(e.location), t.title, _name(t.trainer), _date(r.enrolment.assigned_at, tz), _date(r.enrolment.completion.completed_at, tz) if r.enrolment.completion else "Not completed", assessment_timing(r, now), r.result])
     report.definitions = ["Completed means training completion was recorded; it does not mean the assessment was passed.", "Overdue means the assessment has been due for at least one day with no submission.", "Date filters select the training-completion cohort."]
     return report
 
 
 def pass_fail(db: Session, rows: list[Row]) -> Report:
     report = Report(ReportCode.PASS_FAIL, *TITLES[ReportCode.PASS_FAIL], ["Employee", "Employee ID", "Department", "Training", "Batch", "Result", "First Score %", "Best Score %", "Latest Score %", "Attempts", "Max Attempts", "Completion Date", "Red Flag"])
+    tz = load_calendar(db).tz
     for r in rows:
         e = r.enrolment.employee
         config = r.obligation.config if r.obligation else None
         red = r.result in ("NOT_PASSED", "NEEDS_RETRAINING")
-        report.rows.append([e.full_name, e.employee_code, _name(e.department), r.enrolment.training.title, r.enrolment.batch.name if r.enrolment.batch else "Unassigned", r.result, _percent(r.first), _percent(r.best), _percent(r.latest), len(r.post_attempts), config.max_attempts if config else "Not configured", _date(r.enrolment.completion.completed_at) if r.enrolment.completion else "Not completed", "Yes" if red else "No"])
+        report.rows.append([e.full_name, e.employee_code, _name(e.department), r.enrolment.training.title, r.enrolment.batch.name if r.enrolment.batch else "Unassigned", r.result, _percent(r.first), _percent(r.best), _percent(r.latest), len(r.post_attempts), config.max_attempts if config else "Not configured", _date(r.enrolment.completion.completed_at, tz) if r.enrolment.completion else "Not completed", "Yes" if red else "No"])
     report.definitions = ["First and best scores are retained separately; a later attempt never overwrites an earlier one.", "Passed is decided from the unrounded score. Displayed scores are rounded down.", "A red flag means the latest outcome is Not Passed or Needs Re-training. It is a learning follow-up, not a disciplinary record."]
     return report
 
@@ -138,18 +143,20 @@ def question_analytics(db: Session, rows: list[Row]) -> Report:
 
 
 def employee_history(db: Session, rows: list[Row]) -> Report:
-    report = Report(ReportCode.EMPLOYEE_HISTORY, *TITLES[ReportCode.EMPLOYEE_HISTORY], ["Employee", "Employee ID", "Training", "Batch", "Type", "Attempt", "Score %", "Result", "Submitted (UTC)", "Submission"])
+    calendar = load_calendar(db)
+    # Submission times are shown in the organisation timezone, which the column names.
+    report = Report(ReportCode.EMPLOYEE_HISTORY, *TITLES[ReportCode.EMPLOYEE_HISTORY], ["Employee", "Employee ID", "Training", "Batch", "Type", "Attempt", "Score %", "Result", f"Submitted ({calendar.timezone})", "Submission"])
     labels = {"MANUAL": "By employee", "TIME_EXPIRED": "Time expired", "VIOLATION_LIMIT": "Violation limit"}
     for r in rows:
         e, t = r.enrolment.employee, r.enrolment.training
         batch = r.enrolment.batch.name if r.enrolment.batch else "Unassigned"
         if r.pre_attempt:
             a = r.pre_attempt
-            report.rows.append([e.full_name, e.employee_code, t.title, batch, "Pre-test", 1, _percent(a.score_percent), "Baseline (not pass/fail)", a.submitted_at.strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
+            report.rows.append([e.full_name, e.employee_code, t.title, batch, "Pre-test", 1, _percent(a.score_percent), "Baseline (not pass/fail)", a.submitted_at.astimezone(calendar.tz).strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
         if not r.post_attempts:
             report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", "Not submitted", MISSING, r.result, "Not submitted", ""])
         for a in r.post_attempts:
-            report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", a.attempt_number, _percent(a.score_percent), a.result_status, a.submitted_at.strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
+            report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", a.attempt_number, _percent(a.score_percent), a.result_status, a.submitted_at.astimezone(calendar.tz).strftime("%Y-%m-%d %H:%M"), labels.get(a.submission_reason, "")])
     report.definitions = ["Every submitted attempt is listed. Earlier attempts are never deleted or replaced.", "A pre-test is a baseline taken before training. It has no pass or fail."]
     return report
 

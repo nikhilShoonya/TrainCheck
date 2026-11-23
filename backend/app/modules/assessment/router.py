@@ -8,13 +8,14 @@ import uuid
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear, require_session
-from app.core.enums import AssessmentType, AttemptStatus, ObligationStatus, ResultStatus, SecurityEventType
+from app.core.enums import AssessmentType, AttemptStatus, EnrolmentStatus, ObligationStatus, ResultStatus, SecurityEventType
 from app.core.errors import conflict, not_found
 from app.core.responses import display_percent, iso, num, ok
 from app.core.routing import ReleasingRoute
@@ -235,6 +236,17 @@ def _own_enrolment(db: Session, enrolment_id: uuid.UUID, employee_id: uuid.UUID)
     return enrolment
 
 
+def _lock_own_enrolment(db: Session, enrolment: Enrolment) -> Enrolment:
+    """Takes the enrolment's row lock and reads it again from the database (audit B16). Recording completion,
+    cancelling and attendance changes lock the same row, so a pre-test start waits for them and then sees their result.
+    FOR NO KEY UPDATE: it conflicts with those locks but not with plain inserts that only reference the row."""
+    db.expire(enrolment)
+    return db.scalar(select(Enrolment).where(Enrolment.id == enrolment.id).with_for_update(key_share=True).execution_options(populate_existing=True))
+
+
+PRE_TEST_CANCELLED = "This training assignment was cancelled, so its pre-test is not available."
+
+
 @router.get("/me/pre-tests/{enrolment_id}")
 def get_pre_test(enrolment_id: uuid.UUID, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
     """The pre-test's rules, shown before it starts (system check, full screen, instructions), and any attempt
@@ -245,7 +257,8 @@ def get_pre_test(enrolment_id: uuid.UUID, user: CurrentUser = Depends(require_ga
     obligation = db.scalar(select(AssessmentObligation).where(AssessmentObligation.enrolment_id == enrolment.id, AssessmentObligation.assessment_type == AssessmentType.PRE_TEST))
     active = next((a for a in obligation.attempts if a.status == AttemptStatus.IN_PROGRESS), None) if obligation else None
     taken = obligation is not None and obligation.status == ObligationStatus.COMPLETED
-    available = bool(training.pretest_enabled and config is not None and not taken and (enrolment.completion is None or active is not None))
+    cancelled = enrolment.enrolment_status == EnrolmentStatus.CANCELLED  # Audit B16: a cancelled assignment offers nothing.
+    available = bool(not cancelled and training.pretest_enabled and config is not None and not taken and (enrolment.completion is None or active is not None))
     return ok(
         {
             "enrolment_id": str(enrolment.id),
@@ -263,15 +276,18 @@ def get_pre_test(enrolment_id: uuid.UUID, user: CurrentUser = Depends(require_ga
 
 @router.post("/me/pre-tests/{enrolment_id}/attempts")
 def start_pre_test(enrolment_id: uuid.UUID, body: StartAttemptIn, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    enrolment = _own_enrolment(db, enrolment_id, user.employee_id)
+    enrolment = _lock_own_enrolment(db, _own_enrolment(db, enrolment_id, user.employee_id))
+    if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
+        raise conflict("PRE_TEST_UNAVAILABLE", PRE_TEST_CANCELLED)
     if enrolment.completion is not None or not enrolment.training.pretest_enabled:
         raise conflict("PRE_TEST_UNAVAILABLE", "The pre-test can only be taken before training completion, when it is enabled.")
     config = service.active_config(db, enrolment.training_id, AssessmentType.PRE_TEST)
     if config is None:
         raise conflict("PRE_TEST_UNAVAILABLE", "This training has no pre-test configured.")
-    obligation = db.scalar(select(AssessmentObligation).where(AssessmentObligation.enrolment_id == enrolment.id, AssessmentObligation.assessment_type == AssessmentType.PRE_TEST))
+    find = select(AssessmentObligation).where(AssessmentObligation.enrolment_id == enrolment.id, AssessmentObligation.assessment_type == AssessmentType.PRE_TEST)
+    obligation = db.scalar(find)
     if obligation is None:
-        obligation = AssessmentObligation(
+        created = AssessmentObligation(
             enrolment_id=enrolment.id,
             employee_id=enrolment.employee_id,
             training_id=enrolment.training_id,
@@ -280,9 +296,18 @@ def start_pre_test(enrolment_id: uuid.UUID, body: StartAttemptIn, user: CurrentU
             status=ObligationStatus.DUE,
             due_at=utcnow(),
         )
-        db.add(obligation)
-        db.flush()
-    elif obligation.status == ObligationStatus.COMPLETED:
+        try:
+            with db.begin_nested():
+                db.add(created)
+                db.flush()
+            obligation = created
+        except IntegrityError:
+            # A concurrent start (a double click or a second tab) created it first (uq_obligation_cycle): use that one.
+            # start_attempt then returns the attempt that start opened, or refuses a second one, instead of a 500.
+            obligation = db.scalar(find.execution_options(populate_existing=True))
+            if obligation is None:
+                raise
+    if obligation.status == ObligationStatus.COMPLETED:
         raise conflict("PRE_TEST_UNAVAILABLE", "You have already taken this pre-test.")
     attempt = service.start_attempt(db, obligation, body.instructions_acknowledged)
     db.commit()

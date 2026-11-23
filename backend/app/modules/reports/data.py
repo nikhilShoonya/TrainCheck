@@ -2,7 +2,7 @@
 import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, tzinfo
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -22,6 +22,7 @@ from app.models import (
     Enrolment,
     Training,
 )
+from app.modules.assessment.scheduling import load_calendar
 from app.modules.organisation.people import is_learner
 
 
@@ -130,9 +131,11 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
         query = query.where(Enrolment.batch_id == filters.batch_id)
 
     rows: list[Row] = []
+    # Dates are the organisation's (a completion recorded for 24 Nov is stored as local midnight, 23 Nov in UTC).
+    calendar = load_calendar(db) if filters.date_from or filters.date_to else None
     for enrolment in db.scalars(query).unique():
         # Date filters select the training-completion cohort, as in the prototype.
-        completed = enrolment.completion.completed_at.date() if enrolment.completion else None
+        completed = calendar.local_date(enrolment.completion.completed_at) if calendar and enrolment.completion else None
         if filters.date_from and (completed is None or completed < filters.date_from):
             continue
         if filters.date_to and (completed is None or completed > filters.date_to):
@@ -209,20 +212,25 @@ def summary(rows: list[Row]) -> dict:
     }
 
 
-def monthly_trend(rows: list[Row], now: datetime, months: int = 6) -> list[dict]:
-    """Recorded months only. A month with no evidence is absent rather than zero."""
+def monthly_trend(rows: list[Row], now: datetime, tz: tzinfo, months: int = 6) -> list[dict]:
+    """Recorded months only. A month with no evidence is absent rather than zero. Months are the organisation's
+    (`tz`, the working calendar's timezone), so a completion on the 1st never counts in the month before."""
+
+    def month_of(moment: datetime) -> str:
+        return moment.astimezone(tz).strftime("%Y-%m")
+
     marks: set[str] = set()
     for r in rows:
         if r.enrolment.completion:
-            marks.add(r.enrolment.completion.completed_at.strftime("%Y-%m"))
-        marks.update(a.submitted_at.strftime("%Y-%m") for a in r.post_attempts)
+            marks.add(month_of(r.enrolment.completion.completed_at))
+        marks.update(month_of(a.submitted_at) for a in r.post_attempts)
     points = []
-    for month in sorted(m for m in marks if m <= now.strftime("%Y-%m"))[-months:]:
-        eligible = [r for r in rows if r.enrolment.assigned_at.strftime("%Y-%m") <= month or (r.enrolment.completion and r.enrolment.completion.completed_at.strftime("%Y-%m") <= month)]
-        complete = sum(1 for r in eligible if r.enrolment.completion and r.enrolment.completion.completed_at.strftime("%Y-%m") <= month)
+    for month in sorted(m for m in marks if m <= month_of(now))[-months:]:
+        eligible = [r for r in rows if month_of(r.enrolment.assigned_at) <= month or (r.enrolment.completion and month_of(r.enrolment.completion.completed_at) <= month)]
+        complete = sum(1 for r in eligible if r.enrolment.completion and month_of(r.enrolment.completion.completed_at) <= month)
         latest = []
         for r in eligible:
-            so_far = [a for a in r.post_attempts if a.submitted_at.strftime("%Y-%m") <= month]
+            so_far = [a for a in r.post_attempts if month_of(a.submitted_at) <= month]
             if so_far:
                 latest.append(so_far[-1])
         passed = sum(1 for a in latest if a.result_status == ResultStatus.PASSED)

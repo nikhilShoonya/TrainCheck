@@ -87,20 +87,27 @@ def _other_admin_completes(enrolment_id):
 
 
 def test_double_completion_is_a_conflict_not_a_server_error(world, db, client_for, monkeypatch):
-    enrolment = world.enrol(world.employee, world.training())
-    real = training_service.completion_problem
-    change = _other_admin_completes(enrolment.id)
+    """The other admin records completion after this request has read the enrolment but before it takes the row lock
+    (the window a double click opens). Inside the lock the request must see that completion and refuse with 409.
 
-    def checked_then_raced(record, attendance=None):
-        problem = real(record, attendance)  # This request sees no completion yet...
+    The race is placed before the lock on purpose: a writer cannot change the enrolment while the lock is held, so
+    simulating it there would only wait for the lock timeout (a 503), which is not a race real requests can produce."""
+    enrolment = world.enrol(world.employee, world.training())
+    seen_without_completion = []
+    real = training_router._enrolment
+
+    def read_then_raced(session, record_id):
+        record = real(session, record_id)
+        seen_without_completion.append(record.completion is None)  # This request read it before the other one completed it.
         other = database.session_factory()()
-        change(other)  # ...and the other request records one before this one inserts.
+        _other_admin_completes(enrolment.id)(other)
         other.commit()
         other.close()
-        return problem
+        return record
 
-    monkeypatch.setattr(training_service, "completion_problem", checked_then_raced)
+    monkeypatch.setattr(training_router, "_enrolment", read_then_raced)
     response = client_for(world.admin).post(f"/admin/enrolments/{enrolment.id}/completion", json={"completion_date": NOW.date().isoformat()})
+    assert seen_without_completion == [True]
     assert response.status_code == 409 and response.json()["error"]["code"] == "COMPLETION_EXISTS"
     assert len(db.scalars(select(TrainingCompletion)).all()) == 1
 
@@ -140,3 +147,186 @@ def test_locked_reads_do_not_change_normal_behaviour(world, db, client_for):
     client = client_for(world.employee)
     assert start(client, obligation.id)["attempt_number"] == 1
     assert training_service is not None
+
+
+def test_two_pre_test_starts_at_once_share_one_obligation_not_a_server_error(world, db, client_for):
+    """Audit B5. Both requests find no pre-test obligation; the other one inserts it first. This request must use that
+    obligation (uq_obligation_cycle) and answer normally: one obligation, one attempt, no 500."""
+    from sqlalchemy import event
+
+    from app.core.enums import AssessmentType
+    from app.models import AssessmentObligation as Obligation
+
+    training = world.training()
+    training.pretest_enabled = True
+    db.add(AssessmentConfig(training_id=training.id, assessment_type=AssessmentType.PRE_TEST, version=1, question_count=10, duration_seconds=600, max_attempts=1))
+    enrolment = world.enrol(world.employee, training)
+    db.commit()
+    config_id = db.scalar(select(AssessmentConfig.id).where(AssessmentConfig.training_id == training.id, AssessmentConfig.assessment_type == AssessmentType.PRE_TEST))
+    client = client_for(world.employee)
+    raced = []
+    factory = database.session_factory()
+
+    def other_tab_inserts_first(session, _context, _instances):
+        if raced or not any(isinstance(o, Obligation) and o.assessment_type == AssessmentType.PRE_TEST for o in session.new):
+            return
+        raced.append(True)
+        other = factory()
+        other.add(Obligation(enrolment_id=enrolment.id, employee_id=enrolment.employee_id, training_id=training.id, config_id=config_id, assessment_type=AssessmentType.PRE_TEST, status="DUE", due_at=NOW))
+        other.commit()
+        other.close()
+
+    event.listen(factory, "before_flush", other_tab_inserts_first)
+    try:
+        response = client.post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    finally:
+        event.remove(factory, "before_flush", other_tab_inserts_first)
+    assert raced == [True]
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    obligations = db.scalars(select(Obligation).where(Obligation.enrolment_id == enrolment.id, Obligation.assessment_type == AssessmentType.PRE_TEST)).all()
+    assert len(obligations) == 1
+    assert response.json()["data"]["obligation_id"] == str(obligations[0].id)
+    assert len(db.scalars(select(AssessmentAttempt).where(AssessmentAttempt.obligation_id == obligations[0].id)).all()) == 1
+    # A repeat from either tab resumes the same attempt.
+    again = client.post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    assert again.status_code == 200 and again.json()["data"]["attempt_id"] == response.json()["data"]["attempt_id"]
+
+
+# ---------- Pre-tests of cancelled assignments (audit B16) ----------
+
+def _pre_test_ready(world, db):
+    from app.core.enums import AssessmentType
+
+    training = world.training()
+    training.pretest_enabled = True
+    db.add(AssessmentConfig(training_id=training.id, assessment_type=AssessmentType.PRE_TEST, version=1, question_count=10, duration_seconds=600, max_attempts=1))
+    enrolment = world.enrol(world.employee, training)
+    db.commit()
+    return enrolment
+
+
+def _pre_test_rows(db, enrolment_id) -> tuple[int, int]:
+    db.expire_all()
+    obligations = db.scalars(select(AssessmentObligation.id).where(AssessmentObligation.enrolment_id == enrolment_id, AssessmentObligation.assessment_type == "PRE_TEST")).all()
+    attempts = db.scalars(select(AssessmentAttempt.id).where(AssessmentAttempt.obligation_id.in_(obligations))).all() if obligations else []
+    return len(obligations), len(attempts)
+
+
+def test_cancelled_assignment_offers_and_starts_no_pre_test(world, db, client_for):
+    enrolment = _pre_test_ready(world, db)
+    client = client_for(world.employee)
+    assert client.get(f"/me/pre-tests/{enrolment.id}").json()["data"]["available"] is True
+    assert client_for(world.admin).post(f"/admin/enrolments/{enrolment.id}/cancel", json={"reason": "Assigned in error"}).status_code == 200
+    assert client.get(f"/me/pre-tests/{enrolment.id}").json()["data"]["available"] is False
+    refused = client.post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "PRE_TEST_UNAVAILABLE"
+    assert "cancelled" in refused.json()["error"]["message"]
+    assert _pre_test_rows(db, enrolment.id) == (0, 0)
+
+
+def test_pre_test_start_waits_for_a_cancellation_holding_the_lock(world, db, client_for):
+    """Another request (L&D cancelling) holds the enrolment lock. The start must wait for it, then see the
+    cancellation and refuse: no obligation or attempt is created for a cancelled assignment."""
+    import threading
+    import time
+
+    enrolment = _pre_test_ready(world, db)
+    client = client_for(world.employee)
+    other = database.session_factory()()
+    row = other.scalar(select(Enrolment).where(Enrolment.id == enrolment.id).with_for_update())
+    outcome: dict = {}
+    starter = threading.Thread(target=lambda: outcome.setdefault("response", client.post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})))
+    starter.start()
+    time.sleep(1.5)
+    assert starter.is_alive(), "the start must wait for the enrolment lock"
+    row.enrolment_status, row.cancel_reason = "CANCELLED", "Assigned in error"
+    other.commit()
+    other.close()
+    starter.join(timeout=30)
+    response = outcome["response"]
+    assert response.status_code == 409 and response.json()["error"]["code"] == "PRE_TEST_UNAVAILABLE", response.text
+    assert _pre_test_rows(db, enrolment.id) == (0, 0)
+
+
+def test_pre_test_start_rereads_a_cancellation_committed_after_its_first_read(world, db, client_for, monkeypatch):
+    from app.modules.assessment import router as assessment_router
+
+    enrolment = _pre_test_ready(world, db)
+    real = assessment_router._own_enrolment
+
+    def read_then_cancelled(session, enrolment_id, employee_id):
+        record = real(session, enrolment_id, employee_id)
+        assert record.enrolment_status != "CANCELLED"  # Read before the cancellation.
+        other = database.session_factory()()
+        other.get(Enrolment, enrolment.id).enrolment_status = "CANCELLED"
+        other.commit()
+        other.close()
+        return record
+
+    monkeypatch.setattr(assessment_router, "_own_enrolment", read_then_cancelled)
+    response = client_for(world.employee).post(f"/me/pre-tests/{enrolment.id}/attempts", json={"instructions_acknowledged": True})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "PRE_TEST_UNAVAILABLE"
+    assert _pre_test_rows(db, enrolment.id) == (0, 0)
+
+
+# ---------- Attendance racing completion (audit B17) ----------
+
+def _complete_in(other, enrolment_id) -> None:
+    other.add(TrainingCompletion(enrolment_id=enrolment_id, completed_at=NOW, completion_source="MANUAL"))
+    row = other.get(Enrolment, enrolment_id)
+    row.enrolment_status, row.attendance_status = "COMPLETED", "PRESENT"
+
+
+def test_attendance_change_waits_for_a_completion_holding_the_lock(world, db, client_for):
+    """L&D records completion (holding the enrolment lock) while another admin sets Absent. The attendance change
+    must wait, then see the completion and refuse: a completed assignment never becomes Absent."""
+    import threading
+    import time
+
+    enrolment = world.enrol(world.employee, world.training())
+    admin = client_for(world.admin)
+    other = database.session_factory()()
+    other.scalar(select(Enrolment).where(Enrolment.id == enrolment.id).with_for_update())
+    _complete_in(other, enrolment.id)
+    other.flush()
+    outcome: dict = {}
+    changer = threading.Thread(target=lambda: outcome.setdefault("response", admin.patch(f"/admin/enrolments/{enrolment.id}/attendance", json={"attendance_status": "ABSENT"})))
+    changer.start()
+    time.sleep(1.5)
+    assert changer.is_alive(), "the attendance change must wait for the enrolment lock"
+    other.commit()
+    other.close()
+    changer.join(timeout=30)
+    response = outcome["response"]
+    assert response.status_code == 409 and response.json()["error"]["code"] == "ATTENDANCE_LOCKED", response.text
+    db.expire_all()
+    assert db.get(Enrolment, enrolment.id).attendance_status == "PRESENT"
+
+
+def test_attendance_change_rereads_a_completion_committed_after_its_first_read(world, db, client_for, monkeypatch):
+    enrolment = world.enrol(world.employee, world.training())
+    real = training_router._enrolment
+
+    def read_then_completed(session, record_id):
+        record = real(session, record_id)
+        assert record.completion is None  # This request read it (and its completion) before the other one completed it.
+        other = database.session_factory()()
+        _complete_in(other, enrolment.id)
+        other.commit()
+        other.close()
+        return record
+
+    monkeypatch.setattr(training_router, "_enrolment", read_then_completed)
+    response = client_for(world.admin).patch(f"/admin/enrolments/{enrolment.id}/attendance", json={"attendance_status": "ABSENT"})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "ATTENDANCE_LOCKED"
+    db.expire_all()
+    assert db.get(Enrolment, enrolment.id).attendance_status == "PRESENT"
+
+
+def test_attendance_changes_still_work_when_nothing_races(world, db, client_for):
+    enrolment = world.enrol(world.employee, world.training())
+    admin = client_for(world.admin)
+    for status in ("PRESENT", "ABSENT", "EXCUSED", "PENDING"):
+        response = admin.patch(f"/admin/enrolments/{enrolment.id}/attendance", json={"attendance_status": status})
+        assert response.status_code == 200 and response.json()["data"]["attendance_status"] == status

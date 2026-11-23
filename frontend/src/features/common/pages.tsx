@@ -8,6 +8,7 @@ import { ApiError, api } from "@/lib/api";
 import { canChangeOwnPassword } from "@/features/admin/employeeView";
 import { useApi, useSession } from "@/lib/hooks";
 import { dateTime } from "@/lib/utils";
+import { mayHaveOlder, olderPagePath, replaceInOlder, shownNotifications, withOlderPage, type Older } from "./notificationPages";
 
 interface NotificationView {
   id: string;
@@ -22,9 +23,14 @@ interface NotificationView {
 export function NotificationsPage() {
   const state = useApi<NotificationView[]>("/me/notifications");
   const toast = useToast();
+  // Older pages, appended below the cached first page (audit B21).
+  const [older, setOlder] = useState<Older<NotificationView> | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderStatus, setOlderStatus] = useState("");
   const markAll = async () => {
     try {
       await api.post("/me/notifications/mark-all-read");
+      setOlder((o) => (o ? { ...o, items: o.items.map((n) => ({ ...n, read: true })) } : o));
       toast("Notifications marked read.");
       void state.reload();
     } catch (e) {
@@ -32,18 +38,31 @@ export function NotificationsPage() {
     }
   };
   const mark = async (n: NotificationView) => {
-    await api.patch(`/me/notifications/${n.id}`, { read: !n.read }).catch(() => {});
+    const changed = await api.patch<NotificationView>(`/me/notifications/${n.id}`, { read: !n.read }).catch(() => null);
+    if (changed) setOlder((o) => replaceInOlder(o, changed));
     void state.reload();
+  };
+  const loadOlder = async (first: NotificationView[]) => {
+    setLoadingOlder(true);
+    try {
+      const page = await api.getEnvelope<NotificationView[], { has_more: boolean }>(olderPagePath(shownNotifications(first, older)));
+      setOlder(withOlderPage(first, older, page.data, page.meta.has_more));
+      setOlderStatus(page.data.length ? `Loaded ${page.data.length} older notification${page.data.length === 1 ? "" : "s"}.` : "There are no older notifications.");
+    } catch (e) {
+      toast((e as ApiError).message);
+    } finally {
+      setLoadingOlder(false);
+    }
   };
   return (
     <>
       <PageTitle eyebrow="NOTIFICATIONS" title="Notifications" description="Reminders and learning follow-ups in your authorised scope. In-app only until an external channel is approved." action={<Btn onClick={() => void markAll()}>Mark All Read</Btn>} />
       <section className="panel">
         <Loaded state={state}>
-          {(items) =>
-            items.length ? (
+          {(first) =>
+            first.length ? (
               <>
-                {items.map((n) => (
+                {shownNotifications(first, older).map((n) => (
                   <article className="notification-item" key={n.id}>
                     <span className="course-glyph">
                       <Icon name="bell" />
@@ -62,6 +81,16 @@ export function NotificationsPage() {
                     </div>
                   </article>
                 ))}
+                {mayHaveOlder(first, older) ? (
+                  <div className="row">
+                    <Btn disabled={loadingOlder} onClick={() => void loadOlder(first)}>
+                      {loadingOlder ? "Loading older notifications…" : "Load older notifications"}
+                    </Btn>
+                  </div>
+                ) : null}
+                <p className="sr-only" role="status" aria-live="polite">
+                  {olderStatus}
+                </p>
               </>
             ) : (
               <Empty title="No notifications yet." hint="Reminders and follow-ups will appear here." />

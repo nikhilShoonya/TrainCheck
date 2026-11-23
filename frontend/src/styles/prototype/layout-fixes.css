@@ -83,7 +83,6 @@ td .badge,td .score-tag{font-size:13px}
 @media(max-width:480px){
   .reference-workspace .topbar{gap:4px}
   .reference-workspace .top-actions{gap:2px}
-  .reference-workspace .language-control{padding-left:6px;padding-right:6px}
   .reference-workspace .finvasia-logo-crop{width:88px;height:23px}
 }
 

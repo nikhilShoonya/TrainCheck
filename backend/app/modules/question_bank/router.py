@@ -15,7 +15,7 @@ from app.core.enums import AssessmentType, Difficulty, QuestionStatus, QuestionT
 from app.core.errors import conflict, not_found, validation
 from app.core.responses import num, ok
 from app.core.routing import ReleasingRoute
-from app.models import Competency, Question, QuestionAnswerKey, QuestionOption, QuestionRevision, QuestionTrainingTag, Training
+from app.models import Competency, Department, Function, Question, QuestionAnswerKey, QuestionOption, QuestionRevision, QuestionTrainingTag, Training
 from app.modules.assessment.service import link_serves, link_serves_clause
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin/questions", tags=["Question Bank"])
@@ -232,10 +232,16 @@ def _trainings(db: Session, ids: list[uuid.UUID]) -> list[Training]:
     return trainings
 
 
+def _check_references(db: Session, body: QuestionIn) -> None:
+    """A clear 400 for a competency, department or function that does not exist, instead of a foreign-key 500."""
+    for model, value, label in ((Competency, body.competency_id, "competency"), (Department, body.department_id, "department"), (Function, body.function_id, "function")):
+        if value and db.get(model, value) is None:
+            raise validation(f"The selected {label} no longer exists.")
+
+
 @router.post("")
 def create_question(body: QuestionIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    if body.competency_id and db.get(Competency, body.competency_id) is None:
-        raise validation("The selected competency no longer exists.")
+    _check_references(db, body)
     question = Question(
         question_code=(body.question_code or f"Q-{uuid.uuid4().hex[:8]}").upper(),
         topic=body.topic,
@@ -279,6 +285,7 @@ def update_question(question_id: uuid.UUID, body: QuestionIn, user: CurrentUser 
     question = db.get(Question, question_id)
     if question is None:
         raise not_found()
+    _check_references(db, body)
     question.version += 1
     question.topic = body.topic
     question.competency_id, question.department_id, question.function_id = body.competency_id, body.department_id, body.function_id

@@ -5,14 +5,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, contains_eager, joinedload, selectinload
 
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_withdrawn
+from app.core.deps import CurrentUser, require_admin
 from app.core.enums import (
     AssessmentType,
     AttendanceStatus,
@@ -40,10 +40,10 @@ from app.models import (
     Employee,
     Enrolment,
     Function,
+    Trainer,
     Training,
     TrainingBatch,
     TrainingMaterial,
-    TrainingSession,
 )
 from app.modules.assessment.gate import obligation_startable
 from app.modules.assessment.scheduling import CalendarView, fixed_instant, load_calendar
@@ -54,6 +54,7 @@ from app.modules.organisation.people import is_learner
 from app.modules.training import service
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["L&D Administration"])
+UNIQUE_VIOLATION = "23505"  # PostgreSQL SQLSTATE for a unique constraint violation.
 
 MIN_ATTEMPTS, MAX_ATTEMPTS = 1, 10
 MIN_MINUTES, MAX_MINUTES = 1, 240
@@ -107,22 +108,6 @@ class MaterialIn(Strict):
     title: str = Field(min_length=1, max_length=200)
     url: str = Field(max_length=500)
     _url = field_validator("url")(https_only)
-
-
-class BatchIn(Strict):
-    training_id: uuid.UUID
-    batch_code: str | None = Field(default=None, max_length=60)
-    name: str = Field(min_length=1, max_length=160)
-    trainer_id: uuid.UUID | None = None
-    start_date: date | None = None
-    end_date: date | None = None
-
-
-class SessionIn(Strict):
-    title: str = Field(min_length=1, max_length=160)
-    session_date: date
-    delivery_mode: str | None = Field(default=None, max_length=40)
-    venue: str | None = Field(default=None, max_length=160)
 
 
 class AssignIn(Strict):
@@ -291,24 +276,49 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
     return data
 
 
+def _existing(db: Session, model: type, ids: list[uuid.UUID], field: str, noun: str, errors: list[dict]) -> list:
+    """The records for these IDs. An ID that matches nothing is reported in `errors` (audit B19), never dropped."""
+    wanted = list(dict.fromkeys(ids))
+    found = list(db.scalars(select(model).where(model.id.in_(wanted)))) if wanted else []
+    missing = [str(i) for i in wanted if i not in {r.id for r in found}]
+    if missing:
+        errors.append({"field": field, "message": f"{len(missing)} selected {noun}{'' if len(missing) == 1 else 's'} no longer exist{'s' if len(missing) == 1 else ''}: {', '.join(missing)}. Reload the page and choose again."})
+    return found
+
+
 def _apply_training(db: Session, t: Training, body: TrainingIn) -> None:
-    t.title, t.description, t.category = body.title, body.description, body.category
-    t.trainer_id = body.trainer_id
-    if t.id is None or "owner_employee_id" in body.model_fields_set:  # An edit that does not mention the owner keeps it.
-        t.owner_employee_id = body.owner_employee_id
-    t.target_scope = body.target_scope
-    t.refresher_text, t.refresher_url = body.refresher_text, body.refresher_url
-    t.pretest_enabled, t.behaviour_enabled = body.pretest_enabled, body.behaviour_enabled
-    t.followup_days, t.item_minimum_sample = body.followup_days, body.item_minimum_sample
+    """Every rule and every reference is checked before the training is changed, so a refused save changes nothing."""
     needs_department = body.target_scope in (TargetScope.DEPARTMENT, TargetScope.COMBINED)
     needs_function = body.target_scope in (TargetScope.FUNCTION, TargetScope.COMBINED)
     if needs_department and not body.department_ids:
         raise validation("Choose at least one department for this targeting.")
     if needs_function and not body.function_ids:
         raise validation("Choose at least one function for this targeting.")
-    t.departments = list(db.scalars(select(Department).where(Department.id.in_(body.department_ids)))) if needs_department else []
-    t.functions = list(db.scalars(select(Function).where(Function.id.in_(body.function_ids)))) if needs_function else []
-    t.competencies = list(db.scalars(select(Competency).where(Competency.id.in_(body.competency_ids))))
+    errors: list[dict] = []
+    # Optional single references: None clears them; an ID must name an existing record. An edit that does not
+    # mention the owner keeps it, so only an owner that is being set is checked.
+    if body.trainer_id is not None and db.get(Trainer, body.trainer_id) is None:
+        errors.append({"field": "trainer_id", "message": f"The selected trainer no longer exists: {body.trainer_id}. Reload the page and choose again."})
+    sets_owner = t.id is None or "owner_employee_id" in body.model_fields_set
+    if sets_owner and body.owner_employee_id is not None and db.get(Employee, body.owner_employee_id) is None:
+        errors.append({"field": "owner_employee_id", "message": f"The selected owner no longer exists: {body.owner_employee_id}. Reload the page and choose again."})
+    departments = _existing(db, Department, body.department_ids, "department_ids", "department", errors)
+    functions = _existing(db, Function, body.function_ids, "function_ids", "function", errors)
+    competencies = _existing(db, Competency, body.competency_ids, "competency_ids", "competency", errors)
+    if errors:
+        raise validation("Some selected records do not exist. Nothing was saved.", errors)
+
+    t.title, t.description, t.category = body.title, body.description, body.category
+    t.trainer_id = body.trainer_id
+    if sets_owner:  # An edit that does not mention the owner keeps it.
+        t.owner_employee_id = body.owner_employee_id
+    t.target_scope = body.target_scope
+    t.refresher_text, t.refresher_url = body.refresher_text, body.refresher_url
+    t.pretest_enabled, t.behaviour_enabled = body.pretest_enabled, body.behaviour_enabled
+    t.followup_days, t.item_minimum_sample = body.followup_days, body.item_minimum_sample
+    t.departments = departments if needs_department else []
+    t.functions = functions if needs_function else []
+    t.competencies = competencies
 
 
 # ---------- Trainings ----------
@@ -336,6 +346,10 @@ def create_training(body: TrainingIn, user: CurrentUser = Depends(require_admin)
         db.flush()
     except IntegrityError as exc:
         db.rollback()
+        # Only a unique violation (the training code) is a duplicate. References were validated above, so any other
+        # integrity failure is unexpected and must not be reported as a duplicate code.
+        if getattr(exc.orig, "sqlstate", None) != UNIQUE_VIOLATION:
+            raise
         raise conflict("DUPLICATE_CODE", "A training with this code already exists.") from exc
     record_audit(db, user.id, "TRAINING_CREATED", "training", training.id, after={"code": code, "title": training.title})
     db.commit()
@@ -546,77 +560,6 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
     return ok({**config_view(candidate, calendar), "applied": applied})
 
 
-# ---------- Batches and sessions ----------
-# Creating batches and sessions is withdrawn from L&D Admin (require_withdrawn). The list stays readable:
-# Employee Assignments uses it to attach existing batches, and HR keeps its read access.
-
-def batch_view(db: Session, batch: TrainingBatch, assigned_counts: dict | None = None) -> dict:
-    if assigned_counts is None:
-        assigned_counts = _assigned_counts(db, [batch.id])
-    return {
-        "id": str(batch.id),
-        "batch_code": batch.batch_code,
-        "name": batch.name,
-        "training_id": str(batch.training_id),
-        "training_title": batch.training.title,
-        "trainer_id": str(batch.trainer_id) if batch.trainer_id else None,
-        "trainer_name": batch.trainer.name if batch.trainer else (batch.training.trainer.name if batch.training.trainer else None),
-        "start_date": batch.start_date.isoformat() if batch.start_date else None,
-        "end_date": batch.end_date.isoformat() if batch.end_date else None,
-        "status": batch.status,
-        "assigned_count": assigned_counts.get(batch.id, 0),
-        "sessions": [{"id": str(s.id), "title": s.title, "session_date": s.session_date.isoformat(), "delivery_mode": s.delivery_mode, "venue": s.venue} for s in batch.sessions],
-    }
-
-
-@router.get("/batches")
-def list_batches(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db), training_id: uuid.UUID | None = None) -> dict:
-    query = select(TrainingBatch).options(selectinload(TrainingBatch.training), selectinload(TrainingBatch.trainer), selectinload(TrainingBatch.sessions)).order_by(TrainingBatch.start_date.desc().nulls_last())
-    if training_id:
-        query = query.where(TrainingBatch.training_id == training_id)
-    batches = list(db.scalars(query))
-    counts = _assigned_counts(db, [b.id for b in batches])
-    return ok([batch_view(db, b, counts) for b in batches])
-
-
-def _assigned_counts(db: Session, batch_ids: list[uuid.UUID]) -> dict:
-    if not batch_ids:
-        return {}
-    rows = db.execute(
-        select(Enrolment.batch_id, func.count()).where(Enrolment.batch_id.in_(batch_ids), Enrolment.enrolment_status != EnrolmentStatus.CANCELLED).group_by(Enrolment.batch_id)
-    )
-    return dict(rows.all())
-
-
-@router.post("/batches")
-def create_batch(body: BatchIn, user: CurrentUser = Depends(require_withdrawn), db: Session = Depends(get_db)) -> dict:
-    training = _training(db, body.training_id)
-    if body.start_date and body.end_date and body.end_date < body.start_date:
-        raise validation("The end date cannot be before the start date.")
-    batch = TrainingBatch(training_id=training.id, batch_code=(body.batch_code or f"B-{uuid.uuid4().hex[:6]}").upper(), name=body.name, trainer_id=body.trainer_id, start_date=body.start_date, end_date=body.end_date)
-    db.add(batch)
-    try:
-        db.flush()
-    except IntegrityError as exc:
-        db.rollback()
-        raise conflict("DUPLICATE_CODE", "This training already has a batch with that code.") from exc
-    record_audit(db, user.id, "BATCH_CREATED", "training_batch", batch.id, after={"name": batch.name})
-    db.commit()
-    return ok(batch_view(db, batch))
-
-
-@router.post("/batches/{batch_id}/sessions")
-def add_session(batch_id: uuid.UUID, body: SessionIn, user: CurrentUser = Depends(require_withdrawn), db: Session = Depends(get_db)) -> dict:
-    batch = db.get(TrainingBatch, batch_id)
-    if batch is None:
-        raise not_found()
-    db.add(TrainingSession(batch_id=batch.id, title=body.title, session_date=body.session_date, delivery_mode=body.delivery_mode, venue=body.venue))
-    record_audit(db, user.id, "SESSION_CREATED", "training_batch", batch.id, after={"title": body.title})
-    db.commit()
-    db.refresh(batch)
-    return ok(batch_view(db, batch))
-
-
 # ---------- Enrolment and completion ----------
 
 def assessment_state(obligations: list[AssessmentObligation], now: datetime, unavailable: bool = False) -> str:
@@ -783,8 +726,11 @@ def _enrolment(db: Session, enrolment_id: uuid.UUID) -> Enrolment:
 
 @router.patch("/enrolments/{enrolment_id}/attendance")
 def set_attendance(enrolment_id: uuid.UUID, body: AttendanceIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    """Once completion is recorded, attendance must stay a status that counts as completion."""
-    enrolment = _enrolment(db, enrolment_id)
+    """Once completion is recorded, attendance must stay a status that counts as completion.
+
+    Audit B17: takes the enrolment lock that recording completion and cancelling take, and checks the rules on the
+    row as it is once locked, so a completion recorded at the same moment can never be followed by Absent."""
+    enrolment = _locked(db, _enrolment(db, enrolment_id))
     label = service.employee_label(enrolment.employee)
     if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
         raise conflict("ENROLMENT_CANCELLED", f"The assignment of {label} was cancelled, so attendance cannot be changed.")

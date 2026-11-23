@@ -1,15 +1,6 @@
-import { type ClassValue, clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
 export const percent = (value: number | null | undefined, missing = "—") => (value === null || value === undefined ? missing : `${formatNumber(value)}%`);
 
 export const formatNumber = (value: number) => value.toFixed(1).replace(/\.0$/, "");
-
-export const orMissing = (value: number | string | null | undefined, missing = "Not collected") => (value === null || value === undefined || value === "" ? missing : String(value));
 
 /** The organisation's timezone. Dates are shown and chosen in it, never as the UTC date of a timestamp
     (which is the previous day for India from 00:00 to 05:30). Matches the backend's working calendar. */

@@ -223,12 +223,12 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await expect(page.getByRole("heading", { name: "Section 2 · Behaviour" })).toHaveCount(0); // Level 3 is out of scope.
   await expect(page.getByText(/Section 3|Reaction|Business Results/)).toHaveCount(0);
 
-  // Batches & Sessions and Audit Logs are withdrawn from L&D Admin: not in the sidebar, refused by URL and by the API.
+  // Batches & Sessions and Audit Logs were removed (audit P5): not in the sidebar, no page and no API.
   await expect(page.locator(".sidebar")).not.toContainText("Batches & Sessions");
   await expect(page.locator(".sidebar")).not.toContainText("Audit Logs");
   for (const path of ["/lnd/batches", "/lnd/audit"]) {
     await page.goto(path);
-    await expect(page.getByRole("heading", { name: "You do not have access to this page" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "This page does not exist" })).toBeVisible();
   }
   const statuses = await page.evaluate(async () => {
     const csrf = document.cookie.match(/tc_csrf=([^;]*)/)?.[1] ?? "";
@@ -237,7 +237,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
     const list = await fetch("/api/v1/admin/batches");
     return [audit.status, batch.status, list.status];
   });
-  expect(statuses).toEqual([403, 403, 200]); // The batch list stays readable for Employee Assignments.
+  expect(statuses).toEqual([404, 404, 404]);
 });
 
 test("navigation reuses loaded data and sign-in does not repeat the session requests", async ({ page }) => {

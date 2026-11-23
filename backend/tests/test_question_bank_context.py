@@ -219,3 +219,26 @@ def test_the_restricted_list_and_counts_are_for_ld_only(world, db, client_for):
     anonymous = client_for(world.admin)
     anonymous.http.cookies.clear()
     assert anonymous.get("/admin/questions/summary").status_code == 401
+
+
+# ---------- Unknown references (audit B6) ----------
+
+@pytest.mark.parametrize("field", ["competency_id", "department_id", "function_id"])
+def test_unknown_competency_department_or_function_is_a_400_not_a_500(world, db, client_for, field):
+    """A stale or hand-made ID is a clear validation error on create and on edit, and changes nothing."""
+    training = world.training("ALPHA", questions=1, count=1)
+    admin = client_for(world.admin)
+    missing = str(uuid.uuid4())
+    label = field.removesuffix("_id")
+
+    created = admin.post("/admin/questions", json=question_body([str(training.id)], "Which is the approved process?", **{field: missing}))
+    assert created.status_code == 400, created.text
+    assert created.json()["error"] == {**created.json()["error"], "code": "VALIDATION_ERROR", "message": f"The selected {label} no longer exists."}
+    assert db.scalar(select(func.count()).select_from(Question).where(Question.question_text == "Which is the approved process?")) == 0
+
+    question = db.scalar(select(Question).where(Question.question_code == "ALPHA-Q01"))
+    edited = admin.patch(f"/admin/questions/{question.id}", json=question_body([str(training.id)], "Edited text", **{field: missing}))
+    assert edited.status_code == 400, edited.text
+    assert edited.json()["error"]["message"] == f"The selected {label} no longer exists."
+    db.expire_all()
+    assert db.get(Question, question.id).question_text != "Edited text" and db.get(Question, question.id).version == question.version

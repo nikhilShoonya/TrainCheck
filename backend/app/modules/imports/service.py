@@ -309,7 +309,9 @@ def _validate_completion(v: dict[str, str], seen: set[str], db: Session, context
     if v.get("completion_date"):
         try:
             completed = date.fromisoformat(v["completion_date"].split(" ")[0])
-            if completed > utcnow().date():
+            if "today" not in context:  # The organisation's date, as manual completion uses: UTC is behind IST until 05:30.
+                context["today"] = load_calendar(db).local_date(utcnow())
+            if completed > context["today"]:
                 errors.append(_error("completion_date", "The date cannot be in the future."))
         except ValueError:
             errors.append(_error("completion_date", "Use a valid YYYY-MM-DD date."))

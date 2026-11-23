@@ -4,14 +4,13 @@ from sqlalchemy import func, select
 
 from app.core import clock
 from app.core.deps import require_admin
-from app.models import AuditLog, TrainingBatch
+from app.models import AuditLog, TrainingBatch, TrainingSession
 from tests.conftest import NOW, start, take
 
 ADMIN_READ = [
     "/admin/trainings",
     "/admin/departments",
     "/admin/functions",
-    "/admin/batches",
     "/admin/enrolments",
     "/admin/behaviour-templates",
 ]
@@ -71,7 +70,7 @@ def test_admin_can_manage_training(world, client_for, db):  # TC-RBAC-005
 def test_employee_cannot_use_admin_routes(world, client_for):  # TC-RBAC-006
     client = client_for(world.employee)
     assert client.post("/admin/trainings", json={"title": "Nope"}).status_code == 403
-    for path in ("/admin/questions", "/admin/trainings", "/admin/audit-logs", "/reports/filter-options", "/scorecards"):
+    for path in ("/admin/questions", "/admin/trainings", "/reports/filter-options", "/scorecards"):
         assert client.get(path).status_code == 403, path
 
 
@@ -94,20 +93,63 @@ def test_every_mutating_admin_route_is_ld_only():
     assert missing == []
 
 
-def test_batches_sessions_and_audit_logs_are_withdrawn_from_ld_admin(world, client_for, db):
-    """Batches & Sessions writes and the Audit Logs reader are refused for every role, L&D Admin included.
-    Batch records stay readable for assignments, and audit events keep being recorded."""
+def test_batches_sessions_and_audit_logs_apis_are_removed(world, client_for, db):
+    """The withdrawn Batches & Sessions and Audit Logs features are removed (audit P5): their APIs no longer exist
+    for any role. Historical batch records, batches in assignment lists and in the reports that keep a Batch column,
+    and background audit recording are unaffected. The Compliance report has no Batch column (approved decision)."""
+    from tests.test_gate import api_routes
+
     training = world.training()
-    batch_id = client_for(world.admin).get(f"/admin/batches?training_id={training.id}").json()["data"][0]["id"]
+    batch = db.scalar(select(TrainingBatch).where(TrainingBatch.training_id == training.id))
+    db.add(TrainingSession(batch_id=batch.id, title="Historical day 1", session_date=NOW.date(), delivery_mode="Virtual"))  # Historical record.
+    db.commit()
+    batch_before = (batch.id, batch.batch_code, batch.name, batch.training_id)
+    batches_before = db.scalar(select(func.count()).select_from(TrainingBatch))
+    sessions_before = db.scalar(select(func.count()).select_from(TrainingSession))
+
+    # 5. The withdrawn APIs stay unavailable, for every role, and are not in the route table.
+    removed = [
+        ("GET", "/admin/batches"),
+        ("POST", "/admin/batches"),
+        ("POST", f"/admin/batches/{batch.id}/sessions"),
+        ("GET", "/admin/audit-logs"),
+    ]
     for person in (world.admin, world.hr, world.manager, world.employee):
         client = client_for(person)
-        assert client.post("/admin/batches", json={"training_id": str(training.id), "name": "New batch"}).status_code == 403
-        assert client.post(f"/admin/batches/{batch_id}/sessions", json={"title": "Day 1", "session_date": "2026-11-10"}).status_code == 403
-        assert client.get("/admin/audit-logs").status_code == 403
-    assert client_for(world.admin).get("/admin/batches").status_code == 200  # Batches stay readable for assignments.
-    assert db.scalar(select(func.count()).select_from(TrainingBatch)) >= 1  # Nothing deleted.
+        for method, path in removed:
+            body = {"training_id": str(training.id), "name": "New batch", "title": "Day 1", "session_date": "2026-11-10"}
+            response = client.post(path, json=body) if method == "POST" else client.get(path)
+            assert response.status_code == 404, (person.employee_code, method, path, response.status_code)
+    paths = {route.path for route in api_routes("/api/v1/admin")}
+    assert not {p for p in paths if p.startswith(("/api/v1/admin/batches", "/api/v1/admin/audit-logs"))}
 
+    # 3. Assigning into an existing batch still works, and the assignment list keeps the batch.
     admin = client_for(world.admin)
+    assigned = admin.post("/admin/enrolments", json={"training_id": str(training.id), "batch_id": str(batch.id), "employee_ids": [str(world.employee.id)]})
+    assert assigned.status_code == 200 and assigned.json()["data"]["created"] == 1, assigned.text
+    listed = admin.get(f"/admin/enrolments?training_id={training.id}").json()["data"]
+    assert [row["batch_name"] for row in listed] == [batch.name]
+
+    # 1, 2, 4. Compliance has no Batch column; Pass/Fail and Employee History keep theirs; every row fits its columns.
+    def report(code: str) -> tuple[list[str], list[dict]]:
+        data = admin.get(f"/reports/{code}?training_id={training.id}").json()["data"]
+        return data["columns"], [dict(zip(data["columns"], row, strict=True)) for row in data["rows"]]  # strict: a row of another length fails.
+
+    compliance_columns, compliance_rows = report("compliance")
+    assert "Batch" not in compliance_columns and len(compliance_rows) == 1
+    assert compliance_rows[0]["Employee ID"] == world.employee.employee_code
+    for code in ("pass-fail", "employee-history"):
+        columns, rows = report(code)
+        assert "Batch" in columns, code
+        assert rows and {row["Batch"] for row in rows} == {batch.name}, code
+
+    # 6. Historical batch records are untouched, and audit events are still recorded in the background.
+    db.expire_all()
+    assert (batch.id, batch.batch_code, batch.name, batch.training_id) == batch_before
+    assert db.scalar(select(func.count()).select_from(TrainingBatch)) == batches_before
+    assert db.scalar(select(func.count()).select_from(TrainingSession)) == sessions_before >= 1
+    assert db.scalar(select(TrainingSession.title).where(TrainingSession.batch_id == batch.id)) == "Historical day 1"
+    assert db.scalar(select(AuditLog).where(AuditLog.action == "EMPLOYEES_ASSIGNED")) is not None
     assert admin.post("/admin/trainings", json={"title": "Still audited", "training_code": "AUD1"}).status_code == 200
     assert db.scalar(select(AuditLog).where(AuditLog.action == "TRAINING_CREATED")) is not None
 

@@ -1,6 +1,7 @@
 """Reports, scorecard and exports. TC-REP-*, TC-KIR-010, SC-2L-101, SC-2L-102."""
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -201,7 +202,13 @@ def test_scheduled_report_delivery_and_history(world, db, client_for):  # PRD-RE
     schedule = next(s for s in client.get("/reports/schedules").json()["data"] if s["id"] == created["id"])
     assert schedule["deliveries"][0]["status"] == "DELIVERED"
     notes = client.get("/me/notifications").json()["data"]
-    assert any(n["type"] == "REPORT_READY" for n in notes)
+    ready = [n for n in notes if n["type"] == "REPORT_READY"]
+    assert ready
+    # Audit B4: the link opens the Reports page that lists downloads (there is no /reports/downloads page).
+    assert {n["link"] for n in ready} == {"/lnd/reports"}
+    frontend_pages = Path(__file__).resolve().parents[2] / "frontend" / "src" / "app" / "(workspace)"
+    if frontend_pages.exists():
+        assert (frontend_pages / "lnd" / "reports" / "page.tsx").exists()
     export_id = schedule["deliveries"][0]["export_id"]
     content = client.get(f"/reports/exports/{export_id}/download").content
     assert b"E1" in content and b"Organisation" in content  # The delivered file keeps the owner's scope.
@@ -300,3 +307,193 @@ def test_employee_pages_do_not_query_once_per_training(world, db, client_for):
     add_trainings(["N4", "N5", "N6"])
     large = {path: statements_for(path) for path in ("/me/trainings", "/me/scorecard", "/me/dashboard")}
     assert large == small, (small, large)
+
+
+# ---------- Dates in the organisation timezone (audit B1) ----------
+# The test calendar is UTC, which hid these: in Asia/Kolkata a completion recorded for a past date is stored as local
+# midnight, the previous day in UTC.
+
+
+def _organisation_timezone(db, name: str = "Asia/Kolkata") -> None:
+    from app.models import WorkingCalendar
+
+    db.scalar(select(WorkingCalendar).where(WorkingCalendar.is_default)).timezone = name
+    db.commit()
+
+
+def _complete_on(world, client, training, local_date: str) -> None:
+    enrolment = world.enrol(world.employee, training)
+    response = client.post(f"/admin/enrolments/{enrolment.id}/completion", json={"completion_date": local_date})
+    assert response.status_code == 200, response.text
+
+
+def test_report_date_filters_and_dates_use_the_organisation_date(world, db, client_for):
+    _organisation_timezone(db)
+    admin = client_for(world.admin)
+    _complete_on(world, admin, world.training(), "2026-11-02")  # Stored as 2026-11-01 18:30 UTC.
+
+    same_day = rows_as_dicts(admin.get("/reports/compliance?date_from=2026-11-02&date_to=2026-11-02").json()["data"])
+    assert [r["Completed"] for r in same_day] == ["2026-11-02"]
+    assert rows_as_dicts(admin.get("/reports/compliance?date_from=2026-11-01&date_to=2026-11-01").json()["data"]) == []
+    pass_fail = rows_as_dicts(admin.get("/reports/pass-fail?date_from=2026-11-02").json()["data"])
+    assert [r["Completion Date"] for r in pass_fail] == ["2026-11-02"]
+
+
+def test_monthly_trend_counts_the_first_of_the_month_in_its_own_month(world, db, client_for):
+    _organisation_timezone(db)
+    admin = client_for(world.admin)
+    _complete_on(world, admin, world.training(), "2026-11-01")  # Stored as 2026-10-31 18:30 UTC.
+    months = [point["month"] for point in admin.get("/reports/organisation-summary").json()["data"]["trend"]]
+    assert months == ["2026-11"]
+    assert [p["month"] for p in admin.get("/admin/dashboard").json()["data"]["trend"]] == ["2026-11"]
+    assert [p["month"] for p in admin.get("/reports/analytics").json()["data"]["trend"]] == ["2026-11"]
+
+
+def test_employee_history_shows_submission_time_in_the_organisation_timezone(world, db, client_for):
+    _organisation_timezone(db)
+    obligation = world.complete(world.employee, world.training())
+    take(db, client_for(world.employee), obligation.id, 9)  # Submitted at NOW: 06:00 UTC, 11:30 in Asia/Kolkata.
+    report = client_for(world.admin).get("/reports/employee-history").json()["data"]
+    assert "Submitted (Asia/Kolkata)" in report["columns"] and "Submitted (UTC)" not in report["columns"]
+    rows = [r for r in rows_as_dicts(report) if r["Type"] == "Post-test"]
+    assert [r["Submitted (Asia/Kolkata)"] for r in rows] == ["2026-11-04 11:30"]
+
+
+# ---------- Report schedules: monthly anchor and downtime (audit B11) ----------
+
+def test_monthly_schedule_keeps_its_anchor_day_and_local_time():
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.modules.reports.router import next_run
+
+    ist = ZoneInfo("Asia/Kolkata")
+    jan31 = datetime(2027, 1, 31, 10, 0, tzinfo=ist).astimezone(UTC)
+    feb = next_run("MONTHLY", jan31, 31, ist)
+    mar = next_run("MONTHLY", feb, 31, ist)
+    assert [m.astimezone(ist).strftime("%Y-%m-%d %H:%M") for m in (feb, mar)] == ["2027-02-28 10:00", "2027-03-31 10:00"]
+    assert next_run("MONTHLY", datetime(2028, 1, 30, 6, 0, tzinfo=UTC), 30, UTC) == datetime(2028, 2, 29, 6, 0, tzinfo=UTC)  # Leap year.
+    assert next_run("MONTHLY", datetime(2026, 12, 15, 6, 0, tzinfo=UTC), 15, UTC) == datetime(2027, 1, 15, 6, 0, tzinfo=UTC)
+    assert next_run("WEEKLY", jan31, 31, ist) == jan31 + timedelta(days=7)
+
+
+def test_monthly_schedule_created_on_the_31st_returns_to_the_31st(world, db, client_for):
+    from datetime import UTC, datetime
+
+    from app.core import clock
+    from app.models import ReportSchedule
+    from app.modules.reports.router import run_due_schedules
+
+    fixture_data(world, db, client_for)
+    created_at = datetime(2027, 1, 31, 6, 0, tzinfo=UTC)
+    clock.freeze(created_at)
+    try:
+        schedule = client_for(world.admin).post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "MONTHLY"}).json()["data"]
+        assert schedule["next_run_at"] == "2027-02-28T06:00:00+00:00"
+        assert run_due_schedules(db, datetime(2027, 2, 28, 6, 0, tzinfo=UTC)) == 1
+        db.expire_all()
+        assert db.get(ReportSchedule, schedule["id"]).next_run_at == datetime(2027, 3, 31, 6, 0, tzinfo=UTC)  # Not 28 Mar.
+    finally:
+        clock.freeze(NOW)
+
+
+def test_downtime_skips_missed_runs_and_schedules_the_next_future_run(world, db, client_for):
+    from app.models import ReportDelivery, ReportSchedule
+    from app.modules.reports.router import run_due_schedules
+
+    fixture_data(world, db, client_for)
+    schedule = client_for(world.admin).post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).json()["data"]
+    assert schedule["next_run_at"] == (NOW + timedelta(days=7)).isoformat()
+    back_up = NOW + timedelta(days=30)  # Runs were due on days 7, 14, 21 and 28 while the scheduler was down.
+    assert run_due_schedules(db, back_up) == 1  # One delivery now, not four.
+    assert run_due_schedules(db, back_up) == 0
+    db.expire_all()
+    assert db.get(ReportSchedule, schedule["id"]).next_run_at == NOW + timedelta(days=35)  # Next future run, same weekday.
+    assert len(db.scalars(select(ReportDelivery).where(ReportDelivery.schedule_id == schedule["id"])).all()) == 1
+    assert run_due_schedules(db, NOW + timedelta(days=35)) == 1
+
+
+def test_download_of_an_export_whose_file_is_missing_is_a_404(world, db, client_for):
+    """Audit B13. The record outlives its file (storage moved or cleaned): a clear 404, not a server error."""
+    from app.core.config import get_settings
+    from app.models import FileArtifact, ReportExport
+
+    fixture_data(world, db, client_for)
+    client = client_for(world.admin)
+    export = client.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV"}).json()["data"]
+    record = db.get(ReportExport, export["id"])
+    (get_settings().storage_path / db.get(FileArtifact, record.artifact_id).storage_key).unlink()
+    response = client.get(f"/reports/exports/{export['id']}/download")
+    assert response.status_code == 404 and response.json()["error"]["code"] == "NOT_FOUND"
+    assert response.json()["error"]["message"] == "This export file is no longer available. Export the report again."
+
+
+# ---------- Schedule owners who lost access (audit B18) ----------
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [("account_disabled", "OWNER_ACCOUNT_DISABLED"), ("employee_inactive", "OWNER_EMPLOYEE_INACTIVE"), ("role_removed", "OWNER_NOT_AUTHORISED")],
+)
+def test_a_schedule_whose_owner_lost_access_generates_nothing(world, db, client_for, change, reason):
+    from sqlalchemy import delete, func
+
+    from app.models import FileArtifact, Notification, ReportDelivery, ReportExport, ReportSchedule, Role, UserAccount, UserRole
+    from app.modules.reports.router import run_due_schedules
+
+    fixture_data(world, db, client_for)
+    schedule = client_for(world.admin).post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).json()["data"]
+    account = db.scalar(select(UserAccount).where(UserAccount.employee_id == world.admin.id))
+    if change == "account_disabled":
+        account.account_status = "DISABLED"
+    elif change == "employee_inactive":
+        world.admin.employment_status = "INACTIVE"
+    else:
+        ld_admin = db.scalar(select(Role.id).where(Role.code == "LD_ADMIN"))
+        db.execute(delete(UserRole).where(UserRole.user_account_id == account.id, UserRole.role_id == ld_admin))
+    db.commit()
+    exports_before = db.scalar(select(func.count()).select_from(ReportExport))
+    files_before = db.scalar(select(func.count()).select_from(FileArtifact))
+
+    assert run_due_schedules(db, NOW + timedelta(days=8)) == 0
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(ReportExport)) == exports_before
+    assert db.scalar(select(func.count()).select_from(FileArtifact)) == files_before
+    deliveries = db.scalars(select(ReportDelivery).where(ReportDelivery.schedule_id == schedule["id"])).all()
+    assert [(d.status, d.error, d.export_id) for d in deliveries] == [("FAILED", reason, None)]
+    assert db.scalar(select(Notification).where(Notification.user_account_id == account.id, Notification.type == "REPORT_READY")) is None
+    assert db.get(ReportSchedule, schedule["id"]).next_run_at > NOW + timedelta(days=8)  # Claimed once, not retried every hour.
+    assert run_due_schedules(db, NOW + timedelta(days=8)) == 0
+
+
+# ---------- Report columns (approved: no Batch column in Compliance) ----------
+
+def test_every_report_row_matches_its_columns_and_batch_columns_are_where_approved(world, db, client_for):
+    """The Compliance report has no Batch column; Pass/Fail, Learning Gain and Employee History keep theirs, filled
+    from the assignment's batch. Every row of every report, on screen and in a CSV export, has one value per column."""
+    import csv
+    import io
+
+    from app.models import TrainingBatch
+
+    training = fixture_data(world, db, client_for)
+    batch_name = db.scalar(select(TrainingBatch.name).where(TrainingBatch.training_id == training.id))
+    admin = client_for(world.admin)
+    with_batch = {"pass-fail", "learning-gain", "employee-history"}
+    for code in CODES:
+        data = admin.get(f"/reports/{code}").json()["data"]
+        if code != "behaviour":  # Level 3 is switched off, so the Behaviour report has no rows to check.
+            assert data["rows"], code
+        assert all(len(row) == len(data["columns"]) for row in data["rows"]), code
+        if code == "compliance":
+            assert "Batch" not in data["columns"]
+        if code in with_batch:
+            assert "Batch" in data["columns"], code
+            assert {dict(zip(data["columns"], row, strict=True))["Batch"] for row in data["rows"]} == {batch_name}, code
+
+    export = admin.post("/reports/exports", json={"report_code": "compliance", "export_format": "CSV"}).json()["data"]
+    lines = list(csv.reader(io.StringIO(admin.get(f"/reports/exports/{export['id']}/download").content.decode("utf-8-sig"))))
+    header_at = next(i for i, line in enumerate(lines) if line and line[0] == "Employee")
+    header = lines[header_at]
+    assert "Batch" not in header
+    body = [line for line in lines[header_at + 1 :] if len(line) > 1]
+    assert body and all(len(line) == len(header) for line in body)

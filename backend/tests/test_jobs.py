@@ -36,15 +36,15 @@ def test_a_schedule_claimed_by_another_process_is_not_delivered_twice(world, db,
     later = NOW + timedelta(days=8)
     real_next_run = reports.next_run
 
-    def other_process_claims_first(cadence, after):
+    def other_process_claims_first(cadence, after, *anchor_and_tz):
         # Between this process reading the due schedule and claiming it, the other process claims and delivers it.
         other = database.session_factory()()
         row = other.get(ReportSchedule, created["id"])
         if row.next_run_at <= later:
-            row.next_run_at = real_next_run(cadence, row.next_run_at)
+            row.next_run_at = real_next_run(cadence, row.next_run_at, *anchor_and_tz)
             other.commit()
         other.close()
-        return real_next_run(cadence, after)
+        return real_next_run(cadence, after, *anchor_and_tz)
 
     monkeypatch.setattr(reports, "next_run", other_process_claims_first)
     assert reports.run_due_schedules(db, later) == 0

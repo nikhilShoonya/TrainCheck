@@ -247,28 +247,6 @@ export interface ReviewForm extends ReviewSummary {
   self_assessment?: ReviewForm["questions"] | null;
 }
 
-export interface TeamRow {
-  enrolment_id: string;
-  employee_id: string;
-  employee_name: string;
-  employee_code: string;
-  department: string | null;
-  location: string | null;
-  grade: string | null;
-  training_id: string;
-  training_title: string;
-  batch: string | null;
-  completed_at: string | null;
-  due_at: string | null;
-  assessment_state: string;
-  result: string;
-  first_score: number | null;
-  best_score: number | null;
-  latest_score: number | null;
-  attempts: number;
-  last_submitted_at: string | null;
-}
-
 export interface ReportData {
   code: string;
   title: string;

@@ -1,15 +1,16 @@
-"""Read-only audit log, the L&D dashboard and scoped search."""
+"""The L&D dashboard and scoped search. Audit events are still recorded by app.core.audit."""
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.core.clock import utcnow
 from app.core.db import get_db
-from app.core.deps import CurrentUser, require_admin, require_gate_clear, require_withdrawn
+from app.core.deps import CurrentUser, require_admin, require_gate_clear
 from app.core.enums import AssessmentType, EnrolmentStatus, ImportStatus, RoleCode, TrainingStatus
-from app.core.responses import iso, ok
+from app.core.responses import ok
 from app.core.routing import ReleasingRoute
-from app.models import AssessmentConfig, AuditLog, Employee, Enrolment, ImportJob, Training, UserAccount
+from app.models import AssessmentConfig, Employee, Enrolment, ImportJob, Training
+from app.modules.assessment.scheduling import load_calendar
 from app.modules.assessment.service import PoolData, pool_problem
 from app.modules.organisation.people import is_learner
 from app.modules.reports.data import departments_summary, load_rows, monthly_trend, summary
@@ -17,31 +18,6 @@ from app.modules.reports.data import departments_summary, load_rows, monthly_tre
 router = APIRouter(route_class=ReleasingRoute, tags=["Administration"])
 SEARCH_LIMIT = 20
 LIKE_ESCAPE = "!"
-
-
-# The Audit Logs reader is withdrawn from L&D Admin. Audit events are still recorded by app.core.audit.
-@router.get("/admin/audit-logs")
-def audit_logs(_: CurrentUser = Depends(require_withdrawn), db: Session = Depends(get_db), action: str = Query(default="", max_length=80), limit: int = Query(default=200, le=500)) -> dict:
-    query = select(AuditLog).options(selectinload(AuditLog.actor).selectinload(UserAccount.employee)).order_by(AuditLog.created_at.desc()).limit(limit)
-    if action:
-        query = query.where(AuditLog.action.ilike(f"%{action}%"))
-    return ok(
-        [
-            {
-                "id": str(a.id),
-                "created_at": iso(a.created_at),
-                "actor": a.actor.employee.full_name if a.actor else "System",
-                "action": a.action,
-                "target_type": a.target_type,
-                "target_id": a.target_id,
-                "reason": a.reason,
-                "before": a.before_summary,
-                "after": a.after_summary,
-                "request_id": a.request_id,
-            }
-            for a in db.scalars(query)
-        ]
-    )
 
 
 @router.get("/admin/dashboard")
@@ -72,7 +48,7 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
             "training_programmes": len(trainings),
             "summary": summary(rows),
             "departments": departments_summary(rows),
-            "trend": monthly_trend(rows, now),
+            "trend": monthly_trend(rows, now, load_calendar(db).tz),
             "recent_trainings": recent[:3],
             "completions_awaiting": sum(1 for r in rows if not r.enrolment.completion),
             "import_rows_need_review": sum(j.rejected_rows for j in open_imports),

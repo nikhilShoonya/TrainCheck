@@ -72,7 +72,7 @@ function handleAccessCodes(error: ApiError): void {
   if (error.code === "FEEDBACK_REQUIRED" && owed && !pathname.startsWith("/results/")) reloadAt(`/results/${owed}`);
 }
 
-async function send<T>(method: string, path: string, body?: unknown, form?: FormData, options: RequestOptions = {}): Promise<T> {
+async function send<T>(method: string, path: string, body?: unknown, form?: FormData, options: RequestOptions = {}, envelope = false): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -124,7 +124,7 @@ async function send<T>(method: string, path: string, body?: unknown, form?: Form
     }
     if (!isEnvelope(payload)) throw invalidResponse(response.status); // HTML, empty or malformed: not a success.
     if (method !== "GET") for (const listener of mutationListeners) listener(path);
-    return payload.data as T;
+    return (envelope ? payload : payload.data) as T;
   } finally {
     if (timer !== null) clearTimeout(timer);
     options.signal?.removeEventListener("abort", onAbort);
@@ -133,6 +133,8 @@ async function send<T>(method: string, path: string, body?: unknown, form?: Form
 
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => send<T>("GET", path, undefined, undefined, options),
+  /** A GET that also returns the envelope's meta (for example a page's has_more). */
+  getEnvelope: <T, M = Record<string, unknown>>(path: string, options?: RequestOptions) => send<{ data: T; meta: M }>("GET", path, undefined, undefined, options, true),
   post: <T>(path: string, body: unknown = {}, options?: RequestOptions) => send<T>("POST", path, body, undefined, options),
   put: <T>(path: string, body: unknown, options?: RequestOptions) => send<T>("PUT", path, body, undefined, options),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) => send<T>("PATCH", path, body, undefined, options),

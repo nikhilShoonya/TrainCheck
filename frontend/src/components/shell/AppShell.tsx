@@ -2,23 +2,31 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { Btn, Empty, ErrorPanel, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
-import { HINDI, HINGLISH, navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
-
-const LANGUAGE_KEY = "tc-language";
-const LANGUAGES = ["English", "Hindi", "Hinglish"] as const;
-const DICTIONARY: Record<string, Record<string, string>> = { Hindi: HINDI, Hinglish: HINGLISH };
+import { navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
 import { useQueryClient } from "@tanstack/react-query";
 import { useApi, useSession } from "@/lib/hooks";
 import { NAV_PREFETCH, prefetchPaths } from "@/lib/query";
 import type { RoleCode, User } from "@/lib/types";
 import { initials } from "@/lib/utils";
 
+/* Demo accounts' portraits, keyed by the synthetic demo employee codes. Only in demo mode: a real employee who happens
+   to have one of these codes sees their initials, never a stock demo face. */
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 const PORTRAITS: Record<string, string> = { E001: "employee", M001: "manager", A001: "admin", H001: "hr" };
+
+/* At this width and below the sidebar is an off-canvas drawer (reference.css). While it is closed it is moved off
+   screen, so it is made inert: its links must not be invisible keyboard stops (audit B20). */
+const MOBILE_NAV = "(max-width: 900px)";
+const subscribeMobileNav = (onChange: () => void) => {
+  const query = window.matchMedia(MOBILE_NAV);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+};
 
 export function Brand() {
   return (
@@ -30,7 +38,7 @@ export function Brand() {
 }
 
 function Portrait({ user }: { user: User }) {
-  const file = PORTRAITS[user.employee_code];
+  const file = DEMO_MODE ? PORTRAITS[user.employee_code] : undefined;
   return file ? <Art file={file} box="1420 10 45 48" className="profile-portrait" /> : <>{initials(user.full_name)}</>;
 }
 
@@ -86,24 +94,31 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
-  const [language, setLanguage] = useState("English");
-  const toast = useToast();
-  // The choice is kept in this browser. It is read after mount so the first render matches the server's HTML.
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(LANGUAGE_KEY);
-      // Reading browser storage after mount is the purpose of this effect.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (saved && (LANGUAGES as readonly string[]).includes(saved)) setLanguage(saved);
-    } catch {
-      /* The default language is used without storage. */
-    }
+  const mobileNav = useSyncExternalStore(subscribeMobileNav, () => window.matchMedia(MOBILE_NAV).matches, () => false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const sidebar = useRef<HTMLElement>(null);
+  /** Closes the drawer and returns focus to the button that opened it (Escape, the backdrop). */
+  const closeNav = useCallback(() => {
+    setNavOpen(false);
+    menuButton.current?.focus();
   }, []);
+  // Opening the drawer moves focus into it; Escape closes it and returns focus to the menu button.
+  useEffect(() => {
+    if (!navOpen || !mobileNav) return;
+    sidebar.current?.querySelector<HTMLElement>("a.nav-link")?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeNav();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen, mobileNav, closeNav]);
+  const toast = useToast();
   const [online, setOnline] = useState(true);
   const [search, setSearch] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   // From the shared cache: not refetched on every navigation, refreshed after changes such as mark-as-read.
-  const unread = useApi<unknown[]>(user ? "/me/notifications?unread_only=true&limit=50" : null).data?.length ?? 0;
+  // The exact count from the server (a limited list of unread items would stop counting at its limit).
+  const unread = useApi<{ unread: number }>(user ? "/me/notifications/unread-count" : null).data?.unread ?? 0;
   const queryClient = useQueryClient();
   /** Navigation intent: load the page's first data while the pointer or keyboard focus is on its link. */
   const prefetchFor = (href: string) => {
@@ -146,7 +161,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         event.preventDefault();
         searchInput.current?.focus();
       }
-      if (event.key === "Escape") setNavOpen(false);
     };
     const onConnection = () => setOnline(navigator.onLine);
     // Following a link while offline makes the browser replace the whole app with its own offline page.
@@ -173,7 +187,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   if (!user) return null;
   const role = user.primary_role;
   const items = navFor(role, user.features);
-  const label = (text: string) => DICTIONARY[language]?.[text] ?? text;
   const [praiseTitle, praiseLines] = SIDEBAR_COPY[role];
   const activeHref = [...items].sort((a, b) => b[0].length - a[0].length).find(([href]) => pathname === href || pathname.startsWith(`${href}/`))?.[0];
 
@@ -185,13 +198,13 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className={`workspace reference-workspace${collapsed ? " is-collapsed" : ""}${navOpen ? " nav-open" : ""}`} data-role={role}>
-      <aside className="sidebar" id="sidebar" aria-label={`${ROLE_LABEL[role]} workspace`}>
+      <aside className="sidebar" id="sidebar" ref={sidebar} aria-label={`${ROLE_LABEL[role]} workspace`} inert={mobileNav && !navOpen}>
         <Brand />
-        <nav aria-label="Main navigation" lang={language === "Hindi" ? "hi" : language === "Hinglish" ? "hi-Latn" : "en"}>
+        <nav aria-label="Main navigation">
           {items.map(([href, text, icon]) => (
-            <Link key={href} href={href} className={`nav-link${href === activeHref ? " active" : ""}`} aria-label={label(text)} title={label(text)} aria-current={href === activeHref ? "page" : undefined} onMouseEnter={() => prefetchFor(href)} onFocus={() => prefetchFor(href)}>
+            <Link key={href} href={href} className={`nav-link${href === activeHref ? " active" : ""}`} aria-label={text} title={text} aria-current={href === activeHref ? "page" : undefined} onMouseEnter={() => prefetchFor(href)} onFocus={() => prefetchFor(href)}>
               <Icon name={icon} />
-              <span>{label(text)}</span>
+              <span>{text}</span>
             </Link>
           ))}
         </nav>
@@ -216,14 +229,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           {/* The text is hidden while collapsed, so the label keeps the button named for screen readers. */}
           <Btn kind="text" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} aria-controls="sidebar" title={collapsed ? "Expand sidebar" : undefined} onClick={() => setCollapsed((c) => !c)}>
             <Icon name={collapsed ? "chevron" : "menu"} />
-            <span>{label(collapsed ? "Expand sidebar" : "Collapse sidebar")}</span>
+            <span>{collapsed ? "Expand sidebar" : "Collapse sidebar"}</span>
           </Btn>
         </div>
       </aside>
-      {navOpen ? <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} /> : null}
+      {navOpen ? <button className="nav-backdrop" aria-label="Close navigation" onClick={closeNav} /> : null}
       <div className="workspace-main">
         <header className="topbar">
-          <button className="icon-btn mobile-menu" aria-label="Open navigation" aria-expanded={navOpen} onClick={() => setNavOpen((o) => !o)}>
+          <button ref={menuButton} className="icon-btn mobile-menu" aria-label="Open navigation" aria-expanded={navOpen} aria-controls="sidebar" onClick={() => setNavOpen((o) => !o)}>
             <Icon name="menu" />
           </button>
           <span className="finvasia-wordmark" aria-label="Finvasia">
@@ -234,7 +247,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <label className="sr-only" htmlFor="global-query">
               Search trainings, reports or help
             </label>
-            <input ref={searchInput} id="global-query" name="query" placeholder={label("Search trainings, reports, or help…")} autoComplete="off" required />
+            <input ref={searchInput} id="global-query" name="query" placeholder="Search trainings, reports, or help…" autoComplete="off" required />
             <button type="button" aria-label="Focus search" onClick={() => searchInput.current?.focus()}>
               <kbd>⌘ K</kbd>
             </button>

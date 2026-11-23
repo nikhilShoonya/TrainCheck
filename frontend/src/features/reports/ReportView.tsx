@@ -14,7 +14,6 @@ interface FilterOptions {
   locations: Named[];
   trainings: Named[];
   trainers: Named[];
-  batches: Named[];
   grades: string[];
 }
 
@@ -47,7 +46,6 @@ export function FilterBar({ filters, onApply, showDates = true }: { filters: Fil
       <SelectField label="Location" name="location_id" placeholder="All locations" options={toOptions(o?.locations)} defaultValue={filters.location_id ?? ""} />
       <SelectField label="Training" name="training_id" placeholder="All training" options={toOptions(o?.trainings)} defaultValue={filters.training_id ?? ""} />
       <SelectField label="Trainer" name="trainer_id" placeholder="All trainers" options={toOptions(o?.trainers)} defaultValue={filters.trainer_id ?? ""} />
-      <SelectField label="Batch" name="batch_id" placeholder="All batches" options={toOptions(o?.batches)} defaultValue={filters.batch_id ?? ""} />
       <SelectField label="Employee grade" name="grade" placeholder="All grades" options={(o?.grades ?? []).map((g) => ({ value: g, label: g }))} defaultValue={filters.grade ?? ""} />
       <button className="btn secondary" type="submit">
         Apply filters
