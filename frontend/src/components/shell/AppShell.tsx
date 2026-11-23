@@ -99,14 +99,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       /* The default language is used without storage. */
     }
   }, []);
-  const chooseLanguage = (value: string) => {
-    setLanguage(value);
-    try {
-      localStorage.setItem(LANGUAGE_KEY, value);
-    } catch {
-      /* The choice still applies to this page. */
-    }
-  };
   const [online, setOnline] = useState(true);
   const [search, setSearch] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -248,15 +240,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             </button>
           </form>
           <div className="top-actions">
-            <label className="language-control">
-              <Icon name="globe" />
-              <span className="sr-only">Navigation language</span>
-              <select id="ui-language" aria-label="Navigation language" value={language} onChange={(e) => chooseLanguage(e.target.value)}>
-                {LANGUAGES.map((l) => (
-                  <option key={l}>{l}</option>
-                ))}
-              </select>
-            </label>
             <Link href="/notifications" className="notification-button icon-btn" aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}>
               <Icon name="bell" />
               {unread ? <span className="notification-dot" /> : null}
