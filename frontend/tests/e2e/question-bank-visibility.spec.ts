@@ -40,13 +40,13 @@ for (const testType of ["PRE_TEST", "POST_TEST"] as const) {
   });
 }
 
-test("empty Question Bank offers import, then shows only newly linked tests after refresh", async ({ context, page }) => {
+test("empty Question Bank has no import button, then shows only newly linked tests after refresh", async ({ context, page }) => {
   const cards: ReturnType<typeof card>[] = [];
   await mockApi(context, cards);
   await page.goto("/lnd/questions");
   await expect(page.getByText("No questions linked yet.", { exact: true })).toBeVisible();
   await expect(page.locator("article.question-card")).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Import Questions", exact: true })).toHaveAttribute("href", "/lnd/imports?type=QUESTIONS");
+  await expect(page.getByRole("link", { name: "Import Questions", exact: true })).toHaveCount(0);
   cards.push(card("POST_TEST", 2));
   await page.reload();
   await expect(page.locator("article.question-card")).toHaveCount(1);

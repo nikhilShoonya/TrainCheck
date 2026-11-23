@@ -724,6 +724,8 @@ class ImportJob(Base):
     # Question imports: the test the questions are for (PRE_TEST or POST_TEST), chosen with the training and
     # validated with the file. Null for completion imports and for question imports made before test types existed.
     test_type: Mapped[str | None] = mapped_column(String(10))
+    # Completed imports can be removed from Recent imports while retaining their source records.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     training: Mapped[Training | None] = relationship()
     rows: Mapped[list["ImportJobRow"]] = relationship(cascade="all, delete-orphan", order_by="ImportJobRow.row_number")
     __table_args__ = (CheckConstraint("test_type IS NULL OR test_type IN ('PRE_TEST', 'POST_TEST')", name="ck_import_jobs_test_type"),)

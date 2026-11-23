@@ -37,6 +37,12 @@ class OrgUnitIn(Strict):
     is_active: bool = True
 
 
+class FunctionIn(Strict):
+    code: str | None = Field(default=None, min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    is_active: bool = True
+
+
 class TrainerIn(Strict):
     name: str = Field(min_length=1, max_length=160)
     email: str | None = Field(default=None, max_length=254)
@@ -64,14 +70,15 @@ def unit_view(unit: Department | Function) -> dict:
     return {"id": str(unit.id), "code": unit.code, "name": unit.name, "is_active": unit.is_active}
 
 
-def _crud_units(path: str, model: type, label: str) -> None:
+def _crud_units(path: str, model: type, label: str, input_model: type[OrgUnitIn] | type[FunctionIn] = OrgUnitIn) -> None:
     @router.get(f"/{path}", name=f"list_{path}")
     def list_units(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
         return ok([unit_view(u) for u in db.scalars(select(model).order_by(model.name))])
 
     @router.post(f"/{path}", name=f"create_{path}")
-    def create_unit(body: OrgUnitIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-        unit = model(code=body.code.upper(), name=body.name, is_active=body.is_active)
+    def create_unit(body: input_model, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+        code = (body.code or f"FUNC-{uuid.uuid4().hex}").upper()
+        unit = model(code=code, name=body.name, is_active=body.is_active)
         db.add(unit)
         try:
             db.flush()
@@ -83,12 +90,14 @@ def _crud_units(path: str, model: type, label: str) -> None:
         return ok(unit_view(unit))
 
     @router.patch(f"/{path}/{{unit_id}}", name=f"update_{path}")
-    def update_unit(unit_id: uuid.UUID, body: OrgUnitIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    def update_unit(unit_id: uuid.UUID, body: input_model, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
         unit = db.get(model, unit_id)
         if unit is None:
             raise not_found()
         before = unit_view(unit)
-        unit.code, unit.name, unit.is_active = body.code.upper(), body.name, body.is_active
+        if body.code is not None:
+            unit.code = body.code.upper()
+        unit.name, unit.is_active = body.name, body.is_active
         try:
             db.flush()
         except IntegrityError as exc:
@@ -100,7 +109,7 @@ def _crud_units(path: str, model: type, label: str) -> None:
 
 
 _crud_units("departments", Department, "department")
-_crud_units("functions", Function, "function")
+_crud_units("functions", Function, "function", FunctionIn)
 
 
 @router.get("/locations")

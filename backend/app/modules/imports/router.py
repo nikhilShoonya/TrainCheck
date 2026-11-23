@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import record_audit
+from app.core.clock import utcnow
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin
@@ -82,7 +83,7 @@ ROW_STATUSES = ("VALID", "IMPORTED", "DUPLICATE", "CONFLICT", "INVALID")
 
 @router.get("")
 def list_jobs(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    jobs = db.scalars(select(ImportJob).options(selectinload(ImportJob.training)).order_by(ImportJob.created_at.desc()).limit(50)).all()
+    jobs = db.scalars(select(ImportJob).where(ImportJob.deleted_at.is_(None)).options(selectinload(ImportJob.training)).order_by(ImportJob.created_at.desc()).limit(50)).all()
     return ok([job_view(j, with_rows=False) for j in jobs])
 
 
@@ -153,7 +154,7 @@ def _job(db: Session, job_id: uuid.UUID, lock: bool = False) -> ImportJob:
     if lock and db.execute(select(ImportJob.id).where(ImportJob.id == job_id).with_for_update()).first() is None:
         raise not_found()
     job = db.scalar(select(ImportJob).options(selectinload(ImportJob.rows)).where(ImportJob.id == job_id).execution_options(populate_existing=True))
-    if job is None:
+    if job is None or job.deleted_at is not None:
         raise not_found()
     return job
 
@@ -225,10 +226,15 @@ def replace(
 @router.delete("/{job_id}")
 def delete(job_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     job = _job(db, job_id, lock=True)
-    if job.status not in service.UNAPPLIED_STATUSES:
-        raise conflict("IMPORT_ALREADY_PROCESSED", "A completed import is kept as the record of what it added and cannot be deleted.")
-    record_audit(db, user.id, "IMPORT_DELETED", "import_job", job.id, before={"file": job.file_name, "type": job.import_type, "status": job.status, "rows": job.total_rows})
-    db.delete(job)
+    history_only = job.status in (ImportStatus.COMPLETED, ImportStatus.COMPLETED_WITH_ERRORS)
+    if not history_only and job.status not in service.UNAPPLIED_STATUSES:
+        raise conflict("IMPORT_ALREADY_PROCESSED", "This import cannot be deleted while it is being processed.")
+    record_audit(db, user.id, "IMPORT_DELETED", "import_job", job.id, before={"file": job.file_name, "type": job.import_type, "status": job.status, "rows": job.total_rows}, after={"history_only": history_only})
+    if history_only:
+        # Preserve completion foreign keys, imported records and the original row outcomes.
+        job.deleted_at = utcnow()
+    else:
+        db.delete(job)
     db.commit()
     return ok({"deleted": True})
 

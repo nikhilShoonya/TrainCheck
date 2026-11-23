@@ -402,11 +402,13 @@ export function MyReview() {
 }
 
 export function MyScorecard() {
+  const { user } = useSession();
+  const behaviourOn = Boolean(user?.features?.behaviour); // Level 3 is outside the approved scope while off.
   const state = useApi<{ training: string; result: string; pre_test: number | null; first_score: number | null; best_score: number | null; test_score: number | null; feedback_score: number | null }[]>("/me/scorecard");
   if (state.loading && !state.data) return <Loading />;
   return (
     <>
-      <PageTitle eyebrow={EYEBROW} title="My Learning & Behaviour Scorecard" description="Your own evidence. Missing evidence stays visible." />
+      <PageTitle eyebrow={EYEBROW} title={behaviourOn ? "My Learning & Behaviour Scorecard" : "My Learning Scorecard"} description="Your own evidence. Missing evidence stays visible." />
       <section className="panel">
         <Loaded state={state}>
           {(rows) => (
@@ -426,7 +428,11 @@ export function MyScorecard() {
           )}
         </Loaded>
       </section>
-      <div className="notice">A passed quiz is evidence of learning, not proof of workplace behaviour change. Ratings do not determine an employment outcome.</div>
+      <div className="notice">
+        {behaviourOn
+          ? "A passed quiz is evidence of learning, not proof of workplace behaviour change. Ratings do not determine an employment outcome."
+          : "A passed quiz is evidence of learning. Scores and ratings do not determine an employment outcome."}
+      </div>
     </>
   );
 }

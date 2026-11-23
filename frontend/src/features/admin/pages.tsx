@@ -13,6 +13,7 @@ import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCo
 import { allShownSelected, filterPeople, toggleOne, toggleShown } from "@/features/admin/assignView";
 import { canSelectCompletion } from "@/features/admin/bulkCompletion";
 import { BulkCompletionDialog } from "@/features/admin/BulkCompletionDialog";
+import { TrainingActionsMenu } from "@/features/admin/TrainingActionsMenu";
 import { WaiveSelectedDialog } from "@/features/admin/WaiveSelectedDialog";
 import { canWaiveAssessment, type WaiverEmployee } from "@/features/admin/waiver";
 import { activeDepartments, assignmentCounts, assignmentsHref, confirmBlockedReason, createdMessage, departmentOptions, departmentShown, EMPLOYEE_COLUMNS, EMPLOYEE_FILE_TYPES, filterEmployeeList, findEmployee, isEmployeeId, isInactive, joiningShown, NO_TRAINING_ASSIGNED, PASSWORD_RULE, plural, previewSummary, rowProblems, STATUS_OPTIONS, type AddEmployeeMode, type EmployeeImportResult, type EmployeeListItem, type EmployeePreview } from "@/features/admin/employeeView";
@@ -223,7 +224,6 @@ function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin 
   const [scope, setScope] = useState(training?.target_scope ?? "COMMON");
   const save = async (form: FormData) => {
     const body = {
-      ...(training ? {} : { training_code: form.get("training_code") || null }),
       title: form.get("title"),
       description: form.get("description") || null,
       category: form.get("category") || null,
@@ -261,7 +261,7 @@ function TrainingForm({ training, onClose, onSaved }: { training: TrainingAdmin 
   );
   return (
     <DialogForm title={training ? "Edit training" : "Create training"} onClose={onClose} onSubmit={save} submitLabel="Save training" wide>
-      {training ? null : <TextField label="Training code (optional)" name="training_code" maxLength={40} />}
+      <TextField label="Training code" name="training_code" value={training?.training_code ?? ""} placeholder="Generated automatically when saved" readOnly />
       <TextField label="Training name *" name="title" required maxLength={200} defaultValue={training?.title} />
       <TextField label="Category / topic" name="category" maxLength={120} defaultValue={training?.category ?? ""} />
       <Field label="Description">
@@ -489,9 +489,10 @@ export function TrainingManagement() {
         <Loaded state={state}>
           {(rows) => (
             <DataTable
-              headers={["Training / Category", "Trainer", "Audience", "Status", "Assigned", "Completion", "Assessment", "Actions"]}
+              headers={["Training code", "Training / Category", "Trainer", "Audience", "Status", "Assigned", "Completion", "Assessment", "Actions"]}
               emptyTitle="No trainings match."
               rows={rows.map((t) => [
+                t.training_code,
                 <div key="t" data-sort={t.title}>
                   <strong>{t.title}</strong>
                   <small>{t.category}</small>
@@ -518,19 +519,11 @@ export function TrainingManagement() {
                     </small>
                   ) : null}
                 </div>,
-                <div className="row wrap" key="a">
-                  <Btn kind="text" onClick={() => setDetail(t.id)}>
-                    Details
-                  </Btn>
-                  <Btn kind="text" onClick={() => setForm({ training: t })}>
-                    Edit
-                  </Btn>
+                <div className="training-row-actions" key="a">
                   <Btn kind="text" tone={t.status === "ACTIVE" ? "danger" : "success"} onClick={() => setStatus(t)}>
                     {t.status === "ACTIVE" ? "Archive" : "Activate"}
                   </Btn>
-                  <Btn kind="text" tone="danger" onClick={() => setRemoving(t)}>
-                    Delete
-                  </Btn>
+                  <TrainingActionsMenu title={t.title} onDetails={() => setDetail(t.id)} onEdit={() => setForm({ training: t })} onDelete={() => setRemoving(t)} />
                 </div>,
               ])}
             />
@@ -582,7 +575,7 @@ export function TrainingManagement() {
 
 /* ---------- Departments, functions, trainers, competencies, calendar ---------- */
 
-function UnitTable({ title, path, label }: { title: string; path: string; label: string }) {
+function UnitTable({ title, path, label, showCode = true }: { title: string; path: string; label: string; showCode?: boolean }) {
   const state = useApi<OrgUnit[]>(path);
   const [edit, setEdit] = useState<{ unit: OrgUnit | null } | null>(null);
   const toast = useToast();
@@ -597,10 +590,10 @@ function UnitTable({ title, path, label }: { title: string; path: string; label:
       <Loaded state={state}>
         {(rows) => (
           <DataTable
-            headers={["Code", "Name", "Status", ""]}
+            headers={[...(showCode ? ["Code"] : []), "Name", "Status", ""]}
             emptyTitle={`No ${title.toLowerCase()} yet.`}
             rows={rows.map((u) => [
-              u.code,
+              ...(showCode ? [u.code] : []),
               u.name,
               <Badge key="s" status={u.is_active ? "ACTIVE" : "INACTIVE"} />,
               <Btn key="e" kind="text" onClick={() => setEdit({ unit: u })}>
@@ -616,14 +609,14 @@ function UnitTable({ title, path, label }: { title: string; path: string; label:
           submitLabel="Save"
           onClose={() => setEdit(null)}
           onSubmit={async (form) => {
-            const body = { code: form.get("code"), name: form.get("name"), is_active: form.has("is_active") };
+            const body = { ...(showCode ? { code: form.get("code") } : {}), name: form.get("name"), is_active: form.has("is_active") };
             if (edit.unit) await api.patch(`${path}/${edit.unit.id}`, body);
             else await api.post(path, body);
             toast("Saved.");
             void state.reload();
           }}
         >
-          <TextField label="Code *" name="code" required maxLength={40} defaultValue={edit.unit?.code} />
+          {showCode ? <TextField label="Code *" name="code" required maxLength={40} defaultValue={edit.unit?.code} /> : null}
           <TextField label="Name *" name="name" required maxLength={120} defaultValue={edit.unit?.name} />
           <label className="checkline">
             <input type="checkbox" name="is_active" defaultChecked={edit.unit?.is_active ?? true} /> Active
@@ -763,7 +756,7 @@ export function Organisation() {
     <>
       <PageTitle eyebrow={EYEBROW} title="Department and Function Management" description="Organisation dimensions used for training targeting, question categories and reporting." />
       <UnitTable title="Departments" path="/admin/departments" label="department" />
-      <UnitTable title="Functions" path="/admin/functions" label="function" />
+      <UnitTable title="Functions" path="/admin/functions" label="function" showCode={false} />
       <SimpleList
         title="Trainers"
         label="trainer"
@@ -2191,10 +2184,7 @@ function QuestionCards() {
           const linked = all.filter((card) => card.question_count > 0);
           const shown = filterTrainings(linked, search);
           if (!linked.length) return (
-            <>
-              <Empty title="No questions linked yet." hint="Import questions and choose their training and test type. A card appears once questions are linked." />
-              <div className="row"><BtnLink href="/lnd/imports?type=QUESTIONS" kind="primary">Import Questions</BtnLink></div>
-            </>
+            <Empty title="No questions linked yet." hint="Import questions and choose their training and test type. A card appears once questions are linked." />
           );
           return (
             <>
@@ -2827,7 +2817,7 @@ function ImportCentreInner() {
         <Loaded state={recent}>
           {(rows) => (
             <DataTable
-              headers={["File", "Type", "Training", "Test type", "Status", "Rows", "Accepted", "Rejected", "Uploaded (UTC)", ""]}
+              headers={["File", "Type", "Training", "Test type", "Status", "Rows", "Accepted", "Rejected", "Uploaded", "Actions"]}
               emptyTitle="No imports yet."
               emptyHint="Validate a file above to begin."
               rows={rows.map((j) => [
@@ -2839,21 +2829,19 @@ function ImportCentreInner() {
                 j.total_rows,
                 j.accepted_rows,
                 j.rejected_rows,
-                dateTime(j.created_at),
+                dateTimeIn(j.created_at, ORG_TIMEZONE, "—"),
                 <div className="row wrap" key="a">
                   <Btn kind="text" onClick={() => void api.get<ImportJob>(`/admin/imports/${j.id}`).then(showJob).catch((e: ApiError) => toast(e.message))}>
                     View
                   </Btn>
                   {UNAPPLIED_IMPORT.includes(j.status) ? (
-                    <>
-                      <Btn kind="text" onClick={() => setEditing(j)}>
-                        Edit
-                      </Btn>
-                      <Btn kind="text" tone="danger" onClick={() => setDeleting(j)}>
-                        Delete
-                      </Btn>
-                    </>
+                    <Btn kind="text" onClick={() => setEditing(j)}>
+                      Edit
+                    </Btn>
                   ) : null}
+                  <Btn kind="text" tone="danger" onClick={() => setDeleting(j)}>
+                    Delete
+                  </Btn>
                 </div>,
               ])}
             />
@@ -2905,12 +2893,12 @@ function ImportCentreInner() {
           title="Delete import?"
           danger
           confirmLabel="Delete import"
-          body={<p>{deleting.file_name} · {rows(deleting.total_rows)}. This removes the import and its validation results. Nothing was imported from it, so no questions or completions are affected.</p>}
+          body={<p>{deleting.file_name} · {rows(deleting.total_rows)}. This removes the entry from Recent imports. Imported questions, completions and assessment results are kept.</p>}
           onClose={() => setDeleting(null)}
           onConfirm={async () => {
             await api.del(`/admin/imports/${deleting.id}`);
             if (job?.id === deleting.id) setJob(null);
-            toast("Import deleted.");
+            toast("Import removed from Recent imports.");
             void recent.reload();
           }}
         />
@@ -2919,7 +2907,7 @@ function ImportCentreInner() {
   );
 }
 
-/** Imports that never applied anything. Only these can be edited or deleted; completed imports are the record of what was added. */
+/** Only imports that never applied anything can be edited. Completed entries can be removed from Recent imports. */
 const UNAPPLIED_IMPORT = ["READY", "CANCELLED", "FAILED"];
 
 /* ---------- Assessment configuration ---------- */

@@ -68,6 +68,13 @@ ol.import-steps{list-style:none;padding-left:0;margin-top:0;margin-bottom:12px}
 .tc-pool h3{margin-bottom:10px}
 .tc-pool .row{margin-top:12px}
 
+/* Training table: the status action stays visible; secondary actions use a top-layer popup. */
+.training-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:nowrap;white-space:nowrap}
+.training-actions-trigger{display:inline-grid;place-items:center;width:44px;height:44px;flex:none}
+.training-actions-menu[popover]{position:fixed;inset:auto;margin:0;padding:6px;width:176px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--text);box-shadow:0 8px 24px #0b152c26}
+.training-actions-menu:popover-open{display:flex;flex-direction:column;gap:2px}
+.training-actions-menu .btn{width:100%;min-height:44px;justify-content:flex-start;white-space:nowrap}
+
 /* Recharts tooltip */
 .tc-chart-tooltip{display:grid;gap:3px;background:#fff;border:1px solid #dce3e8;border-radius:7px;padding:8px 10px;font-size:13px;color:#0b152c;box-shadow:0 6px 20px #17263c1f}
 .tc-chart-tooltip i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}

@@ -352,7 +352,7 @@ def create_job(db: Session, import_type: ImportType, file_name: str, rows: list[
     return job
 
 
-# Imports that never applied anything. Only these can be edited or deleted; a completed import is the record of what was added.
+# Only unapplied imports can be edited or permanently deleted. Completed entries retain their source records when removed from history.
 UNAPPLIED_STATUSES = (ImportStatus.READY, ImportStatus.CANCELLED, ImportStatus.FAILED)
 
 

@@ -26,6 +26,7 @@ from app.models import (
     QuestionRevision,
     QuestionTrainingTag,
     Training,
+    TrainingCompletion,
     UserAccount,
     WorkingCalendar,
 )
@@ -310,6 +311,28 @@ def test_materials_batches_sessions_and_trainers(world, client_for):
     assert admin.post("/admin/functions", json={"code": "RISK", "name": "Risk again"}).status_code == 409
 
 
+def test_functions_generate_internal_codes_and_keep_them_when_edited(world, client_for):
+    admin = client_for(world.admin)
+    created = []
+    for name in ("Risk", "Recruitment"):
+        response = admin.post("/admin/functions", json={"name": name, "is_active": True})
+        assert response.status_code == 200, response.text
+        created.append(response.json()["data"])
+    assert created[0]["code"] != created[1]["code"]
+    assert all(unit["code"].startswith("FUNC-") and len(unit["code"]) <= 40 for unit in created)
+
+    original = created[0]
+    edited = admin.patch(f"/admin/functions/{original['id']}", json={"name": "Risk Operations", "is_active": False})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["data"] == {**original, "name": "Risk Operations", "is_active": False}
+
+    existing = world.functions["COMPLIANCE"]
+    edited = admin.patch(f"/admin/functions/{existing.id}", json={"name": "Compliance Operations"})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["data"]["code"] == "COMPLIANCE"
+    assert admin.post("/admin/departments", json={"name": "Missing code"}).status_code == 400
+
+
 # ---------- Question bank (SC-2L-104) ----------
 
 def question_body(**overrides):
@@ -496,6 +519,15 @@ def test_completion_import_is_idempotent(world, db, client_for):  # BR §4.5, PR
     admin.post(f"/admin/imports/{job['id']}/commit")
     assert db.scalar(select(func.count()).select_from(AssessmentObligation)) == 1
 
+    # Removing history preserves completion source links and does not permit duplicate completions.
+    assert admin.delete(f"/admin/imports/{job['id']}").json()["data"] == {"deleted": True}
+    db.expire_all()
+    assert db.get(ImportJob, job["id"]).deleted_at is not None
+    assert db.scalar(select(TrainingCompletion).where(TrainingCompletion.import_job_id == job["id"])) is not None
+    assert admin.get(f"/admin/imports/{job['id']}").status_code == 404
+    assert job["id"] not in {j["id"] for j in admin.get("/admin/imports").json()["data"]}
+    assert db.scalar(select(func.count()).select_from(AssessmentObligation)) == 1
+
     replay = upload(admin, "COMPLETIONS", "c.csv", text.encode()).json()["data"]
     assert replay["rows"][0]["status"] == "DUPLICATE"
     admin.post(f"/admin/imports/{replay['id']}/commit")
@@ -582,10 +614,19 @@ def test_unapplied_import_can_be_edited_and_deleted(world, db, client_for):
     assert db.scalar(select(func.count()).select_from(ImportJobRow).where(ImportJobRow.import_job_id == job["id"])) == 2  # Old rows replaced.
     assert db.scalar(select(func.count()).select_from(Question)) == 0  # Editing never imports.
 
-    # A completed import is the record of what it added: no edit, no delete.
+    # A completed import cannot be edited. Removing its history preserves imported questions and rows.
     assert admin.post(f"/admin/imports/{job['id']}/commit").json()["data"]["status"] == "COMPLETED"
     assert admin.post(f"/admin/imports/{job['id']}/replace", files={"file": ("q.csv", text)}, data={"training_id": str(right.id), "test_type": "POST_TEST"}).status_code == 409
-    assert admin.delete(f"/admin/imports/{job['id']}").status_code == 409
+    assert admin.delete(f"/admin/imports/{job['id']}").json()["data"] == {"deleted": True}
+    db.expire_all()
+    assert db.get(ImportJob, job["id"]).deleted_at is not None
+    assert db.scalar(select(func.count()).select_from(ImportJobRow).where(ImportJobRow.import_job_id == job["id"])) == 2
+    assert db.scalar(select(func.count()).select_from(Question)) == 2
+    assert db.scalar(select(func.count()).select_from(QuestionAnswerKey)) == 2
+    assert db.scalar(select(func.count()).select_from(QuestionTrainingTag)) == 2
+    assert job["id"] not in {j["id"] for j in admin.get("/admin/imports").json()["data"]}
+    assert admin.get(f"/admin/imports/{job['id']}").status_code == 404
+    assert admin.delete(f"/admin/imports/{job['id']}").status_code == 404
 
     # A cancelled preview can be deleted with its rows.
     other = upload(admin, "QUESTIONS", "q.csv", text, wrong.id).json()["data"]

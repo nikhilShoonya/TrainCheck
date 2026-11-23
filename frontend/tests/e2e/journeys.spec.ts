@@ -164,18 +164,25 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await signIn(page, ACCOUNTS.admin);
   await expect(page).toHaveURL(/\/lnd$/);
 
-  const code = `E2E-${Date.now()}`;
+  const title = `E2E Training ${Date.now()}`;
   await page.goto("/lnd/trainings");
   await page.getByRole("button", { name: "Create Training" }).click();
   const form = page.getByRole("dialog");
-  await form.locator('input[name="training_code"]').fill(code);
-  await form.locator('input[name="title"]').fill(`E2E Training ${code}`);
+  await expect(form.getByLabel("Training code", { exact: true })).toHaveAttribute("readonly", "");
+  await expect(form.getByLabel("Training code", { exact: true })).toHaveValue("");
+  await form.locator('input[name="title"]').fill(title);
+  const created = page.waitForResponse((response) => response.url().endsWith("/api/v1/admin/trainings") && response.request().method() === "POST");
   await form.getByRole("button", { name: "Save training" }).click();
+  const response = await created;
+  expect(response.ok()).toBeTruthy();
+  expect(response.request().postDataJSON()).not.toHaveProperty("training_code");
+  const code = (await response.json()).data.training_code as string;
+  expect(code).toMatch(/^TRN-[0-9A-F]{6}$/);
   await expect(form).toHaveCount(0);
 
   await page.goto("/lnd/imports");
   const trainingSelect = page.getByLabel("Select training *");
-  const draftLabel = `E2E Training ${code} (${code}) · Draft`;
+  const draftLabel = `${title} (${code}) · Draft`;
   await expect(trainingSelect.locator("option", { hasText: draftLabel })).toHaveCount(1); // Draft trainings are offered.
   await trainingSelect.selectOption({ label: draftLabel });
   await page.getByLabel("Test type *").selectOption("POST_TEST"); // Chosen explicitly; there is no default.
@@ -194,7 +201,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await page.locator('input[type="file"]').setInputFiles(file);
   await page.getByRole("button", { name: "Validate file" }).click();
   const preview = page.locator("#import-preview");
-  await expect(preview).toContainText(`Linked training: E2E Training ${code} (${code}) · Draft`);
+  await expect(preview).toContainText(`Linked training: ${title} (${code}) · Draft`);
   await expect(preview).toContainText("Test type: Post-test");
   await expect(preview.getByRole("link", { name: "Open in Question Bank" })).toHaveAttribute("href", /\/lnd\/questions\/[0-9a-f-]+\/post-test$/);
 
@@ -209,7 +216,7 @@ test("L&D manages training, imports questions and sees the two-section scorecard
   await page.getByRole("button", { name: "Validate file" }).click();
   await page.getByRole("button", { name: "Import 2 valid rows" }).click();
   await expect(page.locator("#import-summary")).toContainText("Import finished. 2 rows imported");
-  await expect(page.locator("#import-summary")).toContainText(`E2E Training ${code} (${code})`);
+  await expect(page.locator("#import-summary")).toContainText(`${title} (${code})`);
 
   await page.goto("/lnd/scorecards");
   await expect(page.getByRole("heading", { name: "Section 1 · Learning" })).toBeVisible();

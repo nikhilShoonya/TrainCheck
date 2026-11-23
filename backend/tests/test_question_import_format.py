@@ -503,7 +503,11 @@ def test_older_pending_previews_must_be_revalidated_and_history_stays_viewable(w
     history = admin.get(f"/admin/imports/{done.id}").json()["data"]
     assert (history["status"], history["needs_revalidation"], history["rows"][0]["record"]) == ("COMPLETED", False, "OLD-8")
     assert admin.get(f"/admin/imports/{done.id}/error-report").status_code == 200
-    assert admin.delete(f"/admin/imports/{done.id}").status_code == 409  # A completed import stays as the record.
+    assert admin.delete(f"/admin/imports/{done.id}").json()["data"] == {"deleted": True}
+    db.expire_all()
+    assert db.get(ImportJob, done.id).deleted_at is not None  # The source record is retained.
+    assert admin.get(f"/admin/imports/{done.id}").status_code == 404
+    assert str(done.id) not in {j["id"] for j in admin.get("/admin/imports").json()["data"]}
 
     edited = admin.post(f"/admin/imports/{pending.id}/replace", files={"file": ("new.csv", csv_file([row("New format?")]))}, data={"training_id": str(training.id), "test_type": "POST_TEST"}).json()["data"]
     assert edited["needs_revalidation"] is False and commit(admin, edited)["counts"]["IMPORTED"] == 1
