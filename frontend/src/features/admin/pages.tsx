@@ -627,9 +627,12 @@ function UnitTable({ title, path, label, showCode = true }: { title: string; pat
   );
 }
 
-function SimpleList({ title, path, label, fields, columns, rowOf }: { title: string; path: string; label: string; fields: ReactNode; columns: string[]; rowOf: (r: never) => ReactNode[] }) {
+/** A small master-data list with an Add dialog. With `editFields`, each row also gets an Edit dialog (PATCH to
+    `${path}/{id}`); the row's active status is sent back unchanged, and an emptied optional field is saved as blank. */
+function SimpleList({ title, path, label, fields, editFields, columns, rowOf }: { title: string; path: string; label: string; fields: ReactNode; editFields?: (r: never) => ReactNode; columns: string[]; rowOf: (r: never) => ReactNode[] }) {
   const state = useApi<never[]>(path);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{ row: never } | null>(null);
   const toast = useToast();
   return (
     <section className="panel">
@@ -639,7 +642,40 @@ function SimpleList({ title, path, label, fields, columns, rowOf }: { title: str
           <Icon name="plus" /> Add {label}
         </Btn>
       </div>
-      <Loaded state={state}>{(rows) => <DataTable headers={columns} emptyTitle={`No ${title.toLowerCase()} yet.`} rows={rows.map(rowOf)} />}</Loaded>
+      <Loaded state={state}>
+        {(rows) => (
+          <DataTable
+            headers={editFields ? [...columns, ""] : columns}
+            emptyTitle={`No ${title.toLowerCase()} yet.`}
+            rows={rows.map((r) =>
+              editFields
+                ? [
+                    ...rowOf(r),
+                    <Btn key="e" kind="text" onClick={() => setEditing({ row: r })}>
+                      Edit<span className="sr-only"> {(r as { name?: string }).name}</span>
+                    </Btn>,
+                  ]
+                : rowOf(r),
+            )}
+          />
+        )}
+      </Loaded>
+      {editing && editFields ? (
+        <DialogForm
+          title={`Edit ${label}`}
+          submitLabel="Save"
+          onClose={() => setEditing(null)}
+          onSubmit={async (form) => {
+            const row = editing.row as { id: string; is_active?: boolean };
+            const values = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v).trim() || null]));
+            await api.patch(`${path}/${row.id}`, { ...values, is_active: row.is_active ?? true });
+            toast("Saved.");
+            void state.reload();
+          }}
+        >
+          {editFields(editing.row)}
+        </DialogForm>
+      ) : null}
       {adding ? (
         <DialogForm
           title={`Add ${label}`}
@@ -769,6 +805,12 @@ export function Organisation() {
             <TextField label="Email" name="email" type="email" />
           </>
         }
+        editFields={(t: { name: string; email: string | null }) => (
+          <>
+            <TextField label="Name *" name="name" required maxLength={160} defaultValue={t.name} />
+            <TextField label="Email" name="email" type="email" maxLength={254} defaultValue={t.email ?? ""} />
+          </>
+        )}
       />
       <SimpleList
         title="Competencies and skills"
