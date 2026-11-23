@@ -45,7 +45,7 @@ test("the preview summary says nothing was saved and how many rows need correcti
 });
 
 test("rows show what was read, or what the file held when it could not be read", () => {
-  assert.equal(joiningShown(row()), "2026-11-19");
+  assert.equal(joiningShown(row()), "19-11-2026");
   assert.equal(joiningShown(row({ joining_date: null, joining_date_text: "31/02/2026" })), "31/02/2026");
   assert.equal(joiningShown(row({ joining_date: null, joining_date_text: "" })), "—");
   assert.equal(departmentShown(row()), "Operations (OPS)");

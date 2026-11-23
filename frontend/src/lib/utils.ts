@@ -2,29 +2,23 @@ export const percent = (value: number | null | undefined, missing = "—") => (v
 
 export const formatNumber = (value: number) => value.toFixed(1).replace(/\.0$/, "");
 
-/** The organisation's timezone. Dates are shown and chosen in it, never as the UTC date of a timestamp
-    (which is the previous day for India from 00:00 to 05:30). Matches the backend's working calendar. */
-export const ORG_TIMEZONE = process.env.NEXT_PUBLIC_ORG_TIMEZONE || "Asia/Kolkata";
+/** Human-visible dates always use India time. API timestamps and native input values keep their wire formats. */
+export const ORG_TIMEZONE = "Asia/Kolkata";
 const orgDate = new Intl.DateTimeFormat("en-CA", { timeZone: ORG_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" });
 
-/** YYYY-MM-DD in the organisation timezone. A plain date (no time) is returned as it is. */
+/** DD-MM-YYYY for display. Date-only values are calendar dates, never timezone-shifted. */
 export const day = (iso: string | null | undefined, missing = "Not recorded") => {
   if (!iso) return missing;
-  if (iso.length <= 10) return iso;
+  const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (plain) return `${plain[3]}-${plain[2]}-${plain[1]}`;
   const moment = new Date(iso);
-  return Number.isNaN(moment.getTime()) ? iso.slice(0, 10) : orgDate.format(moment);
+  if (Number.isNaN(moment.getTime())) return iso;
+  const p = partsIn(ORG_TIMEZONE, moment);
+  return `${p.day}-${p.month}-${p.year}`;
 };
 
-const orgLongDate = new Intl.DateTimeFormat("en-GB", { timeZone: ORG_TIMEZONE, day: "numeric", month: "short", year: "numeric" });
-
-/** "20 Nov 2026" in the organisation timezone, for cards. A plain YYYY-MM-DD date is shown as that calendar day. */
-export const longDay = (iso: string | null | undefined, missing = "Not recorded") => {
-  if (!iso) return missing;
-  const plain = /^\d{4}-\d{2}-\d{2}$/.test(iso);
-  const moment = new Date(plain ? `${iso}T12:00:00Z` : iso);
-  if (Number.isNaN(moment.getTime())) return day(iso, missing);
-  return plain ? new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }).format(moment) : orgLongDate.format(moment);
-};
+/** Cards use the same date format as tables. */
+export const longDay = day;
 
 /** Today's date in the organisation timezone, for date inputs (defaults, min and max). */
 export const todayInOrg = () => orgDate.format(new Date());
@@ -39,16 +33,18 @@ function partsIn(timezone: string, moment: Date): Record<string, string> {
   return Object.fromEntries(format.formatToParts(moment).map((p) => [p.type, p.value]));
 }
 
-/** A moment as local date and time with the timezone named, e.g. "2026-11-19 15:30 (Asia/Kolkata)". The timezone
-    is the one the server reports (the organisation's working calendar), falling back to ORG_TIMEZONE. */
-export const dateTimeIn = (iso: string | null | undefined, timezone?: string | null, missing = "Not recorded") => {
+/** India time, DD-MM-YYYY hh:mm AM/PM, with no timezone suffix. */
+export const dateTime = (iso: string | null | undefined, missing = "—") => {
   if (!iso) return missing;
   const moment = new Date(iso);
   if (Number.isNaN(moment.getTime())) return iso;
-  const zone = timezone || ORG_TIMEZONE;
-  const p = partsIn(zone, moment);
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} (${zone})`;
+  const p = partsIn(ORG_TIMEZONE, moment);
+  const hour = Number(p.hour);
+  return `${p.day}-${p.month}-${p.year} ${String(hour % 12 || 12).padStart(2, "0")}:${p.minute} ${hour < 12 ? "AM" : "PM"}`;
 };
+
+/** Kept for existing callers; server/calendar timezone never changes the India-only display. */
+export const dateTimeIn = (iso: string | null | undefined, _timezone?: string | null, missing = "Not recorded") => dateTime(iso, missing);
 
 /** Today (YYYY-MM-DD) and the current time (HH:MM) in a timezone, for date and time inputs. */
 export const nowIn = (timezone?: string | null, at: Date = new Date()) => {
@@ -56,7 +52,17 @@ export const nowIn = (timezone?: string | null, at: Date = new Date()) => {
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
 };
 
-export const dateTime = (iso: string | null | undefined, missing = "—") => (iso ? `${iso.slice(0, 16).replace("T", " ")} UTC` : missing);
+/** Chronological sorting for human date strings, including month/year boundaries and noon/midnight. */
+export const compareTableValues = (left: string, right: string) => {
+  const key = (text: string) => {
+    const m = /^(\d{2})-(\d{2})-(\d{4})(?: (\d{2}):(\d{2}) (AM|PM))?$/.exec(text);
+    if (!m) return null;
+    const hour = m[4] ? Number(m[4]) % 12 + (m[6] === "PM" ? 12 : 0) : 0;
+    return Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), hour, Number(m[5] ?? 0));
+  };
+  const a = key(left), b = key(right);
+  return a !== null && b !== null ? a - b : left.localeCompare(right, "en", { numeric: true });
+};
 
 export const firstName = (name: string) => name.split(" ")[0];
 
@@ -76,8 +82,8 @@ export const clock = (seconds: number) => {
 
 export const duration = (seconds: number) => `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
 
-/** "Good morning/afternoon/evening" for the viewer's local time. Only call it in the browser. */
+/** The greeting follows India time too, regardless of the device timezone. */
 export const greeting = (now: Date = new Date()) => {
-  const hour = now.getHours();
+  const hour = Number(partsIn(ORG_TIMEZONE, now).hour);
   return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 };

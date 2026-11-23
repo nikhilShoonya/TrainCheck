@@ -39,7 +39,7 @@ test("a scheduled assessment offers Start Test, which shows the countdown before
   const entry = cardEntry(card());
   assert.equal(entry.label, "Start Test");
   assert.equal(entry.href, "/assessment/start/o1");
-  assert.equal(entry.status, "Assessment opens 2026-11-19 15:30 (Asia/Kolkata)");
+  assert.equal(entry.status, "Assessment opens 19-11-2026 03:30 PM");
   assert.match(entry.note, /before the opening time shows a countdown/);
 });
 
@@ -54,7 +54,7 @@ test("without recorded completion there is no action, only the planned opening a
   assert.equal(entry.href, null);
   assert.equal(entry.label, null);
   assert.equal(entry.status, "Awaiting training completion");
-  assert.match(entry.note, /Planned opening 2026-11-21 10:00 \(Asia\/Kolkata\), only once your completion is recorded/);
+  assert.match(entry.note, /Planned opening 21-11-2026 10:00 AM, only once your completion is recorded/);
 });
 
 test("an unavailable assessment shows the backend's reason and offers nothing that would fail", () => {

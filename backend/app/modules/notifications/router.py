@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear
+from app.core.display import display_legacy_moments
 from app.core.errors import not_found
 from app.core.responses import iso, ok
 from app.core.routing import ReleasingRoute
@@ -23,7 +24,8 @@ class ReadIn(BaseModel):
 
 
 def view(n: Notification) -> dict:
-    return {"id": str(n.id), "type": n.type, "title": n.title, "message": n.message, "link": n.link, "read": n.read_at is not None, "created_at": iso(n.created_at)}
+    message = display_legacy_moments(n.message) if n.type in {"ASSESSMENT_SCHEDULED", "ASSESSMENT_RESCHEDULED"} else n.message
+    return {"id": str(n.id), "type": n.type, "title": n.title, "message": message, "link": n.link, "read": n.read_at is not None, "created_at": iso(n.created_at)}
 
 
 PAGE_SIZE = 100  # The default and the largest page: the list is always bounded.

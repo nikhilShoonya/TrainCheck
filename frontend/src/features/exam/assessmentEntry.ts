@@ -40,7 +40,7 @@ export function milestone(before: number, after: number): string | null {
 }
 
 export interface CardEntry {
-  /** A short status for the card, e.g. "Assessment opens 2026-11-19 15:30 (Asia/Kolkata)". */
+  /** A short status for the card, e.g. "Assessment opens 19-11-2026 03:30 PM". */
   status: string | null;
   /** An explanation under the status, or the server's reason when nothing can be done. */
   note: string | null;

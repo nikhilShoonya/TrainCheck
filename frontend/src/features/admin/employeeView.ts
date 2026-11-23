@@ -3,6 +3,8 @@
    (tests/unit/employeeView.test.mjs). The backend re-checks every rule and generates every password; nothing here
    can create an employee or see a password. */
 
+import { day } from "@/lib/utils";
+
 export type AddEmployeeMode = "single" | "bulk";
 
 export const EMPLOYEE_FILE_TYPES = ".csv,.xlsx";
@@ -71,7 +73,7 @@ export function rowProblems(row: EmployeePreviewRow): string {
 
 /** The joining date as the preview shows it: the date read, or what the file held when it could not be read. */
 export function joiningShown(row: EmployeePreviewRow): string {
-  return row.joining_date ?? (row.joining_date_text || "—");
+  return row.joining_date ? day(row.joining_date) : (row.joining_date_text || "—");
 }
 
 /** The department as the preview shows it: the department matched, or what the file held. */

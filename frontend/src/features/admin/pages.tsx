@@ -766,7 +766,7 @@ function CalendarPanel() {
               emptyTitle="No holidays set."
               emptyHint="Add dates that should not count as working days."
               rows={c.holidays.map((h) => [
-                h.date,
+                day(h.date),
                 h.name,
                 <Btn key="r" kind="text" tone="danger" onClick={() => void api.del(`/admin/calendar/holidays/${h.id}`).then(state.reload)}>
                   Remove
@@ -2967,11 +2967,13 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
   const check = pool.data ? checkPlan(pool.data, count, mix) : null;
   const [mode, setMode] = useState(current?.schedule_mode ?? "NEXT_WORKING_DAY");
   const post = kind === "POST_TEST";
-  // Dates and times are chosen in the organisation timezone (the backend's working calendar) and stored as UTC.
-  const zone = training.timezone ?? current?.timezone ?? ORG_TIMEZONE;
+  // Human inputs use India time, independently of the saved working-calendar timezone.
+  const zone = ORG_TIMEZONE;
+  const savedOpening = current?.schedule_at ? nowIn(zone, new Date(current.schedule_at)) : null;
   const today = nowIn(zone).date;
   // A saved date already passed stays selectable, so other settings can be changed without moving it.
-  const minDate = current?.schedule_date && current.schedule_date < today ? current.schedule_date : today;
+  const savedDate = savedOpening?.date ?? current?.schedule_date;
+  const minDate = savedDate && savedDate < today ? savedDate : today;
 
   const blocked = !pool.data ? null : pool.data.eligible === 0 ? "Add eligible questions to this training before saving." : !count ? "Enter the questions per attempt." : check && !check.ready ? "Fix the question pool problem shown above before saving." : null;
 
@@ -2996,6 +2998,7 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
             schedule_uses_working_days: form.has("schedule_uses_working_days"),
             schedule_date: post && mode === "FIXED_DATE" ? form.get("schedule_date") : null,
             schedule_time: post && mode === "FIXED_DATE" ? form.get("schedule_time") : null,
+            schedule_timezone: post && mode === "FIXED_DATE" ? ORG_TIMEZONE : null,
             apply_to_waiting: post && form.has("apply_to_waiting"),
             difficulty_mix: mix,
             show_explanations: form.has("show_explanations"),
@@ -3034,12 +3037,12 @@ function ConfigForm({ training, kind, onClose, onSaved }: { training: TrainingAd
           <div className="form-grid">
             <SelectField label="When the assessment becomes due" name="schedule_mode" value={mode} onChange={(e) => setMode(e.target.value)} options={Object.entries(SCHEDULE_LABEL).map(([value, label]) => ({ value, label }))} />
             {mode === "DELAY_DAYS" ? <TextField label="Delay in days *" name="schedule_delay_days" type="number" required min={1} max={365} defaultValue={current?.schedule_delay_days || 7} /> : null}
-            {mode === "FIXED_DATE" ? <TextField label="Assessment date *" name="schedule_date" type="date" required min={minDate} defaultValue={current?.schedule_date ?? ""} /> : null}
-            {mode === "FIXED_DATE" ? <TextField label={`Opening time (${zone}) *`} name="schedule_time" type="time" required defaultValue={current?.schedule_time ?? ""} /> : null}
+            {mode === "FIXED_DATE" ? <TextField label="Assessment date *" name="schedule_date" type="date" required min={minDate} defaultValue={savedDate ?? ""} /> : null}
+            {mode === "FIXED_DATE" ? <TextField label="Opening time *" name="schedule_time" type="time" required defaultValue={savedOpening?.time ?? current?.schedule_time ?? ""} /> : null}
           </div>
           {mode === "FIXED_DATE" ? (
             <p className="small">
-              The date and time are in the organisation timezone, <strong>{zone}</strong>. The assessment opens then for everyone whose completion is recorded by then; if completion is recorded later, it is due straight away. It cannot start earlier.
+              The assessment opens at this date and time for everyone whose completion is recorded by then; if completion is recorded later, it is due straight away. It cannot start earlier.
               {current?.schedule_at ? ` Saved: opens ${dateTimeIn(current.schedule_at, zone)}.` : ""}
             </p>
           ) : null}

@@ -34,16 +34,18 @@ async function openRules(page: Page) {
 test("L&D schedules a custom date and time; the employee sees it, and the assessment opens at that moment", async ({ page }) => {
   test.setTimeout(9 * 60_000);
   const opens = localIn(4); // Today (or tomorrow just before midnight), a few minutes from now: inside the countdown at step 5.
-  const shown = `${opens.date} ${opens.time} (${ZONE})`;
+  const [year, month, day] = opens.date.split("-");
+  const [hour, minute] = opens.time.split(":");
+  const shown = `${day}-${month}-${year} ${String(Number(hour) % 12 || 12).padStart(2, "0")}:${minute} ${Number(hour) < 12 ? "AM" : "PM"}`;
 
   // 1. L&D chooses "Custom date and time"; the form names the timezone.
   await signIn(page, ACCOUNTS.admin);
   let dialog = await openRules(page);
   await dialog.getByLabel("When the assessment becomes due").selectOption("FIXED_DATE");
-  await expect(dialog.getByLabel(`Opening time (${ZONE}) *`)).toBeVisible();
-  await expect(dialog.getByText(ZONE, { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel("Opening time *")).toBeVisible();
+  await expect(dialog).not.toContainText(ZONE);
   await dialog.getByLabel("Assessment date *").fill(opens.date);
-  await dialog.getByLabel(`Opening time (${ZONE}) *`).fill(opens.time);
+  await dialog.getByLabel("Opening time *").fill(opens.time);
   await expect(dialog.getByRole("checkbox", { name: /Also apply to employees already waiting/ })).toBeChecked();
   await dialog.getByRole("button", { name: "Save settings" }).click();
   await expect(dialog).toBeHidden();
@@ -53,7 +55,7 @@ test("L&D schedules a custom date and time; the employee sees it, and the assess
   dialog = await openRules(page);
   await expect(dialog.getByLabel("When the assessment becomes due")).toHaveValue("FIXED_DATE");
   await expect(dialog.getByLabel("Assessment date *")).toHaveValue(opens.date);
-  await expect(dialog.getByLabel(`Opening time (${ZONE}) *`)).toHaveValue(opens.time);
+  await expect(dialog.getByLabel("Opening time *")).toHaveValue(opens.time);
   await expect(dialog).toContainText(`Saved: opens ${shown}.`);
   await page.keyboard.press("Escape");
 

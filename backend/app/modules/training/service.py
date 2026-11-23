@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.config import get_settings
+from app.core.display import display_datetime
 from app.core.enums import (
     AssessmentType,
     AttemptStatus,
@@ -348,8 +349,8 @@ def schedule_post_test(db: Session, enrolment: Enrolment, completed_at: datetime
 
 
 def local_moment(calendar: CalendarView, moment: datetime) -> str:
-    """A moment as people read it: local date and time with the timezone named, e.g. 2026-11-19 15:30 (Asia/Kolkata)."""
-    return f"{moment.astimezone(calendar.tz):%Y-%m-%d %H:%M} ({calendar.timezone})"
+    """User-facing schedule messages always use India time; calendar calculations are unchanged."""
+    return display_datetime(moment)
 
 
 # Not started: no attempt of any status. A running attempt keeps its deadline; a submitted result never moves.

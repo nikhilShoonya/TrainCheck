@@ -2,6 +2,7 @@
 import uuid
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -13,6 +14,7 @@ from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin
+from app.core.display import INDIA_TIMEZONE, display_datetime
 from app.core.enums import (
     AssessmentType,
     AttendanceStatus,
@@ -140,6 +142,7 @@ class ConfigIn(Strict):
     schedule_uses_working_days: bool = False
     schedule_date: date | None = None  # FIXED_DATE only: the local date in the organisation timezone.
     schedule_time: time | None = None  # FIXED_DATE only: the local opening time (HH:MM) on that date.
+    schedule_timezone: Literal["Asia/Kolkata"] | None = None  # UI wall-clock inputs; omitted keeps legacy API behaviour.
     # Also apply these rules to employees already waiting (post-test only). Off: prospective only (BR §3.1).
     apply_to_waiting: bool = False
     difficulty_mix: dict[Difficulty, int] | None = None
@@ -505,15 +508,16 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
         if body.schedule_date is None:
             raise validation("Choose the date the assessment opens.")
         if body.schedule_time is None:
-            raise validation(f"Choose the time the assessment opens ({calendar.timezone}).")
+            raise validation("Choose the time the assessment opens.")
         try:
-            schedule_at = calendar.to_utc(body.schedule_date, body.schedule_time)
+            input_calendar = CalendarView(INDIA_TIMEZONE, [], set()) if body.schedule_timezone else calendar
+            schedule_at = input_calendar.to_utc(body.schedule_date, body.schedule_time)
         except ValueError as exc:
-            raise validation(f"That time does not exist in {calendar.timezone} (the clocks change then). Choose another time.") from exc
+            raise validation("That opening time does not exist. Choose another time.") from exc
         schedule_date = body.schedule_date
         unchanged = current is not None and current.schedule_mode == ScheduleMode.FIXED_DATE and fixed_instant(calendar, current) == schedule_at
         if schedule_at < now and not unchanged:  # Re-saving other settings keeps an opening moment already passed.
-            raise validation(f"That date and time has passed. It is now {now.astimezone(calendar.tz):%Y-%m-%d %H:%M} in {calendar.timezone}. Choose a later time.")
+            raise validation(f"That date and time has passed. It is now {display_datetime(now)}. Choose a later time.")
     mix = {k.value: v for k, v in body.difficulty_mix.items()} if body.difficulty_mix else None
     if mix and (any(v < 0 for v in mix.values()) or sum(mix.values()) != body.question_count):
         raise validation("Difficulty counts must total the questions per attempt.")
@@ -883,4 +887,3 @@ def start_retraining_cycle(obligation_id: uuid.UUID, body: ReasonIn, user: Curre
     record_audit(db, user.id, "RETRAINING_CYCLE_STARTED", "assessment_obligation", new_cycle.id, reason=body.reason, before={"cycle": obligation.cycle_number}, after={"cycle": new_cycle.cycle_number})
     db.commit()
     return ok({"obligation_id": str(new_cycle.id), "cycle_number": new_cycle.cycle_number})
-

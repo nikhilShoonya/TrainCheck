@@ -7,7 +7,7 @@ import { Modal } from "@/components/ui/dialog";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import type { Named, ReportData } from "@/lib/types";
-import { day } from "@/lib/utils";
+import { dateTime, day } from "@/lib/utils";
 
 interface FilterOptions {
   departments: Named[];
@@ -200,14 +200,14 @@ export function ReportsHub() {
         <Loaded state={exportsState}>
           {(rows) => (
             <DataTable
-              headers={["Report", "Format", "Rows", "Generated (UTC)", ""]}
+              headers={["Report", "Format", "Rows", "Generated", ""]}
               emptyTitle="No exports yet."
               emptyHint="Use CSV, Excel or PDF above."
               rows={rows.map((r) => [
                 r.report_code,
                 r.export_format,
                 r.row_count,
-                r.created_at.slice(0, 16).replace("T", " "),
+                dateTime(r.created_at),
                 <Btn key={r.id} kind="text" tone="data" onClick={() => downloadFile(`/reports/exports/${r.id}/download`, r.file_name).catch((e: ApiError) => toast(e.message))}>
                   Download
                 </Btn>,
@@ -221,15 +221,15 @@ export function ReportsHub() {
         <Loaded state={schedules}>
           {(rows) => (
             <DataTable
-              headers={["Report", "Cadence", "Format", "Next run (UTC)", "Last delivery", ""]}
+              headers={["Report", "Cadence", "Format", "Next run", "Last delivery", ""]}
               emptyTitle="No schedules yet."
               emptyHint="Open a report and choose Schedule."
               rows={rows.map((s) => [
                 s.report_code,
                 s.cadence === "WEEKLY" ? "Weekly" : "Monthly",
                 s.export_format,
-                s.is_active ? s.next_run_at.slice(0, 16).replace("T", " ") : "Stopped",
-                s.deliveries[0] ? `${s.deliveries[0].status} · ${day(s.deliveries[0].run_at)}` : "None yet",
+                s.is_active ? dateTime(s.next_run_at) : "Stopped",
+                s.deliveries[0] ? <span key="delivery" data-sort={s.deliveries[0].run_at}>{s.deliveries[0].status} · {day(s.deliveries[0].run_at)}</span> : "None yet",
                 s.is_active ? (
                   <Btn key={s.id} kind="text" tone="danger" onClick={() => void stop(s.id)}>
                     Stop

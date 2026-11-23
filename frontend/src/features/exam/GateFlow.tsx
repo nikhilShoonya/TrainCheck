@@ -9,7 +9,7 @@ import { Btn, ErrorPanel, Loading, Metrics } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
 import type { AccessState, AttemptView } from "@/lib/types";
-import { clock, firstName, greeting } from "@/lib/utils";
+import { clock, dateTime, firstName, greeting } from "@/lib/utils";
 import { ExamView } from "./ExamView";
 import { enterFullscreen, isFullscreen, runSystemCheck, SYSTEM_CHECK_COUNT, systemCheckPassed, type Check } from "./monitor";
 
@@ -208,7 +208,7 @@ function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStar
         </div>
         <p className="small">
           Checks test this browser&apos;s features and make a few small requests to TrainCheck. No speed test is run.
-          {checkedAt ? ` Last checked at ${checkedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.` : ""}
+          {checkedAt ? ` Last checked at ${dateTime(checkedAt.toISOString())}.` : ""}
         </p>
       </Stage>
     );

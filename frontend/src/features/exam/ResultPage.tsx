@@ -177,7 +177,7 @@ export function ResultPage() {
               <ol>
                 {r.violations.map((v) => (
                   <li key={v.number}>
-                    <span>{new Date(v.occurred_at).toLocaleTimeString()}</span>
+                    <span>{dateTime(v.occurred_at)}</span>
                     {VIOLATION_LABELS[v.type] ?? v.type}
                     {v.signals.length > 1 ? <small> ({v.signals.length} browser signals, counted once)</small> : null}
                   </li>

@@ -9,7 +9,7 @@ import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
 import { browserStorage, onPendingAnswersRevoked, pendingStore, STORAGE_PREFIX } from "@/lib/pendingAnswers";
 import type { AttemptView } from "@/lib/types";
-import { clock } from "@/lib/utils";
+import { clock, dateTime } from "@/lib/utils";
 import { answerSender } from "./answerSave";
 import { AnswerSync, loadFinalResult, RESULT_BUDGET_MS, type FlushOutcome, type SyncSnapshot } from "./answerSync";
 import { enterFullscreen, exitFullscreen, isFullscreen, startMonitor, VIOLATION_LABELS, type ViolationType } from "./monitor";
@@ -845,7 +845,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
               <Icon name="alert" /> Violation {warning.number} of {warning.limit}
             </p>
             <p>
-              <strong>{VIOLATION_LABELS[warning.type]}</strong> at {warning.at.toLocaleTimeString()}.
+              <strong>{VIOLATION_LABELS[warning.type]}</strong> at {dateTime(warning.at.toISOString())}.
             </p>
             <p>{warning.number === warning.limit - 1 ? "One more violation will submit your assessment automatically with the answers saved so far." : "Stay on this tab in full screen until you submit. Each further violation is counted."}</p>
             <p className="small">Your saved answers are safe. Violations do not change your score.</p>

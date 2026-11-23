@@ -10,6 +10,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_gate_clear
+from app.core.display import india_date
 from app.core.enums import AssessmentType, ObligationStatus, ResultStatus, ReviewerType, ScheduleMode
 from app.core.responses import display_percent, iso, ok
 from app.core.routing import ReleasingRoute
@@ -150,7 +151,7 @@ def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Dep
     for r in rows:
         if r.obligation and r.obligation.due_at and not r.post_attempts and r.obligation.due_at > now:
             calendar.append({"date": iso(r.obligation.due_at), "title": r.enrolment.training.title, "tag": "Assessment", "link": "/employee/assessments"})
-        if r.enrolment.batch and r.enrolment.batch.start_date and r.enrolment.batch.start_date >= now.date():
+        if r.enrolment.batch and r.enrolment.batch.start_date and r.enrolment.batch.start_date >= india_date(now):
             calendar.append({"date": r.enrolment.batch.start_date.isoformat(), "title": f"{r.enrolment.batch.name} · {r.enrolment.training.title}", "tag": "Training session", "link": "/employee/trainings"})
     for review in reviews:
         if review.submitted_at is None and review.cycle.due_at >= now:

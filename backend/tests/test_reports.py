@@ -333,10 +333,10 @@ def test_report_date_filters_and_dates_use_the_organisation_date(world, db, clie
     _complete_on(world, admin, world.training(), "2026-11-02")  # Stored as 2026-11-01 18:30 UTC.
 
     same_day = rows_as_dicts(admin.get("/reports/compliance?date_from=2026-11-02&date_to=2026-11-02").json()["data"])
-    assert [r["Completed"] for r in same_day] == ["2026-11-02"]
+    assert [r["Completed"] for r in same_day] == ["02-11-2026"]
     assert rows_as_dicts(admin.get("/reports/compliance?date_from=2026-11-01&date_to=2026-11-01").json()["data"]) == []
     pass_fail = rows_as_dicts(admin.get("/reports/pass-fail?date_from=2026-11-02").json()["data"])
-    assert [r["Completion Date"] for r in pass_fail] == ["2026-11-02"]
+    assert [r["Completion Date"] for r in pass_fail] == ["02-11-2026"]
 
 
 def test_monthly_trend_counts_the_first_of_the_month_in_its_own_month(world, db, client_for):
@@ -354,9 +354,9 @@ def test_employee_history_shows_submission_time_in_the_organisation_timezone(wor
     obligation = world.complete(world.employee, world.training())
     take(db, client_for(world.employee), obligation.id, 9)  # Submitted at NOW: 06:00 UTC, 11:30 in Asia/Kolkata.
     report = client_for(world.admin).get("/reports/employee-history").json()["data"]
-    assert "Submitted (Asia/Kolkata)" in report["columns"] and "Submitted (UTC)" not in report["columns"]
+    assert "Submitted" in report["columns"] and not any("Submitted (" in column for column in report["columns"])
     rows = [r for r in rows_as_dicts(report) if r["Type"] == "Post-test"]
-    assert [r["Submitted (Asia/Kolkata)"] for r in rows] == ["2026-11-04 11:30"]
+    assert [r["Submitted"] for r in rows] == ["04-11-2026 11:30 AM"]
 
 
 # ---------- Report schedules: monthly anchor and downtime (audit B11) ----------

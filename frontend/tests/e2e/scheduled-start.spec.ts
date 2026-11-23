@@ -240,7 +240,7 @@ test.describe("automatic countdown with a manual assessment start (mocked API)",
     await signInMocked(page);
     await expect(page).toHaveURL(/\/assessment\/start\/o1$/);
     await expect(banner(page).getByRole("heading", { level: 1 })).toHaveText(/Your assessment opens in 0[23]:\d\d/);
-    await expect(banner(page)).toContainText("Opens 2026-11-19 15:30 (Asia/Kolkata)");
+    await expect(banner(page)).toContainText("Opens 19-11-2026 03:30 PM");
     await advance(page, world, 60_000);
     await expect(banner(page).getByRole("heading", { level: 1 })).toHaveText(/opens in 0[12]:\d\d/);
     await expect(page.locator(".exam-option, .exam-timer")).toHaveCount(0);
@@ -331,7 +331,7 @@ test.describe("automatic countdown with a manual assessment start (mocked API)",
     await expect(banner(page)).toContainText("03:00");
     world.dueAt = OPENS + 2 * 60 * MIN;
     await advance(page, world, 16_000);
-    await expect(page.getByText("Opens 2026-11-19 17:30 (Asia/Kolkata)")).toBeVisible();
+    await expect(page.getByText("Opens 19-11-2026 05:30 PM")).toBeVisible();
     await expect(page.getByRole("link", { name: /Back to My Trainings/ })).toBeVisible();
     await advance(page, world, 3 * MIN);
     await expect(page.getByRole("heading", { name: "Assessment instructions" })).toHaveCount(0);

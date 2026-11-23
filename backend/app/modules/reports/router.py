@@ -15,6 +15,7 @@ from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.db import get_db
 from app.core.deps import CurrentUser, require_admin, require_gate_clear
+from app.core.display import filename_stamp
 from app.core.enums import AccountStatus, Cadence, DeliveryStatus, EmploymentStatus, EnrolmentStatus, ExportFormat, ExportStatus, ReportCode, RoleCode
 from app.core.errors import forbidden, not_found, validation
 from app.core.ratelimit import expensive
@@ -206,7 +207,7 @@ def run_export(db: Session, user: CurrentUser, code: ReportCode, fmt: ExportForm
     report = BUILDERS[code](db, load_rows(db, [user.employee_id], filters)) if own_record else build_report(db, user, code, filters)
     now = utcnow()
     content = exports.RENDERERS[fmt](report, filters.stored(), now, scope_label(user))
-    file_name = f"traincheck-{code.value}-{now.strftime('%Y%m%d-%H%M')}.{fmt.value.lower()}"
+    file_name = f"traincheck-{code.value}-{filename_stamp(now)}.{fmt.value.lower()}"
     artifact = exports.store_file(db, user.id, file_name, content, exports.CONTENT_TYPES[fmt], "REPORT_EXPORT")
     record = ReportExport(owner_user_id=user.id, report_code=code, export_format=fmt, filters=filters.stored(), status=ExportStatus.READY, row_count=len(report.rows), artifact_id=artifact.id, created_at=now)
     db.add(record)

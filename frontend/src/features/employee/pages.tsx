@@ -269,7 +269,7 @@ export function MyTrainings() {
 }
 
 /** The next step for one assessment. After a failure the next attempt waits for the refresher and L&D approval.
-    Moments are shown as local date and time in the organisation timezone, which is named. */
+    Moments are shown in India time with the shared date and AM/PM format. */
 function nextDue(c: TrainingCard): string {
   const when = (iso: string) => dateTimeIn(iso, c.timezone);
   if (["Refresher required", "Waiting for L&D approval"].includes(c.assessment_state)) return c.assessment_state;
@@ -296,7 +296,7 @@ export function MyAssessments() {
               rows={cards.map((c) => [
                 c.title,
                 day(c.completed_at),
-                nextDue(c),
+                <span key="due" data-sort={c.due_at ?? c.planned_at ?? ""}>{nextDue(c)}</span>,
                 c.result,
                 c.attempts,
                 c.latest_attempt_id ? (

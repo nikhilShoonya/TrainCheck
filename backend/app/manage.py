@@ -35,6 +35,7 @@ from app.core.audit import record_audit
 from app.core.clock import utcnow
 from app.core.config import get_settings
 from app.core.db import Base, session_factory
+from app.core.display import india_date
 from app.core.enums import AccountStatus, EmploymentStatus, RoleCode
 from app.core.security import hash_password, validate_password_strength, verify_password
 from app.models import AuditLog, CalendarHoliday, Department, Employee, Function, Location, ManagerAssignment, Role, UserAccount, UserRole, UserSession, WorkingCalendar
@@ -131,7 +132,7 @@ def import_employees(db: Session, rows: list[dict[str, str]]) -> ImportResult:
     if result.errors:
         return result
 
-    today = utcnow().date()
+    today = india_date(utcnow())
     people: dict[str, Employee] = {}
     for code, email, row, department, function, location, wanted, _ in parsed:
         employee = db.scalar(select(Employee).where(func.upper(Employee.employee_code) == code))

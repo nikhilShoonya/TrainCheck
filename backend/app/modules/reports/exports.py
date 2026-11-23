@@ -15,6 +15,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.display import display_datetime, display_filters
 from app.core.enums import ExportFormat
 from app.models import FileArtifact
 from app.modules.reports.catalogue import Report
@@ -39,9 +40,9 @@ def safe_text(value: object) -> object:
 def _preamble(report: Report, filters: dict, generated_at: datetime, scope: str) -> list[list[str]]:
     return [
         [report.title],
-        ["Generated (UTC)", generated_at.strftime("%Y-%m-%d %H:%M")],
+        ["Generated", display_datetime(generated_at)],
         ["Scope", scope],
-        ["Filters", "; ".join(f"{k}={v}" for k, v in filters.items()) or "None"],
+        ["Filters", display_filters(filters)],
         ["Rows", str(len(report.rows))],
         [],
     ]
@@ -88,8 +89,8 @@ def render_pdf(report: Report, filters: dict, generated_at: datetime, scope: str
     header = styles["BodyText"].clone("header", fontSize=7, leading=8.5, textColor=colors.white, fontName="Helvetica-Bold")
     story = [
         Paragraph(_xml(report.title), styles["Title"]),
-        Paragraph(_xml(f"Generated {generated_at.strftime('%Y-%m-%d %H:%M')} UTC · Scope: {scope} · Rows: {len(report.rows)}"), styles["BodyText"]),
-        Paragraph(_xml("Filters: " + ("; ".join(f"{k}={v}" for k, v in filters.items()) or "None")), styles["BodyText"]),
+        Paragraph(_xml(f"Generated {display_datetime(generated_at)} · Scope: {scope} · Rows: {len(report.rows)}"), styles["BodyText"]),
+        Paragraph(_xml("Filters: " + display_filters(filters)), styles["BodyText"]),
         Spacer(1, 4 * mm),
     ]
     width = (landscape(A4)[0] - 24 * mm) / max(len(report.columns), 1)

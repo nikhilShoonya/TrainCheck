@@ -166,13 +166,13 @@ test.describe("assessment entry from My Trainings (mocked API)", () => {
     await expect(titles).toHaveText([TITLE, "Synthetic Data Protection"]); // The server's pending-first order is kept.
 
     const scheduled = page.locator("article.course-card", { hasText: TITLE });
-    await expect(scheduled).toContainText("Assessment opens 2026-11-19 15:30 (Asia/Kolkata)");
+    await expect(scheduled).toContainText("Assessment opens 19-11-2026 03:30 PM");
     await expect(scheduled).toContainText("Selecting Start Test before the opening time shows a countdown");
     await expect(scheduled.getByRole("link", { name: "Start Test" })).toHaveAttribute("href", "/assessment/start/o1");
 
     const awaiting = page.locator("article.course-card", { hasText: "Synthetic Data Protection" });
     await expect(awaiting).toContainText("Awaiting training completion");
-    await expect(awaiting).toContainText("Planned opening 2026-11-21 10:00 (Asia/Kolkata), only once your completion is recorded");
+    await expect(awaiting).toContainText("Planned opening 21-11-2026 10:00 AM, only once your completion is recorded");
     await expect(awaiting.getByRole("link", { name: /Start Test|Resume Test/ })).toHaveCount(0);
   });
 
@@ -180,7 +180,7 @@ test.describe("assessment entry from My Trainings (mocked API)", () => {
     const world = newWorld();
     await openWaiting(context, page, world);
     await expect(countdownHeading(page)).toContainText("00:10:00");
-    await expect(page.getByText("Opens 2026-11-19 15:30 (Asia/Kolkata)")).toBeVisible();
+    await expect(page.getByText("Opens 19-11-2026 03:30 PM")).toBeVisible();
     // The time is part of the heading's accessible name, not only its visible text.
     await expect(page.getByRole("heading", { name: "Your assessment opens in 00:10:00", exact: true })).toBeVisible();
     await advance(page, world, 60_000);
@@ -260,7 +260,7 @@ test.describe("assessment entry from My Trainings (mocked API)", () => {
       document.dispatchEvent(new Event("visibilitychange"));
       window.dispatchEvent(new Event("focus"));
     });
-    await expect(page.getByText("Opens 2026-11-20 10:00 (Asia/Kolkata)")).toBeVisible();
+    await expect(page.getByText("Opens 20-11-2026 10:00 AM")).toBeVisible();
     await expect(countdownHeading(page)).toContainText("18:39:54");
     await expect(page.locator(".assessment-waiting").getByRole("status")).toContainText("The opening time changed");
   });

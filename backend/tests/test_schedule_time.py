@@ -50,7 +50,7 @@ def test_custom_date_needs_a_valid_time_and_never_assumes_midnight(world, client
     tomorrow = "2026-11-05"
     missing = save(admin, training, schedule_date=tomorrow)
     assert missing.status_code == 400
-    assert "time" in missing.json()["error"]["message"] and "Asia/Kolkata" in missing.json()["error"]["message"]
+    assert "time" in missing.json()["error"]["message"] and "Asia/Kolkata" not in missing.json()["error"]["message"]
     assert save(admin, training, schedule_time="10:00").status_code == 400  # No date.
     assert save(admin, training, schedule_date=tomorrow, schedule_time="25:00").status_code == 400
     assert save(admin, training, schedule_date="2026-02-30", schedule_time="10:00").status_code == 400

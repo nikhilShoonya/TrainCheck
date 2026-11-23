@@ -5,7 +5,7 @@ import Link from "next/link";
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { ApiError } from "@/lib/api";
-import { formatNumber } from "@/lib/utils";
+import { compareTableValues, formatNumber } from "@/lib/utils";
 
 /* ---------- Toast ---------- */
 
@@ -256,7 +256,7 @@ export function DataTable({ headers, rows, all, emptyTitle, emptyHint, onRowClic
   const [page, setPage] = useState(0);
   const sorted = useMemo(() => {
     if (!sort) return rows;
-    return [...rows].sort((a, b) => plain(a[sort.index]).localeCompare(plain(b[sort.index]), "en", { numeric: true }) * (sort.descending ? -1 : 1));
+    return [...rows].sort((a, b) => compareTableValues(plain(a[sort.index]), plain(b[sort.index])) * (sort.descending ? -1 : 1));
   }, [rows, sort]);
 
   if (!rows.length) return <Empty title={emptyTitle} hint={emptyHint} />;
