@@ -5,7 +5,7 @@
 
 # ---------- Documentation kept out of this repository ----------
 All_Doc/
-Questions/
+/Questions/
 
 # ---------- Python (backend) ----------
 .venv/
