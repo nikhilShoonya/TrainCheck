@@ -141,13 +141,16 @@ def load_rows(db: Session, scope: list[uuid.UUID] | None, filters: ReportFilters
         if filters.date_to and (completed is None or completed > filters.date_to):
             continue
         post_obligations = sorted((o for o in enrolment.obligations if o.assessment_type == AssessmentType.POST_TEST), key=lambda o: o.cycle_number)
+        # Scores and attempts cover every training cycle (history); the obligation is the current cycle's, or None
+        # while a re-training cycle awaits its completion.
+        current = [o for o in post_obligations if o.training_cycle == enrolment.training_cycle]
         post_attempts = [a for o in post_obligations for a in o.attempts if a.result_status is not None]
         post_attempts.sort(key=lambda a: a.submitted_at)
         pre = next(
             (a for o in enrolment.obligations if o.assessment_type == AssessmentType.PRE_TEST for a in o.attempts if a.result_status is not None),
             None,
         )
-        rows.append(Row(enrolment, post_attempts, pre, post_obligations[-1] if post_obligations else None))
+        rows.append(Row(enrolment, post_attempts, pre, current[-1] if current else None))
     return rows
 
 
@@ -164,7 +167,7 @@ def assessment_timing(row: Row, now: datetime) -> str:
         return "Cancelled"
     # Status of the current cycle: an approved re-attempt or re-training cycle is Due again, not Submitted.
     if o.status == ObligationStatus.RETAKE_PENDING:
-        return "Waiting for L&D approval" if o.refresher_acknowledged_at else "Refresher required"
+        return "Waiting for L&D approval"
     if o.status == ObligationStatus.COMPLETED:
         return "Waiting for L&D approval" if o.retraining_flag == "NEEDS_RETRAINING" else "Submitted"
     if o.status == ObligationStatus.IN_PROGRESS:

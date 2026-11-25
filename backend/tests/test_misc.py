@@ -280,24 +280,24 @@ def test_unused_training_can_be_deleted(world, client_for, db):
     admin = client_for(world.admin)
     created = admin.post("/admin/trainings", json={"title": "Never used", "training_code": "DEL1"}).json()["data"]
     assert admin.post(f"/admin/trainings/{created['id']}/materials", json={"kind": "LINK", "title": "Deck", "url": "https://example.com/d"}).status_code == 200
-    assert client_for(world.hr).delete(f"/admin/trainings/{created['id']}").status_code == 403
-    assert client_for(world.employee).delete(f"/admin/trainings/{created['id']}").status_code == 403
-    response = admin.delete(f"/admin/trainings/{created['id']}")
+    confirm = {"confirmation_code": "DEL1"}
+    assert client_for(world.hr).delete(f"/admin/trainings/{created['id']}", json=confirm).status_code == 403
+    assert client_for(world.employee).delete(f"/admin/trainings/{created['id']}", json=confirm).status_code == 403
+    response = admin.delete(f"/admin/trainings/{created['id']}", json=confirm)
     assert response.status_code == 200, response.text
     assert admin.get(f"/admin/trainings/{created['id']}").status_code == 404
     log = db.scalar(select(AuditLog).where(AuditLog.action == "TRAINING_DELETED"))
     assert log.before_summary["code"] == "DEL1" and log.target_id == created["id"]
-    assert admin.delete(f"/admin/trainings/{created['id']}").status_code == 404
+    assert admin.delete(f"/admin/trainings/{created['id']}", json=confirm).status_code == 404
 
 
-def test_training_with_history_cannot_be_deleted(world, client_for, db):
+def test_training_with_history_needs_the_typed_code(world, client_for, db):
+    """Trainings with history can now be deleted permanently (tests/test_training_deletion.py), but only with the
+    training code typed to confirm: without it nothing is removed."""
     training = world.training()  # Has a batch.
     world.complete(world.employee, training)  # Assignment, completion and assessment.
     response = client_for(world.admin).delete(f"/admin/trainings/{training.id}")
-    assert response.status_code == 409
-    error = response.json()["error"]
-    assert error["code"] == "TRAINING_IN_USE" and "Archive it instead" in error["message"]
-    assert {"assignments", "assessments", "batches"} <= set(error["details"]["in_use"])
+    assert response.status_code == 400
     db.expire_all()
     assert db.get(Training, training.id) is not None
     assert db.scalar(select(func.count()).select_from(Enrolment).where(Enrolment.training_id == training.id)) == 1

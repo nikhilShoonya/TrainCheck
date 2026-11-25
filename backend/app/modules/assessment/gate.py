@@ -100,8 +100,11 @@ def unavailable_obligations(db: Session, employee_id: uuid.UUID, now: datetime |
 def alert_unavailable(db: Session, obligations: list[AssessmentObligation], now: datetime) -> None:
     """Tells L&D and the employee once per obligation. Safe to call on every sign-in."""
     from app.modules.notifications.service import notify_employee, notify_roles
+    from app.modules.training.locks import try_hold_training
 
     for obligation in obligations:
+        if not try_hold_training(db, obligation.training_id):
+            continue  # Deleted meanwhile: no notification about a training that no longer exists.
         employee, title = obligation.employee, obligation.training.title
         notify_roles(
             db,
@@ -134,8 +137,9 @@ def finished_attempts(obligation: AssessmentObligation) -> int:
 
 
 def refresher_required(obligation: AssessmentObligation) -> bool:
-    """A refresher is owed only before a retake: after a finished attempt, and not while one is running."""
-    return obligation.status != ObligationStatus.IN_PROGRESS and finished_attempts(obligation) > 0 and obligation.refresher_acknowledged_at is None
+    """No refresher acknowledgement is required before a retake any more (decision of 25 Nov 2026): L&D's
+    authorisation of the re-attempt is the only step. Kept so the gate's response keeps its shape."""
+    return False
 
 
 def queue_item(obligation: AssessmentObligation, position: int) -> dict:
@@ -238,13 +242,11 @@ COUNTDOWN_WINDOW = timedelta(minutes=5)
 
 def countdown_ready(db: Session, obligation: AssessmentObligation, now: datetime, cache: dict) -> bool:
     """Whether a scheduled post-test will be startable when it opens, by the same rules as start_attempt: still
-    waiting to open, its pool can draw the assessment, no refresher is owed and an attempt is left."""
+    waiting to open, its pool can draw the assessment and an attempt is left."""
     from app.modules.assessment.entry import obligation_entry
     from app.modules.assessment.service import counted_attempts
 
     if obligation_entry(db, obligation, now, cache)["entry_state"] != "NOT_YET_OPEN":
-        return False
-    if finished_attempts(obligation) and obligation.refresher_acknowledged_at is None:
         return False
     if counted_attempts(obligation) >= obligation.config.max_attempts:
         return False
@@ -256,7 +258,7 @@ def countdown_state(db: Session, employee_id: uuid.UUID, now: datetime) -> tuple
 
     Only assessments already assigned to the employee and scheduled by L&D are considered; nothing is created here.
     The nearest opening comes first, ties in the gate's queue order. An assessment inside the window that could not
-    start when it opens (pool incomplete, refresher owed, no attempt left) gets no countdown."""
+    start when it opens (pool incomplete, no attempt left) gets no countdown."""
     upcoming = db.scalars(
         select(AssessmentObligation)
         .options(joinedload(AssessmentObligation.training), joinedload(AssessmentObligation.config))

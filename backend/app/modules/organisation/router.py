@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import Response
 from openpyxl import Workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -21,7 +21,25 @@ from app.core.errors import ApiError, conflict, not_found, validation
 from app.core.ratelimit import expensive
 from app.core.responses import ok
 from app.core.routing import ReleasingRoute
-from app.models import CalendarHoliday, Competency, Department, Employee, Function, Location, Trainer, WorkingCalendar
+from app.models import (
+    BehaviourReviewResponse,
+    BehaviourTemplate,
+    BehaviourTemplateQuestion,
+    CalendarHoliday,
+    Competency,
+    Department,
+    Employee,
+    Function,
+    Location,
+    Question,
+    Trainer,
+    Training,
+    TrainingBatch,
+    TrainingCompetency,
+    TrainingDepartment,
+    TrainingFunction,
+    WorkingCalendar,
+)
 from app.modules.imports import parsing
 from app.modules.organisation import people
 
@@ -89,6 +107,61 @@ def unit_view(unit: Department | Function) -> dict:
     return {"id": str(unit.id), "code": unit.code, "name": unit.name, "is_active": unit.is_active}
 
 
+# ---------- Delete: only records nothing uses ----------
+# Each place below holds a hard reference, often with history (employees, trainings, questions, behaviour ratings).
+# A record still referenced is never deleted; L&D marks it inactive instead, which keeps every existing record.
+
+def _usage(db: Session, record_id: uuid.UUID, places: list[tuple[str, str, object]]) -> list[str]:
+    """Where a record is still used, e.g. ["3 employees", "1 training"]. Each place is (singular, plural, column)."""
+    found = []
+    for singular, plural, column in places:
+        n = db.scalar(select(func.count()).where(column == record_id)) or 0
+        if n:
+            found.append(f"{n} {singular if n == 1 else plural}")
+    return found
+
+
+def _joined(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _delete_unused(db: Session, user: CurrentUser, record, label: str, name: str, places: list[tuple[str, str, object]], before: dict) -> dict:
+    usage = _usage(db, record.id, places)
+    if usage:
+        raise conflict(
+            "IN_USE",
+            f"{name} cannot be deleted because it is used by {_joined(usage)}. Mark it inactive instead: it stops being offered and existing records are kept.",
+            {"usage": usage},
+        )
+    record_audit(db, user.id, f"{label.upper()}_DELETED", label, record.id, before=before)
+    db.delete(record)
+    try:
+        db.flush()
+    except IntegrityError as exc:  # Something started using it at the same moment.
+        db.rollback()
+        raise conflict("IN_USE", f"{name} cannot be deleted because it is now in use. Mark it inactive instead.") from exc
+    db.commit()
+    return ok({"deleted": True})
+
+
+UNIT_USAGE = {
+    "department": [("employee", "employees", Employee.department_id), ("training", "trainings", TrainingDepartment.department_id), ("question", "questions", Question.department_id)],
+    "function": [
+        ("employee", "employees", Employee.function_id),
+        ("training", "trainings", TrainingFunction.function_id),
+        ("question", "questions", Question.function_id),
+        ("behaviour questionnaire", "behaviour questionnaires", BehaviourTemplate.function_id),
+    ],
+}
+TRAINER_USAGE = [("training", "trainings", Training.trainer_id), ("training batch", "training batches", TrainingBatch.trainer_id)]
+COMPETENCY_USAGE = [
+    ("question", "questions", Question.competency_id),
+    ("training", "trainings", TrainingCompetency.competency_id),
+    ("behaviour questionnaire question", "behaviour questionnaire questions", BehaviourTemplateQuestion.competency_id),
+    ("behaviour rating", "behaviour ratings", BehaviourReviewResponse.competency_id),
+]
+
+
 def _crud_units(path: str, model: type, label: str, input_model: type[OrgUnitIn] | type[FunctionIn] = OrgUnitIn) -> None:
     @router.get(f"/{path}", name=f"list_{path}")
     def list_units(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
@@ -126,6 +199,13 @@ def _crud_units(path: str, model: type, label: str, input_model: type[OrgUnitIn]
         db.commit()
         return ok(unit_view(unit))
 
+    @router.delete(f"/{path}/{{unit_id}}", name=f"delete_{path}")
+    def delete_unit(unit_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+        unit = db.get(model, unit_id)
+        if unit is None:
+            raise not_found()
+        return _delete_unused(db, user, unit, label, unit.name, UNIT_USAGE[label], unit_view(unit))
+
 
 _crud_units("departments", Department, "department")
 _crud_units("functions", Function, "function", FunctionIn)
@@ -162,6 +242,14 @@ def update_trainer(trainer_id: uuid.UUID, body: TrainerIn, user: CurrentUser = D
     return ok({"id": str(trainer.id), "name": trainer.name, "email": trainer.email, "is_active": trainer.is_active})
 
 
+@router.delete("/trainers/{trainer_id}")
+def delete_trainer(trainer_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    trainer = db.get(Trainer, trainer_id)
+    if trainer is None:
+        raise not_found()
+    return _delete_unused(db, user, trainer, "trainer", trainer.name, TRAINER_USAGE, {"name": trainer.name, "email": trainer.email})
+
+
 def competency_view(c: Competency) -> dict:
     return {"id": str(c.id), "code": c.code, "name": c.name, "description": c.description, "is_active": c.is_active}
 
@@ -183,6 +271,31 @@ def create_competency(body: CompetencyIn, user: CurrentUser = Depends(require_ad
     record_audit(db, user.id, "COMPETENCY_CREATED", "competency", competency.id, after={"name": competency.name})
     db.commit()
     return ok(competency_view(competency))
+
+
+@router.patch("/competencies/{competency_id}")
+def update_competency(competency_id: uuid.UUID, body: CompetencyIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    competency = db.get(Competency, competency_id)
+    if competency is None:
+        raise not_found()
+    before = competency_view(competency)
+    competency.name, competency.description, competency.is_active = body.name, body.description, body.is_active
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise conflict("DUPLICATE_NAME", "A competency with this name already exists.") from exc
+    record_audit(db, user.id, "COMPETENCY_UPDATED", "competency", competency.id, before=before, after=competency_view(competency))
+    db.commit()
+    return ok(competency_view(competency))
+
+
+@router.delete("/competencies/{competency_id}")
+def delete_competency(competency_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    competency = db.get(Competency, competency_id)
+    if competency is None:
+        raise not_found()
+    return _delete_unused(db, user, competency, "competency", competency.name, COMPETENCY_USAGE, competency_view(competency))
 
 
 @router.get("/employees")

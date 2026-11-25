@@ -23,9 +23,27 @@ export interface EnrolmentRow {
   retraining_flag: string;
   obligation_id: string | null;
   attempts_used: number;
+  /** Finished (submitted or timed-out) attempts in the current training cycle. */
+  attempts_completed: number;
   max_attempts: number | null;
+  training_cycle: number;
   retrainings: number;
+  /** The action L&D can take now; the server rechecks it on every request. */
+  retry_action: "REATTEMPT" | "RETRAINING" | null;
   refresher_acknowledged_at: string | null;
+}
+
+/** The Attempts column: finished attempts of the current training cycle out of the maximum, e.g. "1/3". */
+export function attemptsLabel(row: Pick<EnrolmentRow, "attempts_completed" | "max_attempts">): string {
+  return row.max_attempts ? `${row.attempts_completed}/${row.max_attempts}` : "—";
+}
+
+/** Why no Reattempt / Retraining action is offered while a re-attempt is already open, or null. */
+export function retryNote(row: Pick<EnrolmentRow, "retry_action" | "attempts_completed" | "assessment_state">): string | null {
+  if (row.retry_action || !row.attempts_completed) return null;
+  if (row.assessment_state === "In progress") return "Attempt in progress";
+  if (["Due", "Scheduled"].includes(row.assessment_state)) return "Reattempt authorised";
+  return null;
 }
 
 export interface SchedulingOutcome {

@@ -138,7 +138,8 @@ export const api = {
   post: <T>(path: string, body: unknown = {}, options?: RequestOptions) => send<T>("POST", path, body, undefined, options),
   put: <T>(path: string, body: unknown, options?: RequestOptions) => send<T>("PUT", path, body, undefined, options),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) => send<T>("PATCH", path, body, undefined, options),
-  del: <T>(path: string, options?: RequestOptions) => send<T>("DELETE", path, undefined, undefined, options),
+  /** `body` is optional: a confirmed permanent deletion sends its typed confirmation. */
+  del: <T>(path: string, options?: RequestOptions, body?: unknown) => send<T>("DELETE", path, body, undefined, options),
   upload: <T>(path: string, form: FormData, options?: RequestOptions) => send<T>("POST", path, undefined, form, options),
 };
 

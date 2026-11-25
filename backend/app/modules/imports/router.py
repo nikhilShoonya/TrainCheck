@@ -24,6 +24,7 @@ from app.core.routing import ReleasingRoute
 from app.models import ImportJob, Training
 from app.modules.imports import parsing, pdf_blocks, service
 from app.modules.imports import question_format as qf
+from app.modules.training.locks import hold_trainings
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin/imports", tags=["Import Centre"])
 
@@ -159,6 +160,21 @@ def _job(db: Session, job_id: uuid.UUID, lock: bool = False) -> ImportJob:
     return job
 
 
+def _hold_job_trainings(db: Session, job_id: uuid.UUID, *extra: str | None) -> None:
+    """Takes the locks of the trainings this request may write to (training.locks) before the job's row lock, the
+    order a permanent training deletion relies on. Trainings already gone are skipped; the commit reports them."""
+    job = db.scalar(select(ImportJob).options(selectinload(ImportJob.rows)).where(ImportJob.id == job_id))
+    ids = service.job_training_ids(job) if job is not None else set()
+    for raw in extra:
+        if not raw or not raw.strip():
+            continue
+        try:
+            ids.add(uuid.UUID(raw.strip()))
+        except ValueError:
+            continue
+    hold_trainings(db, ids)
+
+
 @router.get("/{job_id}")
 def get_job(job_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok(job_view(_job(db, job_id), db=db))
@@ -174,6 +190,7 @@ class CommitIn(BaseModel):
 
 @router.post("/{job_id}/commit", dependencies=[expensive("import")])
 def commit(job_id: uuid.UUID, body: CommitIn | None = Body(default=None), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    _hold_job_trainings(db, job_id)
     job = _job(db, job_id, lock=True)
     if body is not None:
         service.check_commit_selection(job, body.training_id, body.test_type)
@@ -205,6 +222,7 @@ def replace(
     db: Session = Depends(get_db),
 ) -> dict:
     """Edits an import that was never applied: a corrected file, training and test type are validated into the same entry."""
+    _hold_job_trainings(db, job_id, training_id)
     job = _job(db, job_id, lock=True)
     if job.status not in service.UNAPPLIED_STATUSES:
         raise conflict("IMPORT_ALREADY_PROCESSED", "This import has already been imported and can no longer be edited.")

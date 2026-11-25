@@ -250,8 +250,10 @@ function renderCell(cell: Cell): ReactNode {
 }
 
 /** `onRowClick` (optional) makes whole rows open something; it receives the row as passed in `rows`. A row should
- *  also hold a button for keyboard users: clicks on buttons, links and fields inside a row do not trigger it. */
-export function DataTable({ headers, rows, all, emptyTitle, emptyHint, onRowClick }: { headers: string[]; rows: Cell[][]; all?: boolean; emptyTitle?: string; emptyHint?: string; onRowClick?: (row: Cell[]) => void }) {
+ *  also hold a button for keyboard users: clicks on buttons, links and fields inside a row do not trigger it.
+ *  `maxRows` (optional) replaces the pages with a cut-off: the whole list is sorted, then the first `maxRows` rows are
+ *  shown. The caller shows the count and the View all control. Tables without it keep their pages. */
+export function DataTable({ headers, rows, all, emptyTitle, emptyHint, onRowClick, maxRows }: { headers: string[]; rows: Cell[][]; all?: boolean; emptyTitle?: string; emptyHint?: string; onRowClick?: (row: Cell[]) => void; maxRows?: number }) {
   const [sort, setSort] = useState<{ index: number; descending: boolean } | null>(null);
   const [page, setPage] = useState(0);
   const sorted = useMemo(() => {
@@ -260,10 +262,10 @@ export function DataTable({ headers, rows, all, emptyTitle, emptyHint, onRowClic
   }, [rows, sort]);
 
   if (!rows.length) return <Empty title={emptyTitle} hint={emptyHint} />;
-  const size = all ? Math.max(1, rows.length) : PAGE_SIZE;
+  const size = all || maxRows !== undefined ? Math.max(1, rows.length) : PAGE_SIZE;
   const pages = Math.ceil(sorted.length / size);
   const current = Math.min(page, pages - 1);
-  const visible = sorted.slice(current * size, (current + 1) * size);
+  const visible = maxRows !== undefined ? sorted.slice(0, maxRows) : sorted.slice(current * size, (current + 1) * size);
   return (
     <>
       {/* On phones each row becomes a card of "label: value" lines (styles/traincheck.css), so every

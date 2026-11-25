@@ -210,13 +210,13 @@ def test_my_trainings_lists_upcoming_then_unfinished_then_finished(world, client
     give_feedback(client, result["attempt_id"])
     failed = world.training("C-FAILED")
     result = take(db, client, world.complete(world.employee, failed).id, 2)
-    give_feedback(client, result["attempt_id"])  # Retake pending: refresher first, so not finished.
+    give_feedback(client, result["attempt_id"])  # Retake pending: waits for L&D, so not finished.
 
     listed = cards(client)
     assert [c["title"] for c in listed] == ["Training Y-SOONER", "Training Z-LATER", "Training C-FAILED", "Training A-AWAIT", "Training B-PASSED"]
     assert [c["pending_group"] for c in listed] == ["UPCOMING", "UPCOMING", "UNFINISHED", "UNFINISHED", "FINISHED"]
     retake = listed[2]
-    assert (retake["entry_state"], retake["entry_reason"]) == ("UNAVAILABLE", "REFRESHER_REQUIRED")
+    assert (retake["entry_state"], retake["entry_reason"]) == ("UNAVAILABLE", "AWAITING_APPROVAL")
 
 
 def _card(title, group, *, state="UNAVAILABLE", reason=None, due=None, planned=None, enrolment="e"):

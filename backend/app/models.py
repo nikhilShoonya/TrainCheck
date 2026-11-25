@@ -304,10 +304,20 @@ class Enrolment(Base, Timestamped):
     attendance_status: Mapped[str] = mapped_column(String(20), default="PENDING")
     enrolment_status: Mapped[str] = mapped_column(String(20), default="ASSIGNED")
     cancel_reason: Mapped[str | None] = mapped_column(Text)
+    # The current training cycle. Re-training after the final failed attempt starts the next cycle on this same
+    # assignment: it needs a new completion, and that completion schedules a post-test with fresh attempts.
+    # Earlier cycles' completions, assessments and attempts are kept.
+    training_cycle: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     training: Mapped[Training] = relationship()
     batch: Mapped[TrainingBatch | None] = relationship()
     employee: Mapped[Employee] = relationship()
-    completion: Mapped["TrainingCompletion | None"] = relationship(back_populates="enrolment", uselist=False)
+    # The completion of the current training cycle only (None until it is recorded). Read-only: completions are
+    # created as rows (service.complete_enrolment). Every cycle's completion: TrainingCompletion by enrolment_id.
+    completion: Mapped["TrainingCompletion | None"] = relationship(
+        primaryjoin="and_(Enrolment.id == foreign(TrainingCompletion.enrolment_id), Enrolment.training_cycle == foreign(TrainingCompletion.training_cycle))",
+        uselist=False,
+        viewonly=True,
+    )
     obligations: Mapped[list["AssessmentObligation"]] = relationship(back_populates="enrolment")
     __table_args__ = (
         Index("uq_active_enrolment", "employee_id", "training_id", unique=True, postgresql_where=text("enrolment_status <> 'CANCELLED'")),
@@ -317,7 +327,8 @@ class Enrolment(Base, Timestamped):
 class TrainingCompletion(Base):
     __tablename__ = "training_completions"
     id: Mapped[uuid.UUID] = uuid_pk()
-    enrolment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("enrolments.id"), unique=True)
+    enrolment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("enrolments.id"), index=True)
+    training_cycle: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # One completion per cycle.
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completion_source: Mapped[str] = mapped_column(String(20))  # MANUAL or IMPORT
     source_event_id: Mapped[str | None] = mapped_column(String(160), unique=True)
@@ -325,7 +336,8 @@ class TrainingCompletion(Base):
     import_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("import_jobs.id"))
     correction_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = created_at()
-    enrolment: Mapped[Enrolment] = relationship(back_populates="completion")
+    enrolment: Mapped[Enrolment] = relationship()
+    __table_args__ = (UniqueConstraint("enrolment_id", "training_cycle", name="uq_completion_cycle"),)
 
 
 # ---------- Question bank ----------
@@ -451,6 +463,8 @@ class AssessmentObligation(Base, Timestamped):
     config_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assessment_configs.id"))
     assessment_type: Mapped[str] = mapped_column(String(10))
     cycle_number: Mapped[int] = mapped_column(Integer, default=1)
+    # The enrolment's training cycle this assessment belongs to (see Enrolment.training_cycle).
+    training_cycle: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     status: Mapped[str] = mapped_column(String(20), index=True)
     completed_training_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # Queue ordering.
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

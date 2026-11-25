@@ -33,8 +33,12 @@ test("real backend: mixed selection completes eligible employees, reports the re
 
   await page.goto(`/lnd/completion/${training.id}`);
   await expect(page.getByRole("heading", { level: 1, name: training.title })).toBeVisible();
-  // Partial attendance with the policy off (the default) must be refused by the server, per employee.
-  await page.getByRole("combobox", { name: `Attendance for ${partial.employee_name} (${partial.employee_code})`, exact: true }).selectOption("PARTIAL");
+  // Partial attendance with the policy off (the default) must be refused by the server, per employee. Attendance is
+  // no longer edited in this table, so it is recorded through the attendance API (as an attendance import would).
+  const token = (await page.context().cookies()).find((c) => c.name === "tc_csrf")?.value ?? "";
+  const marked = await page.request.patch(`/api/v1/admin/enrolments/${partial.id}/attendance`, { headers: { "X-CSRF-Token": token }, data: { attendance_status: "PARTIAL" } });
+  expect(marked.status(), await marked.text()).toBe(200);
+  await page.reload();
   await expect.poll(async () => (await rows(page, training.id)).find((r) => r.id === partial.id)!.attendance_status).toBe("PARTIAL");
   for (const row of [a, b, partial]) await box(page, row).check();
   await expect(page.getByText("3 employees selected", { exact: true })).toBeVisible();
@@ -44,9 +48,9 @@ test("real backend: mixed selection completes eligible employees, reports the re
   await dialog.getByRole("button", { name: "Confirm completion", exact: true }).click();
   await expect(dialog).toBeHidden({ timeout: 30_000 });
 
-  for (const row of [a, b]) await expect(rowFor(page, row).locator("td").nth(2)).toContainText("Completed");
+  for (const row of [a, b]) await expect(rowFor(page, row).locator("td").nth(1)).toContainText("Completed");
   await expect(rowFor(page, partial).getByRole("alert")).toContainText(/partial/i);
-  await expect(rowFor(page, partial).locator("td").nth(2)).toContainText("Awaiting completion");
+  await expect(rowFor(page, partial).locator("td").nth(1)).toContainText("Awaiting completion");
   await expect(page.getByRole("heading", { name: "Bulk completion result" })).toHaveCount(0);
 
   const afterCompletion = await rows(page, training.id);
@@ -63,7 +67,7 @@ test("real backend: mixed selection completes eligible employees, reports the re
 
   // Refresh shows the persisted data.
   await page.reload();
-  for (const row of [a, b]) await expect(rowFor(page, row).locator("td").nth(2)).toContainText("Completed");
+  for (const row of [a, b]) await expect(rowFor(page, row).locator("td").nth(1)).toContainText("Completed");
 
   // Waive the two new assessments (only if the training scheduled them).
   const waivable = [get(a), get(b)].filter((r) => r.obligation_id && ["Due", "Scheduled", "Unavailable"].includes(r.assessment_state));
@@ -78,7 +82,7 @@ test("real backend: mixed selection completes eligible employees, reports the re
   await waive.getByLabel("Reason *", { exact: true }).fill("Synthetic E2E exemption on a disposable database");
   await waive.getByRole("button", { name: "Confirm waiver", exact: true }).click();
   await expect(waive).toBeHidden({ timeout: 30_000 });
-  for (const row of waivable) await expect(rowFor(page, row).locator("td").nth(4)).toHaveText("Waived");
+  for (const row of waivable) await expect(rowFor(page, row).locator("td").nth(3)).toHaveText("Waived");
 
   const afterWaiver = await rows(page, training.id);
   for (const row of waivable) {
@@ -91,5 +95,5 @@ test("real backend: mixed selection completes eligible employees, reports the re
   const again = await page.request.post(`/api/v1/admin/obligations/${waivable[0].obligation_id}/waive`, { headers: { "X-CSRF-Token": csrf }, data: { reason: "Second attempt at the same waiver" } });
   expect(again.status()).toBe(409);
   await page.reload();
-  for (const row of waivable) await expect(rowFor(page, row).locator("td").nth(4)).toHaveText("Waived");
+  for (const row of waivable) await expect(rowFor(page, row).locator("td").nth(3)).toHaveText("Waived");
 });

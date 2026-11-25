@@ -19,6 +19,7 @@ from app.modules.imports.parsing import clip, has_formula
 from app.modules.organisation.people import is_learner
 from app.modules.question_bank.router import revision_snapshot, set_content
 from app.modules.training import service as training_service
+from app.modules.training.locks import try_hold_training
 
 COMPLETION_HEADERS = ["employee", "training", "completion_date"]
 COMPLETION_OPTIONAL_HEADERS = ["attendance", "source_event_id"]
@@ -131,9 +132,11 @@ def selected_training(db: Session, raw_id: str | None) -> Training | None:
     if raw_id is None or not raw_id.strip():
         return None
     try:
-        training = db.get(Training, uuid.UUID(raw_id.strip()))
+        training_id = uuid.UUID(raw_id.strip())
     except ValueError:
-        training = None
+        training_id = None
+    # The training lock (training.locks): a training deleted at this moment is reported here, not as a database error.
+    training = db.get(Training, training_id) if training_id is not None and try_hold_training(db, training_id) else None
     if training is None:
         raise validation("The selected training does not exist. Choose a training from the list.")
     problem = training_import_problem(training)
@@ -462,6 +465,8 @@ def _commit_completion(db: Session, payload: dict, user_id: uuid.UUID, job_id: u
     """Re-checks every rule at commit time, because records may have changed since the preview."""
     employee = db.get(Employee, uuid.UUID(payload["employee_id"]))
     training = db.get(Training, uuid.UUID(payload["training_id"]))
+    if training is None:  # Permanently deleted after the file was validated.
+        raise ApiError(409, "TRAINING_NOT_FOUND", "This training was deleted after the file was validated. The row was not imported.")
     attendance = payload.get("attendance") or AttendanceStatus.PRESENT.value
     problem, creates_assignment = completion_eligibility(db, employee, training, attendance)
     if problem:
@@ -502,6 +507,22 @@ def check_commit_selection(job: ImportJob, training_id: str | None, test_type: s
 
 # Namespace of the two-key advisory lock taken while question imports into one training are confirmed.
 QUESTION_IMPORT_LOCK = 0x7C_EE_02
+
+
+def job_training_ids(job: ImportJob) -> set[uuid.UUID]:
+    """The trainings a commit or edit of this import may write to: its selected training, and for a completion
+    import the training of every valid row. Their locks (training.locks) are taken before the job's row lock."""
+    ids = {job.training_id} if job.training_id else set()
+    if job.import_type == ImportType.COMPLETIONS:
+        for row in job.rows:
+            raw = (row.payload or {}).get("training_id") if row.row_status == "VALID" else None
+            if not raw:
+                continue
+            try:
+                ids.add(uuid.UUID(str(raw)))
+            except ValueError:
+                continue
+    return ids
 
 
 def lock_training_imports(db: Session, training_id: uuid.UUID) -> None:

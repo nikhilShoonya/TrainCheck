@@ -50,7 +50,6 @@ def test_double_approve_retake_is_a_conflict(world, db, client_for, monkeypatch)
     obligation = world.complete(world.employee, world.training())
     client = client_for(world.employee)
     take(db, client, obligation.id, 5)
-    assert client.post(f"/assessment-obligations/{obligation.id}/refresher-acknowledgement").status_code == 200
 
     def other_admin_approves(other):
         row = other.get(AssessmentObligation, obligation.id)
@@ -67,15 +66,16 @@ def test_double_retraining_cycle_is_a_conflict_not_a_server_error(world, db, cli
     obligation.status, obligation.retraining_flag = "COMPLETED", "NEEDS_RETRAINING"
     db.commit()
 
-    def other_admin_opens_cycle(other):
+    def other_admin_assigns_retraining(other):
         row = other.get(AssessmentObligation, obligation.id)
         row.retraining_flag = "RESOLVED"
-        other.add(AssessmentObligation(enrolment_id=row.enrolment_id, employee_id=row.employee_id, training_id=row.training_id, config_id=row.config_id, assessment_type="POST_TEST", cycle_number=row.cycle_number + 1, status="DUE", completed_training_at=NOW, due_at=NOW))
+        other.get(Enrolment, row.enrolment_id).training_cycle = 2
 
-    meanwhile(monkeypatch, "_obligation", other_admin_opens_cycle)
+    meanwhile(monkeypatch, "_obligation", other_admin_assigns_retraining)
     response = client_for(world.admin).post(f"/admin/obligations/{obligation.id}/retraining-cycle", json={"reason": "Re-trained in person"})
     assert response.status_code == 409 and response.json()["error"]["code"] == "NOT_FLAGGED"
-    assert len(db.scalars(select(AssessmentObligation).where(AssessmentObligation.enrolment_id == obligation.enrolment_id)).all()) == 2
+    db.expire_all()
+    assert db.get(Enrolment, obligation.enrolment_id).training_cycle == 2  # Never a third cycle.
 
 
 def _other_admin_completes(enrolment_id):

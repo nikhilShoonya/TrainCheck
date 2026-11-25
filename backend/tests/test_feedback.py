@@ -2,7 +2,7 @@
 from sqlalchemy import func, select
 
 from app.models import AssessmentFeedback
-from tests.conftest import refresher_then_approval, start, take
+from tests.conftest import authorise_reattempt, start, take
 
 GOOD = {"ratings": {"relevance": 5, "clarity": 4, "alignment": 4, "fairness": 3, "confidence": 5}, "comment": "  Useful session.  "}
 
@@ -34,7 +34,7 @@ def test_retake_does_not_ask_again(world, client_for, db):
     client = client_for(email)
     first = take(db, client, obligation.id, 5)
     assert client.post(f"/attempts/{first['attempt_id']}/feedback", json=GOOD).status_code == 200
-    refresher_then_approval(client, client_for(world.admin), obligation.id)
+    authorise_reattempt(client, client_for(world.admin), obligation.id)
     second = take(db, client, obligation.id, 8)
     assert client.get(f"/attempts/{second['attempt_id']}/feedback").json()["data"]["required"] is False
 

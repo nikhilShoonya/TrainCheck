@@ -16,6 +16,7 @@ from app.core.responses import display_percent, iso, ok
 from app.core.routing import ReleasingRoute
 from app.models import AssessmentConfig, AssessmentFeedback, Training
 from app.modules.assessment.entry import before_assessment, obligation_entry, order_cards, pending_group, unavailable
+from app.modules.assessment.gate import finished_attempts
 from app.modules.assessment.scheduling import CalendarView, fixed_instant, load_calendar
 from app.modules.behaviour.service import review_status, reviews_for_self
 from app.modules.feedback.router import ratings_of
@@ -29,7 +30,8 @@ def training_card(r: Row, now, pretest_ready: set[uuid.UUID], planned: dict | No
     e, t = r.enrolment, r.enrolment.training
     config = r.obligation.config if r.obligation else None
     # Offered only once pre-test rules are saved; otherwise starting it fails with "no pre-test configured".
-    pre_available = t.pretest_enabled and t.id in pretest_ready and e.completion is None and r.pre_attempt is None
+    # The pre-test belongs to the first training cycle only; re-training does not offer it again.
+    pre_available = t.pretest_enabled and t.id in pretest_ready and e.training_cycle == 1 and e.completion is None and r.pre_attempt is None
     return {
         "enrolment_id": str(e.id),
         "training_id": str(t.id),
@@ -46,7 +48,8 @@ def training_card(r: Row, now, pretest_ready: set[uuid.UUID], planned: dict | No
         "first_score": display_percent(r.first),
         "best_score": display_percent(r.best),
         "latest_score": display_percent(r.latest),
-        "attempts": len(r.post_attempts),
+        # Attempts with a result in the current training cycle (re-training starts again at 0); scores cover all cycles.
+        "attempts": finished_attempts(r.obligation) if r.obligation else 0,
         "latest_attempt_id": str(r.post_attempts[-1].id) if r.post_attempts else None,
         "obligation_id": str(r.obligation.id) if r.obligation else None,
         "due_at": iso(r.obligation.due_at) if r.obligation else None,

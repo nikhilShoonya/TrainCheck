@@ -24,6 +24,7 @@ from app.modules.assessment import service
 from app.modules.assessment.entry import obligation_entry
 from app.modules.assessment.gate import access_state, blocking_obligations, finalise_expired_attempts, queue_item
 from app.modules.assessment.scheduling import load_calendar
+from app.modules.training.locks import hold_training
 
 router = APIRouter(route_class=ReleasingRoute, tags=["Assessment"])
 
@@ -258,7 +259,8 @@ def get_pre_test(enrolment_id: uuid.UUID, user: CurrentUser = Depends(require_ga
     active = next((a for a in obligation.attempts if a.status == AttemptStatus.IN_PROGRESS), None) if obligation else None
     taken = obligation is not None and obligation.status == ObligationStatus.COMPLETED
     cancelled = enrolment.enrolment_status == EnrolmentStatus.CANCELLED  # Audit B16: a cancelled assignment offers nothing.
-    available = bool(not cancelled and training.pretest_enabled and config is not None and not taken and (enrolment.completion is None or active is not None))
+    first_cycle = enrolment.training_cycle == 1  # Re-training does not offer the pre-test again.
+    available = bool(not cancelled and first_cycle and training.pretest_enabled and config is not None and not taken and (enrolment.completion is None or active is not None))
     return ok(
         {
             "enrolment_id": str(enrolment.id),
@@ -276,10 +278,14 @@ def get_pre_test(enrolment_id: uuid.UUID, user: CurrentUser = Depends(require_ga
 
 @router.post("/me/pre-tests/{enrolment_id}/attempts")
 def start_pre_test(enrolment_id: uuid.UUID, body: StartAttemptIn, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
-    enrolment = _lock_own_enrolment(db, _own_enrolment(db, enrolment_id, user.employee_id))
+    own = _own_enrolment(db, enrolment_id, user.employee_id)
+    hold_training(db, own.training_id)  # The training lock before the enrolment lock (training.locks).
+    enrolment = _lock_own_enrolment(db, own)
+    if enrolment is None:
+        raise not_found()
     if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
         raise conflict("PRE_TEST_UNAVAILABLE", PRE_TEST_CANCELLED)
-    if enrolment.completion is not None or not enrolment.training.pretest_enabled:
+    if enrolment.completion is not None or enrolment.training_cycle != 1 or not enrolment.training.pretest_enabled:
         raise conflict("PRE_TEST_UNAVAILABLE", "The pre-test can only be taken before training completion, when it is enabled.")
     config = service.active_config(db, enrolment.training_id, AssessmentType.PRE_TEST)
     if config is None:

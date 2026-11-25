@@ -24,6 +24,7 @@ from app.core.enums import (
     EmploymentStatus,
     EnrolmentStatus,
     ObligationStatus,
+    RetrainingFlag,
     SubmissionReason,
     TargetScope,
     TrainingStatus,
@@ -268,13 +269,19 @@ def lock_enrolment(db: Session, enrolment_id: uuid.UUID) -> None:
     db.execute(select(Enrolment.id).where(Enrolment.id == enrolment_id).with_for_update())
 
 
-def latest_post_obligation(db: Session, enrolment_id: uuid.UUID) -> AssessmentObligation | None:
-    return db.scalar(
-        select(AssessmentObligation)
-        .where(AssessmentObligation.enrolment_id == enrolment_id, AssessmentObligation.assessment_type == AssessmentType.POST_TEST)
-        .order_by(AssessmentObligation.cycle_number.desc())
-        .limit(1)
-    )
+def latest_post_obligation(db: Session, enrolment_id: uuid.UUID, training_cycle: int | None = None) -> AssessmentObligation | None:
+    """The newest post-test of the enrolment, or of one of its training cycles."""
+    query = select(AssessmentObligation).where(AssessmentObligation.enrolment_id == enrolment_id, AssessmentObligation.assessment_type == AssessmentType.POST_TEST)
+    if training_cycle is not None:
+        query = query.where(AssessmentObligation.training_cycle == training_cycle)
+    return db.scalar(query.order_by(AssessmentObligation.cycle_number.desc()).limit(1))
+
+
+def current_post_obligation(enrolment: Enrolment) -> AssessmentObligation | None:
+    """The post-test of the enrolment's current training cycle (its newest, if L&D opened more than one in it), from
+    the loaded obligations. None while the cycle's completion, and so its assessment, is still awaited."""
+    post = [o for o in enrolment.obligations if o.assessment_type == AssessmentType.POST_TEST and o.training_cycle == enrolment.training_cycle]
+    return max(post, key=lambda o: o.cycle_number) if post else None
 
 
 def alert_not_scheduled(db: Session, training: Training, readiness: Readiness, now: datetime) -> None:
@@ -303,7 +310,8 @@ def schedule_post_test(db: Session, enrolment: Enrolment, completed_at: datetime
     # the enrolment's row lock, as completion, cancellation and attendance do, and look again: a request creating this
     # enrolment's assessment at the same moment is waited for, and its assessment is found instead of duplicated.
     lock_enrolment(db, enrolment.id)
-    existing = latest_post_obligation(db, enrolment.id)
+    training_cycle = db.scalar(select(Enrolment.training_cycle).where(Enrolment.id == enrolment.id))  # As locked.
+    existing = latest_post_obligation(db, enrolment.id, training_cycle)
     if existing is not None:
         return {"status": "ALREADY_SCHEDULED", "reason": None, "message": f"An assessment already exists for {label}.", "action": None, "due_at": iso(existing.due_at), "obligation": existing}
     readiness = readiness or assessment_readiness(db, training)
@@ -320,12 +328,15 @@ def schedule_post_test(db: Session, enrolment: Enrolment, completed_at: datetime
         }
     config = readiness.config
     calendar = load_calendar(db)
+    previous = latest_post_obligation(db, enrolment.id)  # An earlier training cycle's post-test, after re-training.
     obligation = AssessmentObligation(
         enrolment_id=enrolment.id,
         employee_id=enrolment.employee_id,
         training_id=enrolment.training_id,
         config_id=config.id,
         assessment_type=AssessmentType.POST_TEST,
+        cycle_number=previous.cycle_number + 1 if previous else 1,
+        training_cycle=training_cycle,
         status=ObligationStatus.SCHEDULED,
         completed_training_at=completed_at,
         due_at=calculate_due_at(calendar, completed_at, config),
@@ -493,6 +504,7 @@ def complete_enrolment(
     submit_running_pre_test(db, enrolment, now)
     completion = TrainingCompletion(
         enrolment_id=enrolment.id,
+        training_cycle=enrolment.training_cycle,
         completed_at=completed_at,
         completion_source=source,
         source_event_id=source_event_id,
@@ -506,7 +518,9 @@ def complete_enrolment(
     db.flush()
 
     scheduling = schedule_post_test(db, enrolment, completed_at, recorded_by, now)
-    if get_settings().behaviour_enabled:  # Level 3 is out of scope; legacy follow-ups only when switched on.
+    # Level 3 is out of scope; legacy follow-ups only when switched on, and only once per assignment (they are unique
+    # per enrolment and period, so a re-training cycle's completion never asks for them again).
+    if get_settings().behaviour_enabled and enrolment.training_cycle == 1:
         create_cycles(db, enrolment, completed_at)
     db.flush()
     db.expire(enrolment, ["completion", "obligations"])
@@ -530,12 +544,17 @@ def record_completion(
 # ---------- Recovery ----------
 
 def unscheduled_completions(db: Session, training_id: uuid.UUID) -> list[Enrolment]:
-    """Completed, live enrolments with no post-test obligation: completions whose assessment was not scheduled."""
-    has_post = exists().where(AssessmentObligation.enrolment_id == Enrolment.id, AssessmentObligation.assessment_type == AssessmentType.POST_TEST)
+    """Live enrolments whose current training cycle has a completion but no post-test: completions whose assessment
+    was not scheduled."""
+    has_post = exists().where(
+        AssessmentObligation.enrolment_id == Enrolment.id,
+        AssessmentObligation.assessment_type == AssessmentType.POST_TEST,
+        AssessmentObligation.training_cycle == Enrolment.training_cycle,
+    )
     return list(
         db.scalars(
             select(Enrolment)
-            .join(TrainingCompletion, TrainingCompletion.enrolment_id == Enrolment.id)
+            .join(TrainingCompletion, (TrainingCompletion.enrolment_id == Enrolment.id) & (TrainingCompletion.training_cycle == Enrolment.training_cycle))
             .where(Enrolment.training_id == training_id, Enrolment.enrolment_status != EnrolmentStatus.CANCELLED, ~has_post)
             .order_by(TrainingCompletion.completed_at)
         )
@@ -590,3 +609,70 @@ def schedule_pending_assessments(db: Session, training: Training, actor_id: uuid
     db.flush()
     record_audit(db, actor_id, "PENDING_ASSESSMENTS_SCHEDULED", "training", training.id, after={"scheduled": len(scheduled), "reconfigured": len(moved), "still_blocked": len(still_blocked)})
     return {"scheduled": scheduled, "reconfigured": moved, "still_blocked": still_blocked}
+
+
+# ---------- Re-attempts and re-training ----------
+
+def retry_action(current: AssessmentObligation | None) -> str | None:
+    """What L&D can do next about the current cycle's post-test: REATTEMPT after a failed attempt that left attempts,
+    RETRAINING after the last attempt failed, otherwise nothing (not taken yet, authorised, running, passed, waived)."""
+    if current is None:
+        return None
+    if current.status == ObligationStatus.RETAKE_PENDING:
+        return "REATTEMPT"
+    if current.status == ObligationStatus.COMPLETED and current.retraining_flag == RetrainingFlag.NEEDS_RETRAINING:
+        return "RETRAINING"
+    return None
+
+
+def start_retraining(db: Session, enrolment: Enrolment, obligation: AssessmentObligation, actor_id: uuid.UUID | None, reason: str, now: datetime | None = None) -> int:
+    """Assigns the training again after the final failed attempt: the next training cycle of the same assignment.
+
+    The caller holds the enrolment's and then the obligation's row lock. The new cycle starts awaiting completion, with
+    attendance pending, exactly like a new assignment. Recording its completion schedules a post-test with fresh
+    attempts by the usual rules. The failed cycle's completion, assessment, attempts and flag history are kept.
+    Returns the new training cycle number.
+    """
+    now = now or utcnow()
+    if obligation.enrolment_id != enrolment.id or obligation.assessment_type != AssessmentType.POST_TEST:
+        raise conflict("NOT_FLAGGED", "This record is not flagged Needs Re-training.")
+    if obligation.retraining_flag != RetrainingFlag.NEEDS_RETRAINING or obligation.training_cycle != enrolment.training_cycle:
+        raise conflict("NOT_FLAGGED", "This record is not flagged Needs Re-training. Re-training may already have been assigned; reload to see it.")
+    if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
+        raise conflict("ENROLMENT_CANCELLED", "This assignment was cancelled, so re-training cannot be assigned.")
+    training, employee = enrolment.training, enrolment.employee
+    problem = training_assignment_problem(training)
+    if problem:
+        raise problem
+    blocked = employee_assignment_problem(training, employee)
+    if blocked:
+        raise conflict("INACTIVE_EMPLOYEE" if blocked[0] == "INACTIVE" else "OUT_OF_TARGET", f"{blocked[1]} Re-training cannot be assigned.")
+
+    before = {"training_cycle": enrolment.training_cycle, "attendance": enrolment.attendance_status, "status": enrolment.enrolment_status}
+    obligation.retraining_flag = RetrainingFlag.RESOLVED
+    enrolment.training_cycle += 1
+    enrolment.enrolment_status = EnrolmentStatus.ASSIGNED
+    enrolment.attendance_status = AttendanceStatus.PENDING
+    db.flush()
+    db.expire(enrolment, ["completion", "obligations"])
+    record_audit(
+        db,
+        actor_id,
+        "RETRAINING_ASSIGNED",
+        "enrolment",
+        enrolment.id,
+        reason=reason,
+        before=before,
+        after={"training_cycle": enrolment.training_cycle, "employee": employee.employee_code, "training": training.training_code, "failed_assessment": str(obligation.id)},
+    )
+    notify_employee(
+        db,
+        employee.id,
+        "RETRAINING_ASSIGNED",
+        f"Re-training assigned: {training.title}",
+        "L&D has assigned this training to you again. Once your training completion is recorded, a new assessment opens with fresh attempts.",
+        "/employee/trainings",
+        f"retraining:{enrolment.id}:{enrolment.training_cycle}",
+        now,
+    )
+    return enrolment.training_cycle

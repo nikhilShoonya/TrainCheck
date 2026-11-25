@@ -22,6 +22,7 @@ from app.core.routing import ReleasingRoute
 from app.models import AssessmentAttempt, AssessmentFeedback, Employee, Training
 from app.modules.assessment.gate import feedback_exempt
 from app.modules.assessment.service import get_own_attempt
+from app.modules.training.locks import hold_training
 
 router = APIRouter(route_class=ReleasingRoute, tags=["Assessment feedback"])
 
@@ -87,6 +88,7 @@ def get_feedback(attempt_id: uuid.UUID, user: CurrentUser = Depends(require_sess
 @router.post("/attempts/{attempt_id}/feedback")
 def submit_feedback(attempt_id: uuid.UUID, body: FeedbackIn, user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> dict:
     attempt = get_own_attempt(db, attempt_id, user.employee_id)
+    hold_training(db, attempt.training_id)  # A training deleted meanwhile is a 404, never a foreign-key error.
     if attempt.assessment_type != AssessmentType.POST_TEST:
         raise conflict("FEEDBACK_NOT_APPLICABLE", "Feedback is only collected after a post-training assessment.")
     if attempt.result_status is None:

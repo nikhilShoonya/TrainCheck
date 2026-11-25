@@ -27,6 +27,9 @@ class Report:
     columns: list[str]
     rows: list[list] = field(default_factory=list)
     definitions: list[str] = field(default_factory=list)
+    # The employee behind each row, in row order, for reports with one employee per row (empty otherwise). Lets a
+    # row open that employee's scorecard by stable ID. Never written to exports.
+    employee_ids: list[str] = field(default_factory=list)
 
 
 TITLES = {
@@ -59,6 +62,7 @@ def compliance(db: Session, rows: list[Row]) -> Report:
     now = utcnow()
     for r in rows:
         e, t = r.enrolment.employee, r.enrolment.training
+        report.employee_ids.append(str(e.id))
         report.rows.append([e.full_name, e.employee_code, _name(e.department), _name(e.location), t.title, _name(t.trainer), _date(r.enrolment.assigned_at), _date(r.enrolment.completion.completed_at) if r.enrolment.completion else "Not completed", assessment_timing(r, now), r.result])
     report.definitions = ["Completed means training completion was recorded; it does not mean the assessment was passed.", "Overdue means the assessment has been due for at least one day with no submission.", "Date filters select the training-completion cohort."]
     return report
@@ -70,6 +74,7 @@ def pass_fail(db: Session, rows: list[Row]) -> Report:
         e = r.enrolment.employee
         config = r.obligation.config if r.obligation else None
         red = r.result in ("NOT_PASSED", "NEEDS_RETRAINING")
+        report.employee_ids.append(str(e.id))
         report.rows.append([e.full_name, e.employee_code, _name(e.department), r.enrolment.training.title, r.enrolment.batch.name if r.enrolment.batch else "Unassigned", r.result, _percent(r.first), _percent(r.best), _percent(r.latest), len(r.post_attempts), config.max_attempts if config else "Not configured", _date(r.enrolment.completion.completed_at) if r.enrolment.completion else "Not completed", "Yes" if red else "No"])
     report.definitions = ["First and best scores are retained separately; a later attempt never overwrites an earlier one.", "Passed is decided from the unrounded score. Displayed scores are rounded down.", "A red flag means the latest outcome is Not Passed or Needs Re-training. It is a learning follow-up, not a disciplinary record."]
     return report
@@ -83,6 +88,7 @@ def learning_gain(db: Session, rows: list[Row]) -> Report:
         absolute, normalised, note = gain_values(pre, post)
         if pre is None and not r.enrolment.training.pretest_enabled:
             note = "Pre-test not configured"
+        report.employee_ids.append(str(r.enrolment.employee_id))
         report.rows.append([r.enrolment.employee.full_name, r.enrolment.training.title, r.enrolment.batch.name if r.enrolment.batch else "Unassigned", _percent(pre), _percent(post), absolute if absolute is not None else "Not comparable", normalised if normalised is not None else "Not comparable", note or ""])
     report.definitions = ["Gain = first post-test percentage minus pre-test percentage, in percentage points.", "Normalised gain = (post − pre) / (100 − pre) × 100. It is unavailable when the pre-test was 100%. The formula awaits analytics approval.", "A missing pre-test is never treated as zero."]
     return report
@@ -95,7 +101,7 @@ def behaviour(db: Session, rows: list[Row]) -> Report:
     for review in behaviour_reviews(db, [r.enrolment.id for r in rows]):
         cycle = review.cycle
         for question in cycle.template.questions:
-            key = (cycle.employee.full_name, cycle.training.title, cycle.period_days, question.competency.name, str(cycle.id))
+            key = (cycle.employee.full_name, cycle.training.title, cycle.period_days, question.competency.name, str(cycle.id), str(cycle.employee_id))
             entry = grouped.setdefault(key, {"self": None, "manager": None, "self_example": None, "manager_example": None, "status": []})
             answer = next((x for x in review.responses if x.template_question_id == question.id), None)
             kind = "self" if review.reviewer_type == ReviewerType.SELF else "manager"
@@ -107,6 +113,7 @@ def behaviour(db: Session, rows: list[Row]) -> Report:
         gap = v["manager"] - v["self"] if v["self"] is not None and v["manager"] is not None else "Not comparable"
         statuses = set(v["status"])
         state = "Not yet due" if statuses == {"NOT_DUE"} else "Complete" if statuses == {"SUBMITTED"} else "Overdue" if "OVERDUE" in statuses else "Pending"
+        report.employee_ids.append(key[5])
         report.rows.append([key[0], key[1], key[2], key[3], v["self"] if v["self"] is not None else MISSING, v["manager"] if v["manager"] is not None else MISSING, gap, state, v["self_example"] or MISSING, v["manager_example"] or MISSING])
     report.definitions = ["Ratings are compared only for the same employee, competency and follow-up period.", "The gap is a descriptive difference, not a performance judgement.", "Self and manager ratings are never averaged together."]
     return report
@@ -157,10 +164,13 @@ def employee_history(db: Session, rows: list[Row]) -> Report:
         batch = r.enrolment.batch.name if r.enrolment.batch else "Unassigned"
         if r.pre_attempt:
             a = r.pre_attempt
+            report.employee_ids.append(str(e.id))
             report.rows.append([e.full_name, e.employee_code, t.title, batch, "Pre-test", 1, _percent(a.score_percent), "Baseline (not pass/fail)", display_datetime(a.submitted_at), labels.get(a.submission_reason, "")])
         if not r.post_attempts:
+            report.employee_ids.append(str(e.id))
             report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", "Not submitted", MISSING, r.result, "Not submitted", ""])
         for a in r.post_attempts:
+            report.employee_ids.append(str(e.id))
             report.rows.append([e.full_name, e.employee_code, t.title, batch, "Post-test", a.attempt_number, _percent(a.score_percent), a.result_status, display_datetime(a.submitted_at), labels.get(a.submission_reason, "")])
     report.definitions = ["Every submitted attempt is listed. Earlier attempts are never deleted or replaced.", "A pre-test is a baseline taken before training. It has no pass or fail."]
     return report

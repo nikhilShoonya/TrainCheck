@@ -42,6 +42,7 @@ from app.models import (
     RefresherAcknowledgement,
 )
 from app.modules.notifications.service import notify_employee, notify_roles
+from app.modules.training.locks import hold_training
 
 # Signals within this window, or while the employee has not returned, are one incident (SC-2L-106).
 INCIDENT_MERGE_SECONDS = 2
@@ -261,6 +262,7 @@ def start_attempt(db: Session, obligation: AssessmentObligation, acknowledged: b
     """Starts the one allowed attempt, or returns the attempt already running on any device."""
     now = now or utcnow()
     rng = rng or random.SystemRandom()
+    hold_training(db, obligation.training_id)  # Before any row lock (training.locks): deletion never interleaves.
     db.execute(select(AssessmentObligation.id).where(AssessmentObligation.id == obligation.id).with_for_update())
     db.refresh(obligation)
 
@@ -285,12 +287,11 @@ def start_attempt(db: Session, obligation: AssessmentObligation, acknowledged: b
     if obligation.assessment_type == AssessmentType.POST_TEST:
         if obligation.status in (ObligationStatus.COMPLETED, ObligationStatus.WAIVED, ObligationStatus.CANCELLED):
             raise conflict("ASSESSMENT_NOT_DUE", "This assessment is already finished.")
-        if obligation.status == ObligationStatus.RETAKE_PENDING or obligation.due_at is None or obligation.due_at > now:
+        if obligation.status == ObligationStatus.RETAKE_PENDING:
+            # Each re-attempt waits for L&D to authorise it (approve-retake); no request can open it earlier.
+            raise conflict("RETAKE_NOT_AUTHORISED", "Your next attempt opens once L&D authorises it.")
+        if obligation.due_at is None or obligation.due_at > now:
             raise conflict("ASSESSMENT_NOT_DUE", "This assessment is not open yet.")
-        from app.modules.assessment.gate import finished_attempts
-
-        if finished_attempts(obligation) and obligation.refresher_acknowledged_at is None:
-            raise conflict("REFRESHER_REQUIRED", "Review and acknowledge the refresher material before your retake.")
     elif obligation.status != ObligationStatus.DUE:
         raise conflict("ASSESSMENT_NOT_DUE", "This pre-test is not available.")
 
@@ -409,6 +410,7 @@ def save_answer(db: Session, attempt: AssessmentAttempt, attempt_question_id: uu
     conflict, so the page that sent it can tell its own save (whose reply it never got) from anyone else's.
     """
     now = now or utcnow()
+    hold_training(db, attempt.training_id)
     db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
     db.refresh(attempt)
     require_open(db, attempt, now)
@@ -454,6 +456,7 @@ def _answer_for(db: Session, attempt_question_id: uuid.UUID) -> AttemptAnswer | 
 def set_review_mark(db: Session, attempt: AssessmentAttempt, attempt_question_id: uuid.UUID, marked: bool, now: datetime | None = None) -> None:
     now = now or utcnow()
     # The same row lock as save_answer, re-reading the attempt it locked, so a mark and a save never race.
+    hold_training(db, attempt.training_id)
     db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
     db.refresh(attempt)
     require_open(db, attempt, now)
@@ -471,6 +474,7 @@ def set_review_mark(db: Session, attempt: AssessmentAttempt, attempt_question_id
 def record_security_event(db: Session, attempt: AssessmentAttempt, event_type: str, now: datetime | None = None) -> dict:
     """The server decides what counts. Duplicate signals from one incident are merged (TC-SEC-003)."""
     now = now or utcnow()
+    hold_training(db, attempt.training_id)
     db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
     db.refresh(attempt)
     limit = int(attempt.config_snapshot["violation_limit"])
@@ -527,6 +531,10 @@ def truncate_percent(earned: Decimal, total: Decimal) -> Decimal:
 def finalise_attempt(db: Session, attempt_id: uuid.UUID, reason: SubmissionReason | None = None, now: datetime | None = None) -> AssessmentAttempt:
     """The only route to a result. Row-locked and idempotent: a repeat returns the same result."""
     now = now or utcnow()
+    training_id = db.scalar(select(AssessmentAttempt.training_id).where(AssessmentAttempt.id == attempt_id))
+    if training_id is None:
+        raise not_found()
+    hold_training(db, training_id)  # Before the attempt lock (training.locks); a no-op when the caller holds it.
     # populate_existing: a copy this session loaded before the lock (as every route does) is overwritten with the
     # locked row, so an attempt another request has just finalised is seen as finalised and is not scored again.
     attempt = db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id).with_for_update().execution_options(populate_existing=True))
@@ -591,7 +599,8 @@ def _apply_outcome(db: Session, attempt: AssessmentAttempt, passed: bool, now: d
         _notify_final_failure(db, attempt, obligation, now)
         record_audit(db, None, "NEEDS_RETRAINING_FLAGGED", "assessment_obligation", obligation.id, after={"attempts": counted_attempts(obligation)})
     else:
-        # The retake never opens by itself: the employee acknowledges the refresher, then L&D approves it.
+        # The retake never opens by itself: L&D authorises each re-attempt (decision of 25 Nov 2026: no refresher
+        # acknowledgement is required first; the refresher material stays available as guidance).
         obligation.status = ObligationStatus.RETAKE_PENDING
         obligation.outcome = ResultStatus.NOT_PASSED
         obligation.refresher_acknowledged_at = None
@@ -602,10 +611,22 @@ def _apply_outcome(db: Session, attempt: AssessmentAttempt, passed: bool, now: d
             attempt.employee_id,
             "ASSESSMENT_NOT_PASSED",
             f"Not passed: {title}",
-            f"You scored {score}. You have used {used} of {max_attempts} attempts. Review and acknowledge the refresher material; "
-            "L&D will then approve your re-attempt.",
+            f"You scored {score}. You have used {used} of {max_attempts} attempts. Review the refresher material; "
+            "your next attempt opens once L&D authorises it.",
             f"/results/{attempt.id}",
             f"not-passed:{attempt.id}",
+            now,
+        )
+        employee = obligation.employee
+        notify_roles(
+            db,
+            ("LD_ADMIN",),
+            "RETAKE_APPROVAL_REQUIRED",
+            f"Re-attempt approval needed: {employee.full_name}",
+            f"{employee.full_name} ({employee.employee_code}) did not pass attempt {used} of {max_attempts} for {title}. "
+            "Authorise the re-attempt in Training Completion.",
+            f"/lnd/completion/{obligation.training_id}",
+            f"retake-approval:{obligation.id}:{used}",
             now,
         )
 
@@ -615,38 +636,29 @@ def _notify_final_failure(db: Session, attempt: AssessmentAttempt, obligation: A
     title = f"Needs Re-training: {employee.full_name}"
     message = (
         f"{employee.full_name} ({employee.employee_code}) used all {counted_attempts(obligation)} attempts for "
-        f"{obligation.training.title}. After re-training, approve it in Employee Assignments to open a new assessment."
+        f"{obligation.training.title}. Assign re-training in Training Completion; the training must be completed again "
+        "before a new assessment with fresh attempts opens."
     )
     key = f"final-failure:{obligation.id}"
-    notify_roles(db, ("LD_ADMIN",), "FINAL_FAILURE", title, message, f"/lnd/assignments?search={employee.employee_code}", key, now)
-    notify_employee(db, employee.id, "FINAL_FAILURE", f"{obligation.training.title}: Needs Re-training", "You have used all attempts. Waiting for L&D approval of your re-training. This is a learning follow-up, not a disciplinary record.", "/employee/assessments", key, now)
+    notify_roles(db, ("LD_ADMIN",), "FINAL_FAILURE", title, message, f"/lnd/completion/{obligation.training_id}", key, now)
+    notify_employee(db, employee.id, "FINAL_FAILURE", f"{obligation.training.title}: Needs Re-training", "You have used all attempts. L&D will assign this training to you again. This is a learning follow-up, not a disciplinary record.", "/employee/assessments", key, now)
 
 
 # ---------- Retakes and exceptions ----------
 
 def acknowledge_refresher(db: Session, obligation: AssessmentObligation, now: datetime | None = None) -> None:
     now = now or utcnow()
+    hold_training(db, obligation.training_id)
     from app.modules.assessment.gate import finished_attempts
 
     if not finished_attempts(obligation) or obligation.status not in (ObligationStatus.RETAKE_PENDING, ObligationStatus.DUE):
         raise conflict("REFRESHER_NOT_REQUIRED", "No refresher acknowledgement is needed right now.")
     if obligation.refresher_acknowledged_at is None:
+        # Optional since 25 Nov 2026: recorded when given, but no longer needed before a re-attempt. L&D was already
+        # asked to authorise the re-attempt when the attempt failed.
         obligation.refresher_acknowledged_at = now
         used = counted_attempts(obligation)
         db.add(RefresherAcknowledgement(obligation_id=obligation.id, employee_id=obligation.employee_id, attempts_at_time=used, acknowledged_at=now))
-        if obligation.status == ObligationStatus.RETAKE_PENDING:
-            employee, title = obligation.employee, obligation.training.title
-            notify_roles(
-                db,
-                ("LD_ADMIN",),
-                "RETAKE_APPROVAL_REQUIRED",
-                f"Re-attempt approval needed: {employee.full_name}",
-                f"{employee.full_name} ({employee.employee_code}) completed the refresher for {title} after failing attempt {used} of "
-                f"{obligation.config.max_attempts}. Approve the re-attempt in Employee Assignments.",
-                f"/lnd/assignments?search={employee.employee_code}",
-                f"retake-approval:{obligation.id}:{used}",
-                now,
-            )
 
 
 def first_and_best(db: Session, obligation_ids: list[uuid.UUID]) -> dict:

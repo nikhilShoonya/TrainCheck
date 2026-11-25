@@ -5,6 +5,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -16,7 +17,8 @@ from app.core.errors import conflict, not_found, validation
 from app.core.responses import num, ok
 from app.core.routing import ReleasingRoute
 from app.models import Competency, Department, Function, Question, QuestionAnswerKey, QuestionOption, QuestionRevision, QuestionTrainingTag, Training
-from app.modules.assessment.service import link_serves, link_serves_clause
+from app.modules.assessment.service import TEST_TYPE_LABEL, link_serves, link_serves_clause
+from app.modules.training.locks import hold_trainings, training_gone
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/admin/questions", tags=["Question Bank"])
 
@@ -156,12 +158,17 @@ def search_questions(
     language: str | None = None,
     status: QuestionStatus | None = None,
     test_type: AssessmentType | None = None,
+    unassigned: bool = False,
 ) -> dict:
     """With training_id and test_type: only the questions that training's pre-test or post-test may draw, by the
     same link rule as the assessment engine (link_serves_clause), so an unclassified legacy link is listed for both
-    tests and a link for the other test never is. Every other filter narrows within that selection."""
+    tests and a link for the other test never is. Every other filter narrows within that selection.
+
+    With unassigned=true: only questions linked to no training at all (a link to an archived training still counts)."""
     if test_type and not training_id:
         raise validation("Choose a training to filter by test type.")
+    if unassigned and training_id:
+        raise validation("Unassigned questions have no training: remove the training filter.")
     query = (
         select(Question)
         .options(selectinload(Question.competency), selectinload(Question.department), selectinload(Question.function), selectinload(Question.trainings), selectinload(Question.training_links))
@@ -174,6 +181,8 @@ def search_questions(
         query = query.where(Question.training_links.any(and_(QuestionTrainingTag.training_id == training_id, link_serves_clause(test_type))))
     elif training_id:
         query = query.where(Question.trainings.any(Training.id == training_id))
+    if unassigned:
+        query = query.where(~Question.training_links.any())
     for column, value in (
         (Question.competency_id, competency_id),
         (Question.department_id, department_id),
@@ -220,6 +229,96 @@ def question_summary(_: CurrentUser = Depends(require_admin), db: Session = Depe
     )
 
 
+@router.get("/unassigned-summary")
+def unassigned_summary(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """How many questions are linked to no training (the Unassigned Questions card): exactly what
+    GET /admin/questions?unassigned=true lists with no other filter, Active and Inactive."""
+    rows = db.execute(select(Question.status, func.count()).where(~Question.training_links.any()).group_by(Question.status)).all()
+    by_status = {status: n for status, n in rows}
+    total = sum(by_status.values())
+    active = by_status.get(QuestionStatus.ACTIVE, 0)
+    return ok({"question_count": total, "active": active, "inactive": total - active})
+
+
+class AssignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    training_id: uuid.UUID
+    test_type: AssessmentType
+
+
+def _not_drawn_reason(q: Question, has_key: bool) -> str | None:
+    """Why a linked question would still not be drawn: the assessment engine's eligibility rule (pool_report)."""
+    if q.status != QuestionStatus.ACTIVE:
+        return "Inactive: it will not be drawn until it is activated."
+    if not has_key:
+        return "It has no correct answer: it will not be drawn until one is set."
+    if len(q.options) < 2:
+        return "It has fewer than two options: it will not be drawn until it has at least two."
+    return None
+
+
+# Declared before /{question_id}, so "assign" is never read as a question ID.
+@router.post("/assign")
+def assign_questions(body: AssignIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Links existing questions to one training's pre-test or post-test. Never copies a question or changes its
+    content, answer key, revisions or status, and never changes a link that already exists.
+
+    Each question gets its own outcome: ASSIGNED (a new link for this test), ALREADY_ASSIGNED (an existing link already
+    serves this test, including an unclassified legacy link, which serves both), OTHER_TEST (an existing link to this
+    training serves only the other test: kept unchanged, not assigned) or NOT_FOUND. A repeat of the same request
+    changes nothing and reports ALREADY_ASSIGNED. Links to other trainings, including ones added meanwhile, are never
+    touched. `warning` says why an assigned question will not be drawn yet (Inactive, no answer key, too few options)."""
+    from app.modules.imports.service import training_import_problem  # Imports depend on this module.
+
+    ids = list(dict.fromkeys(body.question_ids))
+    # The training lock (training.locks): a training deleted at this moment is a clean 404, never a foreign-key error.
+    training = db.scalar(select(Training).where(Training.id == body.training_id).with_for_update(read=True, key_share=True))
+    if training is None:
+        raise training_gone("The selected training no longer exists. Choose another training.")
+    problem = training_import_problem(training)
+    if problem:  # The Import Centre's rule: questions go only to a draft or active training.
+        raise conflict(problem.code, f"{training.title} ({training.training_code}) is {training.status.lower()}. Questions can be assigned only to a draft or active training.")
+    test = body.test_type
+    questions = {q.id: q for q in db.scalars(select(Question).options(selectinload(Question.options)).where(Question.id.in_(ids)))}
+    found = [i for i in ids if i in questions]
+    inserted: set[uuid.UUID] = set()
+    existing: dict[uuid.UUID, str | None] = {}
+    keys: set[uuid.UUID] = set()
+    if found:
+        # ON CONFLICT DO NOTHING: a link that exists, or that a concurrent request creates first, is kept as it is.
+        statement = pg_insert(QuestionTrainingTag).values([{"question_id": i, "training_id": training.id, "test_type": test.value} for i in found])
+        inserted = set(db.scalars(statement.on_conflict_do_nothing(index_elements=["question_id", "training_id"]).returning(QuestionTrainingTag.question_id)))
+        links = select(QuestionTrainingTag.question_id, QuestionTrainingTag.test_type).where(QuestionTrainingTag.training_id == training.id, QuestionTrainingTag.question_id.in_(found))
+        existing = {question_id: link_type for question_id, link_type in db.execute(links)}
+        keys = set(db.scalars(select(QuestionAnswerKey.question_id).where(QuestionAnswerKey.question_id.in_(found))))
+    label = TEST_TYPE_LABEL[test]
+    results = []
+    for question_id in ids:
+        q = questions.get(question_id)
+        if q is None:
+            results.append({"question_id": str(question_id), "question_code": None, "status": "NOT_FOUND", "test_type": None, "warning": None, "message": "This question no longer exists."})
+            continue
+        link_type = existing.get(question_id)
+        warning = _not_drawn_reason(q, question_id in keys)
+        if question_id in inserted:
+            status, message = "ASSIGNED", f"Assigned to the {label}."
+        elif link_type is None:
+            status, message = "ALREADY_ASSIGNED", "Already linked to this training without a test type, so both of its tests use it. The link was not changed."
+        elif link_serves(link_type, test):
+            status, message = "ALREADY_ASSIGNED", f"Already assigned to this training's {label}."
+        else:
+            status, message = "OTHER_TEST", f"Already linked to this training's {TEST_TYPE_LABEL[link_type]} only. That link was kept; the question was not assigned to the {label}."
+            warning = None
+        results.append({"question_id": str(q.id), "question_code": q.question_code, "status": status, "test_type": link_type, "warning": warning, "message": message})
+    summary = {key: sum(1 for r in results if r["status"] == key) for key in ("ASSIGNED", "ALREADY_ASSIGNED", "OTHER_TEST", "NOT_FOUND")}
+    summary["NOT_DRAWN"] = sum(1 for r in results if r["warning"])
+    after = {"test_type": test.value, "assigned": [r["question_code"] for r in results if r["status"] == "ASSIGNED"], **{k.lower(): v for k, v in summary.items()}}
+    record_audit(db, user.id, "QUESTIONS_ASSIGNED", "training", training.id, after=after)
+    db.commit()
+    return ok({"training": {"id": str(training.id), "title": training.title, "code": training.training_code}, "test_type": test.value, "summary": summary, "results": results})
+
+
 @router.get("/{question_id}")
 def get_question(question_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     question = db.get(Question, question_id)
@@ -229,7 +328,11 @@ def get_question(question_id: uuid.UUID, _: CurrentUser = Depends(require_admin)
 
 
 def _trainings(db: Session, ids: list[uuid.UUID]) -> list[Training]:
-    trainings = list(db.scalars(select(Training).where(Training.id.in_(ids))))
+    """The selected trainings, with the training lock (training.locks): one deleted at this moment is reported as
+    gone, never linked after its deletion."""
+    if not ids:
+        return []
+    trainings = list(db.scalars(select(Training).where(Training.id.in_(ids)).order_by(Training.id).with_for_update(read=True, key_share=True)))
     if len(trainings) != len(set(ids)):
         raise validation("A selected training no longer exists.")
     return trainings
@@ -301,6 +404,9 @@ def update_question(question_id: uuid.UUID, body: QuestionIn, user: CurrentUser 
             {"current_version": question.version, "expected_version": body.expected_version},
         )
     _check_references(db, body)
+    # The locks of the trainings linked now (training.locks), before their links are read: a link removed here is
+    # never removed at the same moment by a permanent deletion of its training.
+    hold_trainings(db, db.scalars(select(QuestionTrainingTag.training_id).where(QuestionTrainingTag.question_id == question.id)).all())
     question.version += 1
     question.topic = body.topic
     question.competency_id, question.department_id, question.function_id = body.competency_id, body.department_id, body.function_id

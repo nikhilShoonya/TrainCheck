@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { ACCOUNTS, signIn } from "./helpers";
 
 /* Training Completion: training cards → one training's employees, at a URL of its own (SCR-LND-006).
-   Runs on freshly seeded synthetic data. It changes no seeded record for good: an attendance change is put back,
-   dialogs are cancelled, and the empty training it creates is deleted. */
+   Runs on freshly seeded synthetic data. It changes no seeded record for good: dialogs are cancelled, and the
+   empty training it creates is deleted. */
 
 interface TrainingRow {
   id: string;
@@ -71,7 +71,8 @@ test("L&D opens a training from its card; refresh, direct links and Back keep th
   expect(rows.length).toBeGreaterThan(0);
   const table = page.locator("table");
   await expect(page.getByRole("status").filter({ hasText: `${rows.length} employees assigned.` })).toBeVisible();
-  await expect(table.getByRole("columnheader")).toHaveText(["Employee", "Attendance", "Completion", "Assessment Due", "Assessment", "Result", ""]);
+  await expect(table.getByRole("columnheader")).toHaveText(["Employee", "Completion", "Assessment Due", "Assessment", "Result", "", "Attempts", "Reattempt / Retraining"]);
+  await expect(page.getByRole("combobox", { name: /^Attendance for / })).toHaveCount(0); // Attendance is not edited here.
   const shown = await table.locator("tbody tr td:first-child small").allInnerTexts();
   expect(shown.length).toBe(Math.min(rows.length, 8)); // Eight rows per page.
   for (const code of shown) expect(rows.map((r) => r.employee_code)).toContain(code);
@@ -124,25 +125,11 @@ test("an employee assigned to two trainings appears in each, and actions reach o
     await page.goto(`/lnd/completion/${enrolment.training_id}`);
     await expect(page.getByRole("heading", { level: 1, name: title(enrolment.training_id) })).toBeVisible();
     await page.getByRole("searchbox", { name: "Search employees" }).fill(enrolment.employee_code);
-    await expect(page.getByRole("combobox", { name: `Attendance for ${enrolment.employee_name} (${enrolment.employee_code})` })).toHaveValue(enrolment.attendance_status);
+    await expect(page.locator("tbody tr").filter({ hasText: enrolment.employee_code }).first()).toContainText(enrolment.completed_at ? "Completed" : "Awaiting completion");
   }
 
-  // Attendance: change it in one training, see the other untouched, then put it back.
   await page.goto(`/lnd/completion/${open.training_id}`);
   await page.getByRole("searchbox", { name: "Search employees" }).fill(open.employee_code);
-  const select = page.getByRole("combobox", { name: `Attendance for ${open.employee_name} (${open.employee_code})` });
-  const changed = open.attendance_status === "PARTIAL" ? "PRESENT" : "PARTIAL";
-  const saved = page.waitForResponse((r) => r.url().endsWith(`/admin/enrolments/${open.id}/attendance`) && r.request().method() === "PATCH");
-  await select.selectOption(changed);
-  expect((await saved).status()).toBe(200);
-  await expect(page.getByRole("heading", { level: 1, name: title(open.training_id) })).toBeVisible(); // Still the same training.
-  await expect(select).toHaveValue(changed);
-  const after = await api<EnrolmentRow[]>(page, "/admin/enrolments");
-  expect(after.find((e) => e.id === open.id)!.attendance_status).toBe(changed);
-  expect(after.find((e) => e.id === other.id)!.attendance_status).toBe(other.attendance_status);
-  const restored = page.waitForResponse((r) => r.url().endsWith(`/admin/enrolments/${open.id}/attendance`) && r.request().method() === "PATCH");
-  await select.selectOption(open.attendance_status);
-  expect((await restored).status()).toBe(200);
 
   // Mark Completed opens for this employee and this training (cancelled: the seed is kept).
   await page.getByRole("button", { name: `Mark Completed for ${open.employee_name}` }).click();

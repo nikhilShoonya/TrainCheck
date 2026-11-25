@@ -20,6 +20,8 @@ from app.modules.assessment.service import finalise_attempt
 from app.modules.behaviour.service import overdue_working_days
 from app.modules.notifications.service import notify_employee, notify_roles
 from app.modules.reports.router import run_due_schedules
+from app.modules.training.deletion import remove_leftover_files
+from app.modules.training.locks import try_hold_training
 
 logger = logging.getLogger("traincheck.jobs")
 
@@ -65,6 +67,8 @@ def pending_assessment_reminders(db: Session, now: datetime | None = None) -> in
     for o in obligations:
         if o in unavailable:
             continue
+        if not try_hold_training(db, o.training_id):
+            continue  # Permanently deleted meanwhile: no reminder about it.
         title = o.training.title
         waited = calendar.working_days_between(calendar.local_date(o.due_at), today)
         heading = f"Assessment overdue: {title}" if waited >= 1 else f"Assessment due: {title}"
@@ -128,4 +132,5 @@ def build_scheduler() -> BackgroundScheduler:
         scheduler.add_job(_run, "cron", minute=45, args=[behaviour_reminders, "behaviour_reminders"], id="behaviour_reminders", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "cron", minute=0, args=[run_due_schedules, "run_due_schedules"], id="run_due_schedules", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "interval", minutes=5, args=[prune_rate_limits, "prune_rate_limits"], id="prune_rate_limits", max_instances=1, coalesce=True)
+    scheduler.add_job(_run, "cron", minute=15, args=[remove_leftover_files, "remove_leftover_files"], id="remove_leftover_files", max_instances=1, coalesce=True)
     return scheduler

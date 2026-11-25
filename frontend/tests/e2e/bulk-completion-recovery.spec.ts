@@ -110,7 +110,7 @@ async function confirmCompletion(page: Page) {
 
 /** Every row is visible on one page when the table has 10 or fewer rows. */
 async function statusOf(page: Page, name: string) {
-  return (await rowFor(page, name).locator("td").nth(2).innerText()).trim();
+  return (await rowFor(page, name).locator("td").nth(1).innerText()).trim();
 }
 
 test("a server error mid-batch keeps the saved employees, flags the rest, never retries, and a retry skips saved rows", async ({ context, page }) => {
@@ -127,7 +127,7 @@ test("a server error mid-batch keeps the saved employees, flags the rest, never 
   expect(firstIds).toContain("enrolment-4");
   expect(firstIds.length).toBeLessThan(8); // Unsent rows were stopped.
   const saved = world.rows.filter((r) => r.completed_at).map((r) => r.employee_name);
-  for (const name of saved) await expect(rowFor(page, name).locator("td").nth(2)).toContainText("Completed");
+  for (const name of saved) await expect(rowFor(page, name).locator("td").nth(1)).toContainText("Completed");
   await expect(rowFor(page, "Synthetic 05").getByRole("alert")).toContainText("server may have recorded completion");
   for (const r of world.rows.filter((row) => !row.completed_at && row.id !== "enrolment-4")) {
     await expect(rowFor(page, r.employee_name).getByRole("alert")).toContainText("Not attempted");
@@ -160,7 +160,7 @@ for (const behaviour of ["500-after-commit", "lost-after-commit"] as const) {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     expect(world.calls.map((c) => c.id)).toEqual(["enrolment-0"]);
     // The automatic list refresh after the batch shows what the server actually holds; the warning is not left on a completed row.
-    await expect(rowFor(page, "Synthetic 01").locator("td").nth(2)).toContainText("Completed");
+    await expect(rowFor(page, "Synthetic 01").locator("td").nth(1)).toContainText("Completed");
     await expect(rowFor(page, "Synthetic 01").getByRole("alert")).toHaveCount(0);
     await expect(page.locator("#toast")).toContainText("0 completions recorded. 1 not confirmed");
     // Retrying without a manual refresh cannot complete it twice: the action is no longer offered for this row.
@@ -314,12 +314,12 @@ test("an assessment started after selection is refused, shown on its row, and no
   await dialog.getByLabel("Reason *", { exact: true }).fill("Approved synthetic exemption");
   await dialog.getByRole("button", { name: "Confirm waiver", exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(rowFor(page, "Synthetic 01").locator("td").nth(4)).toHaveText("Waived");
-  await expect(rowFor(page, "Synthetic 03").locator("td").nth(4)).toHaveText("Waived");
+  await expect(rowFor(page, "Synthetic 01").locator("td").nth(3)).toHaveText("Waived");
+  await expect(rowFor(page, "Synthetic 03").locator("td").nth(3)).toHaveText("Waived");
   const running = rowFor(page, "Synthetic 02");
-  await expect(running.locator("td").nth(4)).toContainText("In progress");
+  await expect(running.locator("td").nth(3)).toContainText("In progress");
   await expect(running.getByRole("checkbox")).toBeDisabled();
-  await expect(running.locator("td").nth(2)).toContainText("Completed"); // Completion untouched.
+  await expect(running.locator("td").nth(1)).toContainText("Completed"); // Completion untouched.
   await expect(selectedText(page, 0)).toBeVisible();
 });
 

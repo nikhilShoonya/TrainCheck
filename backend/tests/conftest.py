@@ -317,7 +317,9 @@ class ApiClient:
     def patch(self, path: str, json=None, **kwargs):
         return self.http.patch(f"/api/v1{path}", json=json, headers=self._headers(None), **kwargs)
 
-    def delete(self, path: str, **kwargs):
+    def delete(self, path: str, json=None, **kwargs):
+        if json is not None:  # httpx's delete() takes no body; a confirmed permanent deletion sends one.
+            return self.http.request("DELETE", f"/api/v1{path}", json=json, headers=self._headers(None), **kwargs)
         return self.http.delete(f"/api/v1{path}", headers=self._headers(None), **kwargs)
 
 
@@ -373,9 +375,9 @@ def give_feedback(client: ApiClient, attempt_id) -> None:
     assert response.status_code == 200, response.text
 
 
-def refresher_then_approval(client: ApiClient, admin: ApiClient, obligation_id) -> None:
-    """After a failure that left attempts: the employee acknowledges the refresher, then L&D approves the re-attempt."""
-    assert client.post(f"/assessment-obligations/{obligation_id}/refresher-acknowledgement").status_code == 200
+def authorise_reattempt(client: ApiClient, admin: ApiClient, obligation_id) -> None:
+    """After a failure that left attempts: L&D authorises exactly one more attempt (Reattempt). No refresher
+    acknowledgement is needed first (decision of 25 Nov 2026). `client` is the employee's, kept for readability."""
     response = admin.post(f"/admin/obligations/{obligation_id}/approve-retake")
     assert response.status_code == 200, response.text
 

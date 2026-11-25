@@ -4,10 +4,10 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, contains_eager, joinedload, selectinload
 
 from app.core.audit import record_audit
@@ -22,7 +22,6 @@ from app.core.enums import (
     EnrolmentStatus,
     MaterialKind,
     ObligationStatus,
-    RetrainingFlag,
     ScheduleMode,
     TargetScope,
     TrainingStatus,
@@ -32,11 +31,8 @@ from app.core.ratelimit import expensive
 from app.core.responses import iso, ok
 from app.core.routing import ReleasingRoute
 from app.models import (
-    AssessmentAttempt,
     AssessmentConfig,
     AssessmentObligation,
-    BehaviourReviewCycle,
-    BehaviourTemplate,
     Competency,
     Department,
     Employee,
@@ -47,15 +43,16 @@ from app.models import (
     TrainingBatch,
     TrainingMaterial,
 )
-from app.modules.assessment.gate import obligation_startable
+from app.modules.assessment.gate import finished_attempts, obligation_startable
 from app.modules.assessment.scheduling import CalendarView, fixed_instant, load_calendar
 from app.modules.assessment.service import PoolData, active_config, counted_attempts, next_config_version, pool_message, pool_problem, pool_report
 from app.modules.behaviour.service import FOLLOWUP_DAYS
 from app.modules.notifications.service import notify_employee
 from app.modules.organisation.people import is_learner
-from app.modules.training import service
+from app.modules.training import deletion, service
+from app.modules.training.locks import hold_training
 
-router = APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["L&D Administration"])
+router =APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["L&D Administration"])
 UNIQUE_VIOLATION = "23505"  # PostgreSQL SQLSTATE for a unique constraint violation.
 
 MIN_ATTEMPTS, MAX_ATTEMPTS = 1, 10
@@ -235,7 +232,7 @@ def training_view(db: Session, t: Training, detail: bool = False, data_for: Trai
     # The pre-test draws from its own pool; pre-test-only questions never make the post-test look ready.
     pre_pool = pool_report(db, t.id, pools=loaded.pools, assessment_type=AssessmentType.PRE_TEST)
     readiness = service.readiness_from(t, post, pool if post else None)
-    pending = [e for e in enrolments if e.completion and not any(o.assessment_type == AssessmentType.POST_TEST for o in e.obligations)]
+    pending = [e for e in enrolments if e.completion and service.current_post_obligation(e) is None]
     unavailable = loaded.unavailable[t.id]
     data = {
         "id": str(t.id),
@@ -366,6 +363,13 @@ def _training(db: Session, training_id: uuid.UUID) -> Training:
     return training
 
 
+def _held_training(db: Session, training_id: uuid.UUID) -> Training:
+    """_training for a write: takes the training lock first (training.locks), so a permanent deletion running at the
+    same moment either waits for this request or makes it a clean 404."""
+    hold_training(db, training_id)
+    return _training(db, training_id)
+
+
 @router.get("/trainings/{training_id}")
 def get_training(training_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     return ok(training_view(db, _training(db, training_id), detail=True))
@@ -390,7 +394,7 @@ def _training_audit(t: Training) -> dict:
 
 @router.patch("/trainings/{training_id}")
 def update_training(training_id: uuid.UUID, body: TrainingIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    training = _training(db, training_id)
+    training = _held_training(db, training_id)
     before = _training_audit(training)
     old_refresher = training.refresher_text
     _apply_training(db, training, body)
@@ -403,7 +407,7 @@ def update_training(training_id: uuid.UUID, body: TrainingIn, user: CurrentUser 
 
 @router.post("/trainings/{training_id}/status")
 def set_training_status(training_id: uuid.UUID, body: StatusIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    training = _training(db, training_id)
+    training = _held_training(db, training_id)
     if body.status == TrainingStatus.ACTIVE:
         problem = config_pool(db, training.id, active_config(db, training.id, AssessmentType.POST_TEST), assessment_type=AssessmentType.POST_TEST)
         if not problem["ready"]:
@@ -415,44 +419,57 @@ def set_training_status(training_id: uuid.UUID, body: StatusIn, user: CurrentUse
     return ok(training_view(db, training, detail=True))
 
 
-# Records that make a training part of the learning history. While any exists, the training can only be archived.
-_TRAINING_USAGE = (
-    (Enrolment, "assignments"),
-    (AssessmentObligation, "assessments"),
-    (AssessmentAttempt, "assessment attempts"),
-    (TrainingBatch, "batches"),
-    (BehaviourTemplate, "behaviour questionnaires"),
-    (BehaviourReviewCycle, "behaviour reviews"),
-)
+ALREADY_DELETED = "This training no longer exists. It may already have been deleted."
+
+
+def _deletion_target(t: Training) -> dict:
+    return {"id": str(t.id), "code": t.training_code, "title": t.title, "status": t.status}
+
+
+@router.get("/trainings/{training_id}/deletion-preview")
+def deletion_preview(training_id: uuid.UUID, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """What a permanent deletion removes now, for the confirmation dialog. Employees, master data and every
+    Question Bank question are kept; questions_becoming_unassigned counts the questions left with no training."""
+    training = db.get(Training, training_id)
+    if training is None:
+        raise not_found(ALREADY_DELETED)
+    return ok({"training": _deletion_target(training), "counts": deletion.counts(db, training.id)})
+
+
+class DeleteTrainingIn(Strict):
+    confirmation_code: str = Field(default="", max_length=60)
 
 
 @router.delete("/trainings/{training_id}")
-def delete_training(training_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    """Deletes a training that was never used. Anything with learning history is archived instead, so no
-    assignment, assessment, batch or behaviour evidence is ever removed."""
-    training = _training(db, training_id)
-    used = [label for model, label in _TRAINING_USAGE if db.scalar(select(model.id).where(model.training_id == training.id).limit(1)) is not None]
-    if used:
-        raise conflict(
-            "TRAINING_IN_USE",
-            f"{training.title} cannot be deleted because it has {', '.join(used)}. Archive it instead; its history is preserved.",
-            {"in_use": used},
-        )
-    snapshot = {"code": training.training_code, "title": training.title, "status": training.status, "category": training.category}
-    # Unused assessment configurations belong to the training's setup (nothing references them without obligations).
-    for config in db.scalars(select(AssessmentConfig).where(AssessmentConfig.training_id == training.id)):
-        db.delete(config)
-    db.flush()
-    # Department, function and competency links, materials and question tags are removed with it; questions stay.
-    db.delete(training)
-    record_audit(db, user.id, "TRAINING_DELETED", "training", training_id, before=snapshot)
-    db.commit()
-    return ok({"deleted": True})
+def delete_training(training_id: uuid.UUID, body: DeleteTrainingIn | None = Body(default=None), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Permanently deletes the training and every record belonging only to it (training.deletion), after the training
+    code has been typed to confirm. Employees, master data and all Question Bank questions are kept.
+
+    Atomic: everything is deleted, or nothing. A repeat (or a deletion by someone else first) is a 404."""
+    typed = (body.confirmation_code if body else "").strip()
+    if not typed:
+        raise validation("Type the training code to confirm the permanent deletion.")
+    try:
+        training = deletion.lock_for_deletion(db, training_id)
+        if training is None:
+            raise not_found(ALREADY_DELETED)
+        if typed.upper() != training.training_code.upper():
+            raise ApiError(400, "CONFIRMATION_MISMATCH", f"The code you typed does not match {training.training_code}. Nothing was deleted.")
+        target = _deletion_target(training)
+        found, files = deletion.delete_training(db, training, user.id)
+        db.commit()
+    except OperationalError as exc:
+        db.rollback()
+        if deletion.is_busy(exc):
+            raise deletion.busy_error() from exc
+        raise
+    leftover = deletion.remove_files(files)  # After the commit: a file is never removed for a deletion that failed.
+    return ok({"deleted": True, "training": target, "counts": found, "files_pending_removal": len(leftover)})
 
 
 @router.post("/trainings/{training_id}/materials")
 def add_material(training_id: uuid.UUID, body: MaterialIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    training = _training(db, training_id)
+    training = _held_training(db, training_id)
     material = TrainingMaterial(training_id=training.id, kind=body.kind, title=body.title, url=body.url)
     db.add(material)
     db.flush()
@@ -463,6 +480,7 @@ def add_material(training_id: uuid.UUID, body: MaterialIn, user: CurrentUser = D
 
 @router.delete("/trainings/{training_id}/materials/{material_id}")
 def remove_material(training_id: uuid.UUID, material_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    hold_training(db, training_id)
     material = db.get(TrainingMaterial, material_id)
     if material is None or material.training_id != training_id:
         raise not_found()
@@ -496,6 +514,8 @@ def question_pool(
 def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Every change is a new version: past attempts keep their snapshot and obligations keep their config."""
     training = _locked(db, _training(db, training_id))  # Two saves at once take turns; the second builds on the first.
+    if training is None:  # Deleted while this save waited for the lock.
+        raise not_found(ALREADY_DELETED)
     if body.schedule_mode == ScheduleMode.DELAY_DAYS and body.schedule_delay_days < 1:
         raise validation("Enter a delay of at least 1 day.")
     calendar = load_calendar(db)
@@ -566,11 +586,10 @@ def create_config(training_id: uuid.UUID, body: ConfigIn, user: CurrentUser = De
 
 # ---------- Enrolment and completion ----------
 
-def assessment_state(obligations: list[AssessmentObligation], now: datetime, unavailable: bool = False) -> str:
-    post = sorted((o for o in obligations if o.assessment_type == AssessmentType.POST_TEST), key=lambda o: o.cycle_number)
-    if not post:
+def assessment_state(current: AssessmentObligation | None, now: datetime, unavailable: bool = False) -> str:
+    """State of the current training cycle's post-test."""
+    if current is None:
         return "Not scheduled"
-    current = post[-1]
     if current.status == ObligationStatus.WAIVED:
         return "Waived"
     if current.status == ObligationStatus.COMPLETED:
@@ -578,7 +597,7 @@ def assessment_state(obligations: list[AssessmentObligation], now: datetime, una
     if unavailable:
         return "Unavailable"
     if current.status == ObligationStatus.RETAKE_PENDING:
-        return "Awaiting approval" if current.refresher_acknowledged_at else "Awaiting refresher"
+        return "Awaiting approval"  # The next attempt opens only when L&D authorises it.
     if current.status == ObligationStatus.IN_PROGRESS:
         return "In progress"
     if current.due_at and current.due_at > now:
@@ -593,11 +612,19 @@ class IssueFinder:
         self.db = db
         self.readiness: dict[uuid.UUID, service.Readiness] = {}
         self.startable: dict = {}
+        self.configs: dict[uuid.UUID, AssessmentConfig | None] = {}
 
     def ready(self, training: Training) -> service.Readiness:
         if training.id not in self.readiness:
             self.readiness[training.id] = service.assessment_readiness(self.db, training)
         return self.readiness[training.id]
+
+    def max_attempts(self, training_id: uuid.UUID) -> int | None:
+        """The attempt limit a cycle without its assessment yet will get: the active post-test rules'."""
+        if training_id not in self.configs:
+            self.configs[training_id] = active_config(self.db, training_id, AssessmentType.POST_TEST)
+        config = self.configs[training_id]
+        return config.max_attempts if config else None
 
     def issue(self, e: Enrolment, current: AssessmentObligation | None) -> dict | None:
         if e.completion is not None and current is None:
@@ -611,8 +638,10 @@ class IssueFinder:
 
 
 def enrolment_view(e: Enrolment, now: datetime, issues: IssueFinder | None = None) -> dict:
-    post = sorted((o for o in e.obligations if o.assessment_type == AssessmentType.POST_TEST), key=lambda o: o.cycle_number)
-    current = post[-1] if post else None
+    post = [o for o in e.obligations if o.assessment_type == AssessmentType.POST_TEST]
+    # The current training cycle's post-test. None while a cycle (the first, or one after re-training) awaits
+    # completion: earlier cycles' assessments are history and never drive this row.
+    current = service.current_post_obligation(e)
     issue = issues.issue(e, current) if issues else None
     return {
         "id": str(e.id),
@@ -630,15 +659,22 @@ def enrolment_view(e: Enrolment, now: datetime, issues: IssueFinder | None = Non
         "completion_source": e.completion.completion_source if e.completion else None,
         "due_at": iso(current.due_at) if current else None,
         # Completion is the trigger (BR §4.1): before it is recorded there is nothing to schedule yet.
-        "assessment_state": "Awaiting completion" if e.completion is None and current is None else assessment_state(e.obligations, now, bool(issue and issue["code"] == "UNAVAILABLE")),
+        "assessment_state": "Awaiting completion" if e.completion is None and current is None else assessment_state(current, now, bool(issue and issue["code"] == "UNAVAILABLE")),
         "assessment_issue": issue,
         "outcome": current.outcome if current else None,
         "retraining_flag": current.retraining_flag if current else "NOT_REQUIRED",
         "obligation_id": str(current.id) if current else None,
         # Attempts in the current cycle; each approved re-training opens a new cycle with fresh attempts.
         "attempts_used": counted_attempts(current) if current else 0,
-        "max_attempts": current.config.max_attempts if current else None,
-        "retrainings": len(post) - 1 if post else 0,
+        # Attempts that produced a result (submitted or timed out) in the current cycle. Opening a test or
+        # authorising a re-attempt never changes it.
+        "attempts_completed": finished_attempts(current) if current else 0,
+        "max_attempts": current.config.max_attempts if current else (issues.max_attempts(e.training_id) if issues else None),
+        "training_cycle": e.training_cycle,
+        # New training cycles, plus extra assessment cycles opened inside one before training cycles existed.
+        "retrainings": e.training_cycle - 1 + len(post) - len({o.training_cycle for o in post}),
+        # REATTEMPT, RETRAINING or None: the action L&D can take now (the endpoints recheck everything).
+        "retry_action": service.retry_action(current),
         "refresher_acknowledged_at": iso(current.refresher_acknowledged_at) if current and current.status == ObligationStatus.RETAKE_PENDING else None,
     }
 
@@ -685,7 +721,7 @@ def list_enrolments(
 @router.post("/enrolments", dependencies=[expensive("bulk")])
 def assign(body: AssignIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Individual and bulk assignment share one set of rules; every employee gets an outcome and a reason."""
-    training = _training(db, body.training_id)
+    training = _held_training(db, body.training_id)
     batch = None
     if body.batch_id:
         batch = db.get(TrainingBatch, body.batch_id)
@@ -728,13 +764,24 @@ def _enrolment(db: Session, enrolment_id: uuid.UUID) -> Enrolment:
     return enrolment
 
 
+def _held_enrolment(db: Session, enrolment_id: uuid.UUID) -> Enrolment:
+    """The enrolment, locked (_locked), after its training's lock (training.locks): the training lock always comes
+    first, so a permanent deletion of the training and this request never wait for each other's locks."""
+    enrolment = _enrolment(db, enrolment_id)
+    hold_training(db, enrolment.training_id)
+    locked = _locked(db, enrolment)
+    if locked is None:
+        raise not_found()
+    return locked
+
+
 @router.patch("/enrolments/{enrolment_id}/attendance")
 def set_attendance(enrolment_id: uuid.UUID, body: AttendanceIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Once completion is recorded, attendance must stay a status that counts as completion.
 
     Audit B17: takes the enrolment lock that recording completion and cancelling take, and checks the rules on the
     row as it is once locked, so a completion recorded at the same moment can never be followed by Absent."""
-    enrolment = _locked(db, _enrolment(db, enrolment_id))
+    enrolment = _held_enrolment(db, enrolment_id)
     label = service.employee_label(enrolment.employee)
     if enrolment.enrolment_status == EnrolmentStatus.CANCELLED:
         raise conflict("ENROLMENT_CANCELLED", f"The assignment of {label} was cancelled, so attendance cannot be changed.")
@@ -755,7 +802,7 @@ def set_attendance(enrolment_id: uuid.UUID, body: AttendanceIn, user: CurrentUse
 @router.post("/enrolments/{enrolment_id}/completion")
 def mark_completed(enrolment_id: uuid.UUID, body: CompletionIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Records completion and reports, truthfully, whether the assessment was scheduled."""
-    enrolment = _locked(db, _enrolment(db, enrolment_id))
+    enrolment = _held_enrolment(db, enrolment_id)
     calendar = load_calendar(db)
     moment = datetime.combine(body.completion_date, time.min, calendar.tz)
     if body.completion_date == calendar.local_date(utcnow()):
@@ -783,7 +830,7 @@ def mark_completed(enrolment_id: uuid.UUID, body: CompletionIn, user: CurrentUse
 def schedule_assessments(training_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Recovery after a configuration or question-pool fix: schedules missing post-tests and moves
     stuck obligations onto the current valid configuration."""
-    training = _training(db, training_id)
+    training = _held_training(db, training_id)
     result = service.schedule_pending_assessments(db, training, user.id)
     db.commit()
     return ok(result)
@@ -791,7 +838,7 @@ def schedule_assessments(training_id: uuid.UUID, user: CurrentUser = Depends(req
 
 @router.post("/enrolments/{enrolment_id}/cancel")
 def cancel_enrolment(enrolment_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    enrolment = _locked(db, _enrolment(db, enrolment_id))  # Same lock as recording completion.
+    enrolment = _held_enrolment(db, enrolment_id)  # Same lock as recording completion.
     if enrolment.completion is not None:
         raise conflict("ENROLMENT_COMPLETED", "A completed assignment cannot be cancelled. Its evidence is kept.")
     enrolment.enrolment_status = EnrolmentStatus.CANCELLED
@@ -807,13 +854,21 @@ def _obligation(db: Session, obligation_id: uuid.UUID) -> AssessmentObligation:
     obligation = db.get(AssessmentObligation, obligation_id)
     if obligation is None:
         raise not_found()
+    hold_training(db, obligation.training_id)  # The training lock first (training.locks), before any row lock.
     return obligation
+
+
+def _locked_obligation(db: Session, obligation: AssessmentObligation) -> AssessmentObligation:
+    locked = _locked(db, obligation)
+    if locked is None:
+        raise not_found()
+    return locked
 
 
 @router.post("/obligations/{obligation_id}/waive")
 def waive(obligation_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """An authorised exemption with a reason. It never marks the assessment as passed (BR §5.9)."""
-    obligation = _locked(db, _obligation(db, obligation_id))  # The lock start_attempt takes: never waive a started attempt.
+    obligation = _locked_obligation(db, _obligation(db, obligation_id))  # The lock start_attempt takes: never waive a started attempt.
     if obligation.status in (ObligationStatus.COMPLETED, ObligationStatus.WAIVED, ObligationStatus.CANCELLED):
         raise conflict("OBLIGATION_CLOSED", "This assessment is already closed.")
     if obligation.status == ObligationStatus.IN_PROGRESS:
@@ -828,12 +883,18 @@ def waive(obligation_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(
 
 @router.post("/obligations/{obligation_id}/approve-retake")
 def approve_retake(obligation_id: uuid.UUID, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    """Opens the next attempt after a failure that left attempts, once the employee has acknowledged the refresher."""
-    obligation = _locked(db, _obligation(db, obligation_id))
+    """Authorises exactly one more attempt after a failed attempt that left attempts (Reattempt).
+
+    The obligation's row lock (the one start_attempt and finalisation take) makes a double click or a second admin
+    wait and then find it already authorised (409). No refresher acknowledgement is required (decision of
+    25 Nov 2026). Finishing the authorised attempt without passing makes it RETAKE_PENDING again."""
+    obligation = _locked_obligation(db, _obligation(db, obligation_id))
     if obligation.status != ObligationStatus.RETAKE_PENDING:
+        if obligation.status in (ObligationStatus.DUE, ObligationStatus.IN_PROGRESS) and finished_attempts(obligation):
+            raise conflict("NO_RETAKE_PENDING", "A re-attempt is already authorised or in progress for this employee.")
         raise conflict("NO_RETAKE_PENDING", "This assessment has no re-attempt waiting for approval.")
-    if obligation.refresher_acknowledged_at is None:
-        raise conflict("REFRESHER_NOT_ACKNOWLEDGED", "The employee has not acknowledged the refresher yet.")
+    if counted_attempts(obligation) >= obligation.config.max_attempts:
+        raise conflict("MAX_ATTEMPTS_REACHED", "All attempts for this assessment have been used. Assign re-training instead.")
     now = utcnow()
     used = counted_attempts(obligation)
     obligation.status = ObligationStatus.DUE
@@ -855,35 +916,16 @@ def approve_retake(obligation_id: uuid.UUID, user: CurrentUser = Depends(require
 
 @router.post("/obligations/{obligation_id}/retraining-cycle")
 def start_retraining_cycle(obligation_id: uuid.UUID, body: ReasonIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    """After re-training, opens a new assessment cycle. The original failure record is kept (BR §9.6)."""
-    obligation = _locked(db, _obligation(db, obligation_id))
-    if obligation.retraining_flag != RetrainingFlag.NEEDS_RETRAINING:
-        raise conflict("NOT_FLAGGED", "This record is not flagged Needs Re-training.")
-    readiness = service.assessment_readiness(db, obligation.training)
-    if not readiness.ready:
-        # Never open a cycle the employee could not start.
-        raise ApiError(422, readiness.reason or "NOT_READY", f"A new cycle cannot open yet. {readiness.message} {readiness.action}", readiness.view())
-    config = readiness.config
-    now = utcnow()
-    obligation.retraining_flag = RetrainingFlag.RESOLVED
-    new_cycle = AssessmentObligation(
-        enrolment_id=obligation.enrolment_id,
-        employee_id=obligation.employee_id,
-        training_id=obligation.training_id,
-        config_id=config.id,
-        assessment_type=AssessmentType.POST_TEST,
-        cycle_number=obligation.cycle_number + 1,
-        status=ObligationStatus.DUE,
-        completed_training_at=now,
-        due_at=now,
-    )
-    db.add(new_cycle)
-    try:
-        db.flush()
-    except IntegrityError as exc:  # Opened by another request at the same moment (cycles are unique per enrolment).
-        db.rollback()
-        raise conflict("NOT_FLAGGED", "A new assessment cycle was just opened for this record by another request.") from exc
-    notify_employee(db, obligation.employee_id, "RETAKE_ASSIGNED", f"Re-training approved: {obligation.training.title}", "L&D has approved your re-training. A new assessment is open with fresh attempts.", "/employee/assessments", f"retraining:{new_cycle.id}", now)
-    record_audit(db, user.id, "RETRAINING_CYCLE_STARTED", "assessment_obligation", new_cycle.id, reason=body.reason, before={"cycle": obligation.cycle_number}, after={"cycle": new_cycle.cycle_number})
+    """Re-training after the final failed attempt: assigns the training again as the assignment's next training cycle.
+
+    The new cycle needs training completion again; its post-test is scheduled from that completion with fresh
+    attempts. The failure record and every earlier attempt are kept (BR §9.6). Locks the enrolment, then the
+    obligation (the order recording completion uses), so a double click or a second admin gets a 409, never a
+    second cycle."""
+    found = _obligation(db, obligation_id)
+    enrolment = _locked(db, _enrolment(db, found.enrolment_id))
+    obligation = _locked_obligation(db, found)
+    cycle = service.start_retraining(db, enrolment, obligation, user.id, body.reason)
     db.commit()
-    return ok({"obligation_id": str(new_cycle.id), "cycle_number": new_cycle.cycle_number})
+    db.refresh(enrolment)
+    return ok({**enrolment_view(enrolment, utcnow(), IssueFinder(db)), "training_cycle": cycle})

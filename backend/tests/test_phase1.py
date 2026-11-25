@@ -19,7 +19,7 @@ from app.models import (
     TrainingCompletion,
 )
 from app.modules.scheduler.jobs import behaviour_reminders, build_scheduler, pending_assessment_reminders
-from tests.conftest import NOW, refresher_then_approval, start, submit, take
+from tests.conftest import NOW, authorise_reattempt, start, submit, take
 
 
 def count(db, model, *where) -> int:
@@ -320,15 +320,20 @@ def test_reminders_skip_unavailable_assessments(world, db):
     assert len(notices(db, "ASSESSMENT_UNAVAILABLE")) == 2
 
 
-def test_retraining_cycle_refuses_an_unready_training(world, db, client_for):
+def test_retraining_cycle_refuses_an_archived_training(world, db, client_for):
+    """Re-training is a new assignment cycle, so it follows the assignment rules: only an active training takes one.
+    (An unready question pool no longer blocks it: the assessment is scheduled when the new completion is recorded,
+    and an unready pool is then reported like any other completion's.)"""
     training = world.training()
     obligation = world.complete(world.employee, training)
     obligation.retraining_flag = "NEEDS_RETRAINING"
     obligation.status = "COMPLETED"
+    training.status = "ARCHIVED"
     db.commit()
-    deactivate(db, training.training_code, 1)
     response = client_for(world.admin).post(f"/admin/obligations/{obligation.id}/retraining-cycle", json={"reason": "Re-trained in person"})
-    assert response.status_code == 422 and response.json()["error"]["code"] == "QUESTION_POOL_INSUFFICIENT"
+    assert response.status_code == 409 and response.json()["error"]["code"] == "TRAINING_NOT_ACTIVE"
+    db.expire_all()
+    assert db.get(AssessmentObligation, obligation.id).retraining_flag == "NEEDS_RETRAINING"
 
 
 # ---------- Scoring, attempts and notifications ----------
@@ -338,8 +343,8 @@ def test_attempts_first_best_and_outcome_notifications(world, db, client_for):
     client = client_for(world.employee)
     first = take(db, client, obligation.id, 6)
     assert first["result_status"] == "NOT_PASSED" and first["refresher"] is not None
-    assert len(notices(db, "ASSESSMENT_NOT_PASSED")) == 1
-    refresher_then_approval(client, client_for(world.admin), obligation.id)  # A retake opens once L&D approves it.
+    assert len(notices(db, "ASSESSMENT_NOT_PASSED")) == 1 and len(notices(db, "RETAKE_APPROVAL_REQUIRED")) == 1
+    authorise_reattempt(client, client_for(world.admin), obligation.id)  # A retake opens once L&D approves it.
     assert len(notices(db, "RETAKE_APPROVAL_REQUIRED")) == 1 and len(notices(db, "RETAKE_APPROVED")) == 1
     second = take(db, client, obligation.id, 8)
     assert second["result_status"] == "PASSED"

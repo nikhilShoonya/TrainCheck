@@ -9,17 +9,18 @@ import { MonthlyTrend } from "@/features/dashboard/charts";
 import { ActionItem, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, ViewAll, Welcome } from "@/features/dashboard/widgets";
 import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
-import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref, type EnrolmentRow, type SchedulingOutcome } from "@/features/admin/completionView";
+import { attemptsLabel, completionCounts, filterEmployees, filterTrainings, isTrainingId, retryNote, rowCounts, shortDescription, trainingCompletionHref, trainingsHref, type EnrolmentRow, type SchedulingOutcome } from "@/features/admin/completionView";
 import { allShownSelected, filterPeople, toggleOne, toggleShown } from "@/features/admin/assignView";
 import { canSelectCompletion } from "@/features/admin/bulkCompletion";
 import { BulkCompletionDialog } from "@/features/admin/BulkCompletionDialog";
+import { DeleteTrainingDialog } from "@/features/admin/DeleteTrainingDialog";
 import { TrainingActionsMenu } from "@/features/admin/TrainingActionsMenu";
 import { WaiveSelectedDialog } from "@/features/admin/WaiveSelectedDialog";
 import { canWaiveAssessment, type WaiverEmployee } from "@/features/admin/waiver";
 import { activeDepartments, assignmentCounts, assignmentsHref, confirmBlockedReason, createdMessage, departmentOptions, departmentShown, EMPLOYEE_COLUMNS, EMPLOYEE_FILE_TYPES, filterEmployeeList, findEmployee, isEmployeeId, isInactive, joiningShown, NO_TRAINING_ASSIGNED, PASSWORD_RULE, plural, previewSummary, rowProblems, STATUS_OPTIONS, type AddEmployeeMode, type EmployeeImportResult, type EmployeeListItem, type EmployeePreview } from "@/features/admin/employeeView";
 import { acceptedFiles, commitSelection, fileTypesLabel, importFields, importSummary, needsRevalidation, selectionChanged, selectionProblem, templatePath, TEST_TYPE_HELP, TEST_TYPE_LABEL, TEST_TYPE_OPTIONS, testTypeLabel, type ImportCounts, type ImportSelection, type TestType } from "@/features/admin/importView";
 import { QuestionDocIcon, QuestionSheetsArt } from "@/features/admin/QuestionCardArt";
-import { contextTestTypes, importQuestionsHref, linkedTestType, questionBankHref, questionCardsHref, questionTableHref, testTypeFromSlug, type QuestionCard } from "@/features/admin/questionBankView";
+import { assignableTrainings, assignSummaryText, contextTestTypes, importQuestionsHref, linkedTestType, QUESTION_ASSIGN_STATUS, questionBankHref, questionCardsHref, questionTableHref, remainingSelection, showUnassignedCard, testTypeFromSlug, unassignedHref, type AssignResult, type QuestionCard, type UnassignedSummary } from "@/features/admin/questionBankView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { checkPlan, defaultQuestionsPerAttempt, describePool, DIFFICULTIES, DIFFICULTY_LABEL, exclusionNotes, shortfallSentence, type Difficulty, type PlanCheck, type PoolReport } from "@/lib/pool";
@@ -36,8 +37,9 @@ const FOLLOWUP_DAYS = 30;
 
 const names = (items?: Named[]) => (items ?? []).map((x) => ({ value: x.id, label: x.name }));
 
-/** A dialog form that keeps what was typed when the server rejects it. */
-function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide, submitBlockedReason }: { title: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; submitLabel: string; children: ReactNode; wide?: boolean; submitBlockedReason?: string | null }) {
+/** A dialog form that keeps what was typed when the server rejects it. `extraAction` (optional) sits at the start of
+    the dialog buttons, e.g. Delete in an Edit dialog. */
+function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide, submitBlockedReason, extraAction }: { title: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; submitLabel: string; children: ReactNode; wide?: boolean; submitBlockedReason?: string | null; extraAction?: ReactNode }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -63,6 +65,7 @@ function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide, sub
           </p>
         ) : null}
         <div className="dialog-actions">
+          {extraAction}
           <Btn onClick={onClose}>Cancel</Btn>
           <button className="btn primary" type="submit" disabled={busy || Boolean(submitBlockedReason)} aria-describedby={submitBlockedReason ? "submit-blocked-reason" : undefined}>
             {busy ? "Saving…" : submitLabel}
@@ -555,29 +558,50 @@ export function TrainingManagement() {
           }}
         />
       ) : null}
-      {removing ? (
-        <ConfirmDialog
-          title="Delete training?"
-          danger
-          confirmLabel="Delete training"
-          body={<p>{removing.title}. This permanently removes the programme and its setup. Only a training that was never assigned or assessed can be deleted; otherwise archive it to keep its history.</p>}
-          onClose={() => setRemoving(null)}
-          onConfirm={async () => {
-            await api.del(`/admin/trainings/${removing.id}`);
-            toast("Training deleted.");
-            void state.reload();
-          }}
-        />
-      ) : null}
+      {removing ? <DeleteTrainingDialog training={removing} onClose={() => setRemoving(null)} onDeleted={() => void state.reload()} /> : null}
     </>
   );
 }
 
 /* ---------- Departments, functions, trainers, competencies, calendar ---------- */
 
+/** Delete, shown inside an Edit dialog. It opens a confirmation; nothing is removed until that is confirmed. */
+function DeleteButton({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <Btn tone="danger" className="dialog-delete" onClick={onClick}>
+      <Icon name="cross" /> Delete<span className="sr-only"> {name}</span>
+    </Btn>
+  );
+}
+
+/** Confirms a delete. The server refuses a record that is still in use (employees, trainings, questions…) and says
+    where; that message is shown here and the record stays. */
+function DeleteRecordDialog({ label, name, path, onClose, onDeleted }: { label: string; name: string; path: string; onClose: () => void; onDeleted: () => void }) {
+  const toast = useToast();
+  return (
+    <ConfirmDialog
+      title={`Delete ${label}`}
+      confirmLabel={`Delete ${label}`}
+      danger
+      onClose={onClose}
+      body={
+        <p>
+          Delete <strong>{name}</strong>? This cannot be undone. A {label} that is still in use cannot be deleted: mark it inactive instead (Edit → untick Active).
+        </p>
+      }
+      onConfirm={async () => {
+        await api.del(path);
+        toast(`${name} deleted.`);
+        onDeleted();
+      }}
+    />
+  );
+}
+
 function UnitTable({ title, path, label, showCode = true }: { title: string; path: string; label: string; showCode?: boolean }) {
   const state = useApi<OrgUnit[]>(path);
   const [edit, setEdit] = useState<{ unit: OrgUnit | null } | null>(null);
+  const [deleting, setDeleting] = useState<OrgUnit | null>(null);
   const toast = useToast();
   return (
     <section className="panel">
@@ -587,6 +611,7 @@ function UnitTable({ title, path, label, showCode = true }: { title: string; pat
           <Icon name="plus" /> Add {label}
         </Btn>
       </div>
+      {deleting ? <DeleteRecordDialog label={label} name={deleting.name} path={`${path}/${deleting.id}`} onClose={() => setDeleting(null)} onDeleted={() => void state.reload()} /> : null}
       <Loaded state={state}>
         {(rows) => (
           <DataTable
@@ -608,6 +633,17 @@ function UnitTable({ title, path, label, showCode = true }: { title: string; pat
           title={`${edit.unit ? "Edit" : "Add"} ${label}`}
           submitLabel="Save"
           onClose={() => setEdit(null)}
+          extraAction={
+            edit.unit ? (
+              <DeleteButton
+                name={edit.unit.name}
+                onClick={() => {
+                  setDeleting(edit.unit);
+                  setEdit(null);
+                }}
+              />
+            ) : null
+          }
           onSubmit={async (form) => {
             const body = { ...(showCode ? { code: form.get("code") } : {}), name: form.get("name"), is_active: form.has("is_active") };
             if (edit.unit) await api.patch(`${path}/${edit.unit.id}`, body);
@@ -627,12 +663,13 @@ function UnitTable({ title, path, label, showCode = true }: { title: string; pat
   );
 }
 
-/** A small master-data list with an Add dialog. With `editFields`, each row also gets an Edit dialog (PATCH to
-    `${path}/{id}`); the row's active status is sent back unchanged, and an emptied optional field is saved as blank. */
+/** A small master-data list with an Add dialog. With `editFields`, each row also gets a Status column and an Edit
+    dialog (PATCH to `${path}/{id}`) with an Active checkbox and Delete; an emptied optional field is saved as blank. */
 function SimpleList({ title, path, label, fields, editFields, columns, rowOf }: { title: string; path: string; label: string; fields: ReactNode; editFields?: (r: never) => ReactNode; columns: string[]; rowOf: (r: never) => ReactNode[] }) {
   const state = useApi<never[]>(path);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ row: never } | null>(null);
+  const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
   const toast = useToast();
   return (
     <section className="panel">
@@ -642,15 +679,17 @@ function SimpleList({ title, path, label, fields, editFields, columns, rowOf }: 
           <Icon name="plus" /> Add {label}
         </Btn>
       </div>
+      {deleting ? <DeleteRecordDialog label={label} name={deleting.name} path={`${path}/${deleting.id}`} onClose={() => setDeleting(null)} onDeleted={() => void state.reload()} /> : null}
       <Loaded state={state}>
         {(rows) => (
           <DataTable
-            headers={editFields ? [...columns, ""] : columns}
+            headers={editFields ? [...columns, "Status", ""] : columns}
             emptyTitle={`No ${title.toLowerCase()} yet.`}
             rows={rows.map((r) =>
               editFields
                 ? [
                     ...rowOf(r),
+                    <Badge key="s" status={(r as { is_active?: boolean }).is_active === false ? "INACTIVE" : "ACTIVE"} />,
                     <Btn key="e" kind="text" onClick={() => setEditing({ row: r })}>
                       Edit<span className="sr-only"> {(r as { name?: string }).name}</span>
                     </Btn>,
@@ -665,15 +704,28 @@ function SimpleList({ title, path, label, fields, editFields, columns, rowOf }: 
           title={`Edit ${label}`}
           submitLabel="Save"
           onClose={() => setEditing(null)}
+          extraAction={
+            <DeleteButton
+              name={(editing.row as { name: string }).name}
+              onClick={() => {
+                const row = editing.row as { id: string; name: string };
+                setDeleting({ id: row.id, name: row.name });
+                setEditing(null);
+              }}
+            />
+          }
           onSubmit={async (form) => {
-            const row = editing.row as { id: string; is_active?: boolean };
-            const values = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v).trim() || null]));
-            await api.patch(`${path}/${row.id}`, { ...values, is_active: row.is_active ?? true });
+            const row = editing.row as { id: string };
+            const values = Object.fromEntries([...form.entries()].filter(([k]) => k !== "is_active").map(([k, v]) => [k, String(v).trim() || null]));
+            await api.patch(`${path}/${row.id}`, { ...values, is_active: form.has("is_active") });
             toast("Saved.");
             void state.reload();
           }}
         >
           {editFields(editing.row)}
+          <label className="checkline">
+            <input type="checkbox" name="is_active" defaultChecked={(editing.row as { is_active?: boolean }).is_active ?? true} /> Active
+          </label>
         </DialogForm>
       ) : null}
       {adding ? (
@@ -827,6 +879,14 @@ export function Organisation() {
             </Field>
           </>
         }
+        editFields={(c: { name: string; description: string | null }) => (
+          <>
+            <TextField label="Name *" name="name" required maxLength={160} defaultValue={c.name} />
+            <Field label="Behaviour description">
+              <textarea name="description" maxLength={2000} defaultValue={c.description ?? ""} />
+            </Field>
+          </>
+        )}
       />
       <CalendarPanel />
     </>
@@ -1406,12 +1466,12 @@ function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { 
                       e.retrainings,
                       resultOf(e),
                       <div className="row wrap" key="x">
-                        {e.assessment_state === "Awaiting approval" && e.obligation_id ? (
+                        {e.retry_action === "REATTEMPT" && e.obligation_id ? (
                           <Btn kind="text" tone="attention" onClick={() => setRetake(e)}>
                             Approve re-attempt
                           </Btn>
                         ) : null}
-                        {e.retraining_flag === "NEEDS_RETRAINING" && e.obligation_id ? (
+                        {e.retry_action === "RETRAINING" && e.obligation_id ? (
                           <Btn kind="text" tone="attention" onClick={() => setRetraining(e)}>
                             Approve re-training
                           </Btn>
@@ -1455,14 +1515,14 @@ function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { 
           confirmLabel="Approve re-attempt"
           body={
             <p>
-              {retake.employee_name} · {retake.training_title}. Attempt {retake.attempts_used} of {retake.max_attempts} was not passed and the refresher is acknowledged. The next attempt opens for the employee now.
+              {retake.employee_name} · {retake.training_title}. Attempt {retake.attempts_completed} of {retake.max_attempts} was not passed. Approving opens exactly one more attempt for the employee now.
             </p>
           }
           onClose={() => setRetake(null)}
           onConfirm={async () => {
             await api.post(`/admin/obligations/${retake.obligation_id}/approve-retake`);
             toast("Re-attempt approved. The employee has been notified.");
-            void state.reload();
+            await state.reload();
           }}
         />
       ) : null}
@@ -1473,14 +1533,14 @@ function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { 
           confirmLabel="Approve re-training"
           body={
             <p>
-              {retraining.employee_name} · {retraining.training_title}. All {retraining.attempts_used} attempts were used. Approving opens a new assessment with fresh attempts. Earlier attempts and the failure record are kept.
+              {retraining.employee_name} · {retraining.training_title}. All {retraining.attempts_completed} attempts were used. Approving assigns the training again: once its completion is recorded, a new assessment opens with fresh attempts. Earlier attempts and the failure record are kept.
             </p>
           }
           onClose={() => setRetraining(null)}
           onConfirm={async (reason) => {
             await api.post(`/admin/obligations/${retraining.obligation_id}/retraining-cycle`, { reason });
-            toast("Re-training approved. The employee has been notified.");
-            void state.reload();
+            toast("Re-training assigned. Record the employee's training completion again to open a new assessment.");
+            await state.reload();
           }}
         />
       ) : null}
@@ -1488,10 +1548,9 @@ function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { 
   );
 }
 
-/** Rows where L&D must decide: a re-attempt after the refresher, or re-training after the last failed attempt. */
-const needsApproval = (e: EnrolmentRow) => e.assessment_state === "Awaiting approval" || e.retraining_flag === "NEEDS_RETRAINING";
+/** Rows where L&D must decide: a re-attempt after a failed attempt, or re-training after the last failed attempt. */
+const needsApproval = (e: EnrolmentRow) => Boolean(e.retry_action);
 
-const ATTENDANCE = ["PENDING", "PRESENT", "PARTIAL", "ABSENT", "EXCUSED"];
 const today = () => todayInOrg();
 
 /** Trainings whose completed employees have no usable assessment, with the fix and the people affected. */
@@ -1546,7 +1605,7 @@ function SchedulingAttention({ rows, onChanged }: { rows: EnrolmentRow[]; onChan
    filtered by training on the server. Both searches are in the URL, so refresh, links and Back keep them. */
 
 const completionDescription = (behaviour?: boolean) =>
-  `Record attendance and completion. Only Present attendance counts as completion. Completion schedules the assessment when the training's configuration and question pool are ready${behaviour ? ", and the 30-day follow-up" : ""}.`;
+  `Record training completion. Completion schedules the assessment when the training's configuration and question pool are ready${behaviour ? ", and the 30-day follow-up" : ""}. After a failed attempt, authorise the re-attempt here.`;
 
 const importAttendance = (
   <BtnLink href="/lnd/imports" tone="data">
@@ -1711,17 +1770,15 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
   const [waiverErrors, setWaiverErrors] = useState<Record<string, string>>({});
   const [completionErrors, setCompletionErrors] = useState<Record<string, string>>({});
   const [confirmedCompletions, setConfirmedCompletions] = useState<Record<string, EnrolmentRow>>({});
+  const [reattempt, setReattempt] = useState<EnrolmentRow | null>(null);
+  const [retraining, setRetraining] = useState<EnrolmentRow | null>(null);
   const toast = useToast();
-  // An attendance change shows at once (and is what the completion dialog starts from), so nothing acts on
-  // the attendance from before the change while it saves or while the list reloads (that takes seconds).
-  // Kept only until the reloaded list, which already holds the change, replaces the list it was made on.
-  const [updated, setUpdated] = useState<{ source: EnrolmentRow[] | null; rows: Record<string, EnrolmentRow> }>({ source: null, rows: {} });
-  const [saving, setSaving] = useState<Record<string, boolean>>({});
   const latest = (e: EnrolmentRow) => {
-    const current = updated.source === state.data ? (updated.rows[e.id] ?? e) : e;
     // Completion records cannot be undone. An older GET must not erase a confirmed save; use fresh
     // server fields again once the list includes that completion (including later assessment changes).
-    const row = current.completed_at ? current : (confirmedCompletions[e.id] ?? current);
+    // A re-training cycle awaits completion again: never mask it with an earlier cycle's confirmed completion.
+    const confirmed = confirmedCompletions[e.id];
+    const row = e.completed_at || (confirmed && confirmed.training_cycle !== e.training_cycle) ? e : (confirmed ?? e);
     // Keep an acknowledged waiver visible across older reads, without masking a later assessment cycle.
     return row.obligation_id && confirmedWaivers[e.id] === row.obligation_id ? { ...row, assessment_state: "Waived", assessment_issue: null } : row;
   };
@@ -1743,21 +1800,6 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
       delete next[row.id];
       return next;
     });
-  };
-  const remember = (row: EnrolmentRow) => setUpdated((u) => ({ source: state.data, rows: { ...(u.source === state.data ? u.rows : {}), [row.id]: row } }));
-  const setAttendance = async (e: EnrolmentRow, status: string) => {
-    setSelected((ids) => new Set([...ids].filter((id) => id !== e.id)));
-    remember({ ...e, attendance_status: status });
-    setSaving((s) => ({ ...s, [e.id]: true }));
-    try {
-      remember(await api.patch<EnrolmentRow>(`/admin/enrolments/${e.id}/attendance`, { attendance_status: status }));
-      void state.reload();
-    } catch (error) {
-      remember(e); // Refused: show the attendance the server kept.
-      toast((error as ApiError).message);
-    } finally {
-      setSaving((s) => ({ ...s, [e.id]: false }));
-    }
   };
   return (
     <>
@@ -1786,7 +1828,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
             if (!all.length)
               return (
                 <>
-                  <Empty title="No employees are assigned to this training." hint="Assign employees in Employee Assignments. They appear here to record attendance and completion." />
+                  <Empty title="No employees are assigned to this training." hint="Assign employees in Employee Assignments. They appear here to record completion." />
                   <div className="row">
                     <BtnLink href="/lnd/assignments">Go to Employee Assignments</BtnLink>
                   </div>
@@ -1795,7 +1837,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
             const counts = rowCounts(all.map(latest));
             const rows = filterEmployees(all.map(latest), search);
             // Selection follows the individual action; the completion API validates training status on confirmation.
-            const selectable = rows.filter((e) => (canSelectCompletion(e) || canWaiveAssessment(e)) && !saving[e.id]);
+            const selectable = rows.filter((e) => canSelectCompletion(e) || canWaiveAssessment(e));
             const selectableIds = new Set(selectable.map((e) => e.id));
             const selectedRows = selectable.filter((e) => selected.has(e.id));
             const completionRows = selectedRows.filter(canSelectCompletion);
@@ -1807,7 +1849,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                   items={[
                     ["Assigned employees", counts.assigned, "Live assignments for this training"],
                     ["Completion recorded", counts.recorded, "Training completion, not assessment"],
-                    ["Completion awaiting", counts.awaiting, "Attendance not yet recorded as complete"],
+                    ["Completion awaiting", counts.awaiting, "Completion not yet recorded"],
                   ]}
                 />
                 <form className="filters" role="search" aria-label="Employees" onSubmit={(e) => e.preventDefault()}>
@@ -1826,7 +1868,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                 <p className="small">Select All includes matching employees eligible for completion or an assessment waiver across all table pages. Each action applies to eligible selected employees. Changing the search clears selection.</p>
                 {rows.length ? (
                   <DataTable
-                    headers={["Employee", "Attendance", "Completion", "Assessment Due", "Assessment", "Result", ""]}
+                    headers={["Employee", "Completion", "Assessment Due", "Assessment", "Result", "", "Attempts", "Reattempt / Retraining"]}
                     emptyTitle="No assignments yet."
                     rows={rows.map((e) => [
                       <div key="p" data-sort={e.employee_name}>
@@ -1835,13 +1877,6 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                           <span>{e.employee_name}<small>{e.employee_code}</small></span>
                         </label>
                       </div>,
-                      <select key="a" aria-label={`Attendance for ${e.employee_name} (${e.employee_code})`} value={e.attendance_status} onChange={(ev) => void setAttendance(e, ev.target.value)}>
-                        {ATTENDANCE.map((a) => (
-                          <option key={a} value={a}>
-                            {a.charAt(0) + a.slice(1).toLowerCase()}
-                          </option>
-                        ))}
-                      </select>,
                       <div key="c" data-sort={e.completed_at ?? ""}>
                         <span className={`badge ${e.completed_at ? "success" : "warning"}`}>{e.completed_at ? "Completed" : "Awaiting completion"}</span>
                         {e.completed_at ? <small>{day(e.completed_at)} ({e.completion_source === "IMPORT" ? "import" : "manual"})</small> : null}
@@ -1856,7 +1891,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                       resultOf(e),
                       <div className="row wrap" key="x">
                         {e.completed_at ? null : (
-                          <Btn tone="success" disabled={saving[e.id]} onClick={() => setCompleting(e)}>
+                          <Btn tone="success" onClick={() => setCompleting(e)}>
                             Mark Completed<span className="sr-only"> for {e.employee_name}</span>
                           </Btn>
                         )}
@@ -1865,6 +1900,22 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                             Waive<span className="sr-only"> assessment for {e.employee_name}</span>
                           </Btn>
                         ) : null}
+                      </div>,
+                      <span key="n" data-sort={`${e.attempts_completed}`}>{attemptsLabel(e)}</span>,
+                      <div key="r" data-sort={e.retry_action ?? ""}>
+                        {e.retry_action === "REATTEMPT" && e.obligation_id ? (
+                          <Btn tone="attention" onClick={() => setReattempt(e)}>
+                            Reattempt<span className="sr-only"> for {e.employee_name}</span>
+                          </Btn>
+                        ) : e.retry_action === "RETRAINING" && e.obligation_id ? (
+                          <Btn tone="attention" onClick={() => setRetraining(e)}>
+                            Retraining<span className="sr-only"> for {e.employee_name}</span>
+                          </Btn>
+                        ) : retryNote(e) ? (
+                          <small>{retryNote(e)}</small>
+                        ) : (
+                          <span className="muted" aria-label="No action">—</span>
+                        )}
                       </div>,
                     ])}
                   />
@@ -1936,7 +1987,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           submitLabel="Record completion"
           onClose={() => setCompleting(null)}
           onSubmit={async (form) => {
-            const done = await api.post<EnrolmentRow & { assessment_scheduling: SchedulingOutcome }>(`/admin/enrolments/${completing.id}/completion`, { completion_date: form.get("completion_date"), attendance_status: form.get("attendance_status") });
+            const done = await api.post<EnrolmentRow & { assessment_scheduling: SchedulingOutcome }>(`/admin/enrolments/${completing.id}/completion`, { completion_date: form.get("completion_date") });
             rememberCompletion(done);
             const scheduling = done.assessment_scheduling;
             setLastOutcome(scheduling);
@@ -1947,13 +1998,6 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           <p>
             {completing.employee_name} · {completing.training_title}
           </p>
-          <SelectField
-            label="Attendance *"
-            name="attendance_status"
-            defaultValue={completing.attendance_status === "PENDING" ? "PRESENT" : completing.attendance_status}
-            options={ATTENDANCE.filter((a) => a !== "PENDING").map((a) => ({ value: a, label: a.charAt(0) + a.slice(1).toLowerCase() }))}
-          />
-          <p className="small">Absent and Excused employees cannot be marked complete. Partial counts only if your L&amp;D policy setting allows it.</p>
           <TextField label="Completion date *" name="completion_date" type="date" required defaultValue={today()} max={today()} />
           <div className="notice">The due date uses this training&apos;s schedule and the working calendar. It is stored with the record, so later calendar changes do not move it. If the training has no valid assessment configuration, completion is still recorded and you are told which assessments were not scheduled.</div>
         </DialogForm>
@@ -1974,6 +2018,41 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
             rememberWaiver(waiving);
             toast("Assessment waived.");
             void state.reload();
+          }}
+        />
+      ) : null}
+      {reattempt ? (
+        <ConfirmDialog
+          title="Authorise a reattempt?"
+          confirmLabel="Authorise reattempt"
+          body={
+            <p>
+              {reattempt.employee_name} · {reattempt.training_title}. Attempt {reattempt.attempts_completed} of {reattempt.max_attempts} was not passed. This opens exactly one more attempt for the employee now.
+            </p>
+          }
+          onClose={() => setReattempt(null)}
+          onConfirm={async () => {
+            await api.post(`/admin/obligations/${reattempt.obligation_id}/approve-retake`);
+            toast(`Reattempt authorised for ${reattempt.employee_name}. The employee has been notified.`);
+            await state.reload(); // The dialog stays busy until the row shows the authorisation.
+          }}
+        />
+      ) : null}
+      {retraining ? (
+        <ConfirmDialog
+          title="Assign retraining?"
+          needsReason
+          confirmLabel="Assign retraining"
+          body={
+            <p>
+              {retraining.employee_name} · {retraining.training_title}. All {retraining.attempts_completed} attempts were used. This assigns the training again: record its completion when the employee has been retrained, and a new assessment opens with {retraining.max_attempts} fresh attempts. Earlier attempts and results are kept.
+            </p>
+          }
+          onClose={() => setRetraining(null)}
+          onConfirm={async (reason) => {
+            await api.post(`/admin/obligations/${retraining.obligation_id}/retraining-cycle`, { reason });
+            toast(`Retraining assigned to ${retraining.employee_name}. Record the training completion again to open a new assessment.`);
+            await state.reload(); // The dialog stays busy until the row shows the new cycle.
           }}
         />
       ) : null}
@@ -2107,6 +2186,8 @@ function QuestionCards() {
   const linkedTraining = params.get("training_id");
   const [typed, setTyped] = useState<string | null>(null);
   const state = useApi<QuestionCard[]>("/admin/questions/summary");
+  // Questions linked to no training: their own card, shown while there is at least one.
+  const unassigned = useApi<UnassignedSummary>("/admin/questions/unassigned-summary");
   const linkedTitle = linkedTraining ? state.data?.find((c) => c.training_id === linkedTraining)?.title : undefined;
   const search = typed ?? (linkedTraining ? linkedTitle : params.get("q")) ?? "";
   const changeSearch = (value: string) => {
@@ -2129,7 +2210,8 @@ function QuestionCards() {
           // Also ignore zero-count entries in an older cached summary while the API refreshes.
           const linked = all.filter((card) => card.question_count > 0);
           const shown = filterTrainings(linked, search);
-          if (!linked.length) return (
+          const unassignedShown = showUnassignedCard(unassigned.data, search);
+          if (!linked.length && !unassigned.data?.question_count) return (
             <Empty title="No questions linked yet." hint="Import questions and choose their training and test type. A card appears once questions are linked." />
           );
           return (
@@ -2137,8 +2219,9 @@ function QuestionCards() {
               <p className="small" role="status" aria-live="polite">
                 {search.trim() ? `${new Set(shown.map((c) => c.training_id)).size} of ${plural(new Set(linked.map((c) => c.training_id)).size, "training")} match.` : `${plural(new Set(linked.map((c) => c.training_id)).size, "training")}.`}
               </p>
-              {shown.length ? (
+              {shown.length || unassignedShown ? (
                 <section className="question-cards" aria-label="Trainings and tests">
+                  {unassignedShown && unassigned.data ? <UnassignedCard count={unassigned.data.question_count} search={search} /> : null}
                   {shown.map((card) => {
                     const label = TEST_TYPE_LABEL[card.test_type];
                     const pre = card.test_type === "PRE_TEST";
@@ -2330,25 +2413,7 @@ function QuestionBankInner({ training, testType, trainings, eyebrow, back }: { t
         </Loaded>
       </section>
       {form ? <QuestionForm question={form.question} context={{ trainingId: training.id, testType, title: training.title }} onClose={() => setForm(null)} onSaved={() => void state.reload()} /> : null}
-      {preview ? (
-        <Modal title="Question Preview" onClose={() => setPreview(null)}>
-          <span className="badge info">Admin Preview · Answer Key Visible</span>
-          <h3 style={{ marginTop: 16 }} lang={preview.language === "Hindi" ? "hi" : "en"}>
-            {preview.question_text}
-          </h3>
-          <ol>
-            {preview.options?.map((o) => (
-              <li key={o.id}>
-                {o.text} {o.is_correct ? <strong className="success">Correct</strong> : null}
-              </li>
-            ))}
-          </ol>
-          <p>{preview.explanation ?? "No explanation supplied."}</p>
-          <p className="small">
-            {preview.competency ?? "No competency"} · {preview.difficulty} · {preview.marks} mark(s) · {preview.language} · v{preview.version}
-          </p>
-        </Modal>
-      ) : null}
+      {preview ? <QuestionPreviewDialog question={preview} onClose={() => setPreview(null)} /> : null}
       {toggling ? (
         <ConfirmDialog
           title={toggling.status === "ACTIVE" ? "Deactivate question?" : "Activate question?"}
@@ -2369,6 +2434,337 @@ function QuestionBankInner({ training, testType, trainings, eyebrow, back }: { t
         />
       ) : null}
     </>
+  );
+}
+
+function QuestionPreviewDialog({ question, onClose }: { question: QuestionRow; onClose: () => void }) {
+  return (
+    <Modal title="Question Preview" onClose={onClose}>
+      <span className="badge info">Admin Preview · Answer Key Visible</span>
+      <h3 style={{ marginTop: 16 }} lang={question.language === "Hindi" ? "hi" : "en"}>
+        {question.question_text}
+      </h3>
+      <ol>
+        {question.options?.map((o) => (
+          <li key={o.id}>
+            {o.text} {o.is_correct ? <strong className="success">Correct</strong> : null}
+          </li>
+        ))}
+      </ol>
+      <p>{question.explanation ?? "No explanation supplied."}</p>
+      <p className="small">
+        {question.competency ?? "No competency"} · {question.difficulty} · {question.marks} mark(s) · {question.language} · v{question.version}
+      </p>
+    </Modal>
+  );
+}
+
+/* ---------- Unassigned Questions ---------- */
+
+/** The card for questions linked to no training, in the same design as the Training + Test cards. */
+function UnassignedCard({ count, search }: { count: number; search: string }) {
+  return (
+    <article className="question-card is-unassigned" aria-labelledby="questions-unassigned">
+      <div className="question-card-head">
+        <span className="question-card-icon">
+          <QuestionDocIcon />
+        </span>
+        <h2 id="questions-unassigned">Unassigned Questions</h2>
+        <span className="question-card-pill">No training</span>
+      </div>
+      <div className="question-card-body">
+        <div>
+          <p className="question-card-count">
+            <strong>{count}</strong> {count === 1 ? "Question" : "Questions"}
+          </p>
+          <small>Not linked to any training</small>
+        </div>
+        <QuestionSheetsArt />
+      </div>
+      <div className="question-card-foot">
+        <BtnLink href={unassignedHref(search)} kind="primary">
+          View Questions<span className="sr-only"> not linked to any training</span> <Icon name="arrow" />
+        </BtnLink>
+        <span className="question-card-tag">Question Bank</span>
+      </div>
+    </article>
+  );
+}
+
+export function QuestionBankUnassigned() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <QuestionBankUnassignedInner />
+    </Suspense>
+  );
+}
+
+/** /lnd/questions/unassigned: questions linked to no training, selected on the server (unassigned=true), so refresh,
+    direct links and Back keep the page. Preview, edit and activation work as in a training's table; questions are
+    assigned to a training's pre-test or post-test one at a time (Assign) or in bulk (select, then Assign to Training). */
+function QuestionBankUnassignedInner() {
+  const cardSearch = useSearchParams().get("q") ?? "";
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const state = useApi<QuestionRow[]>(`/admin/questions${toQuery({ ...filters, unassigned: "true" })}`);
+  const c = useCatalogue();
+  const [form, setForm] = useState<{ question: QuestionRow } | null>(null);
+  const [preview, setPreview] = useState<QuestionRow | null>(null);
+  const [toggling, setToggling] = useState<QuestionRow | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [assigning, setAssigning] = useState<QuestionRow[] | null>(null);
+  const toast = useToast();
+  const load = async (id: string) => api.get<QuestionRow>(`/admin/questions/${id}`);
+  const filtered = Object.keys(filters).length > 0;
+  return (
+    <>
+      <PageTitle
+        eyebrow={`${EYEBROW} · QUESTION BANK`}
+        title="Unassigned Questions"
+        description="Questions not linked to any training. They keep their options, correct answers and versions. Assign them to a training's pre-test or post-test to use them again."
+        action={
+          <BtnLink href={questionCardsHref(cardSearch)}>
+            <Icon name="back" /> Back to Trainings
+          </BtnLink>
+        }
+      />
+      <section className="panel">
+        <form
+          className="filters"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setFilters(Object.fromEntries([...new FormData(e.currentTarget).entries()].map(([k, v]) => [k, String(v)]).filter(([, v]) => v)));
+          }}
+        >
+          <TextField label="Search questions" name="search" type="search" placeholder="Question, topic or ID" />
+          <SelectField label="Competency" name="competency_id" placeholder="All competencies" options={names(c.competencies.data ?? [])} />
+          <SelectField label="Department" name="department_id" placeholder="All departments" options={names(c.departments.data ?? [])} />
+          <SelectField label="Function" name="function_id" placeholder="All functions" options={names(c.functions.data ?? [])} />
+          <SelectField label="Question Type" name="question_type" placeholder="All types" options={Object.entries(TYPE_LABEL).map(([value, label]) => ({ value, label }))} />
+          <SelectField label="Difficulty" name="difficulty" placeholder="All difficulties" options={[["EASY", "Easy"], ["MEDIUM", "Medium"], ["HARD", "Hard"]].map(([value, label]) => ({ value, label }))} />
+          <SelectField label="Language" name="language" placeholder="All languages" options={["English", "Hindi", "Hinglish"].map((value) => ({ value, label: value }))} />
+          <SelectField label="Status" name="status" placeholder="All statuses" options={[{ value: "ACTIVE", label: "Active" }, { value: "INACTIVE", label: "Inactive" }]} />
+          <button className="btn secondary" type="submit">
+            Apply Filters
+          </button>
+        </form>
+        <Loaded state={state}>
+          {(rows) => {
+            if (!rows.length && !filtered)
+              return <Empty title="No unassigned questions." hint="Every question is linked to at least one training. A question appears here when its last training link is removed or its training is deleted." />;
+            // Selection is kept by ID; a question that left the list (assigned meanwhile) is simply not counted.
+            const selectedRows = rows.filter((q) => selected.has(q.id));
+            const allSelected = rows.length > 0 && rows.every((q) => selected.has(q.id));
+            return (
+              <>
+                <p className="small" role="status" aria-live="polite">
+                  {plural(rows.length, "unassigned question")}
+                  {filtered ? " match the filters" : ""}.
+                </p>
+                <div className="row wrap completion-bulk-actions" role="group" aria-label="Question actions">
+                  <Btn disabled={!rows.length || allSelected} onClick={() => setSelected(new Set(rows.map((q) => q.id)))}>Select All</Btn>
+                  <Btn disabled={!selected.size} onClick={() => setSelected(new Set())}>Clear selection</Btn>
+                  <span role="status" aria-live="polite">{selectedRows.length} {selectedRows.length === 1 ? "question" : "questions"} selected</span>
+                  <Btn kind="primary" disabled={!selectedRows.length} onClick={() => setAssigning(selectedRows)}>Assign to Training</Btn>
+                </div>
+                <p className="small">Select All includes every matching question across all table pages. Assigning links the questions to a training&apos;s test; nothing is copied.</p>
+                <DataTable
+                  headers={["Question / Topic", "Competency / Function", "Type / Difficulty", "Marks / Language", "Version / Status", "Actions"]}
+                  emptyTitle="No unassigned questions match."
+                  emptyHint="Change or clear the filters."
+                  rows={rows.map((q) => [
+                    <div key="q" data-sort={q.question_text}>
+                      <label className="completion-select">
+                        <input type="checkbox" aria-label={`Select ${q.question_code}`} checked={selected.has(q.id)} onChange={() => setSelected((ids) => toggleOne(ids, q.id))} />
+                        <span>
+                          <strong>{q.question_text}</strong>
+                          <small>
+                            {q.question_code} · {q.topic}
+                          </small>
+                        </span>
+                      </label>
+                    </div>,
+                    <div key="t">
+                      {q.competency ?? "No competency"}
+                      <small>{q.function ?? "Common"}</small>
+                    </div>,
+                    <div key="d">
+                      {TYPE_LABEL[q.question_type]}
+                      <small>{q.difficulty.charAt(0) + q.difficulty.slice(1).toLowerCase()}</small>
+                    </div>,
+                    <div key="m">
+                      {q.marks}
+                      <small>{q.language}</small>
+                    </div>,
+                    <div key="v">
+                      v{q.version}
+                      <small>{q.status === "ACTIVE" ? "Active" : "Inactive"}</small>
+                    </div>,
+                    <div className="row wrap" key="a">
+                      <Btn kind="text" onClick={() => void load(q.id).then(setPreview)}>
+                        Preview
+                      </Btn>
+                      <Btn kind="text" onClick={() => void load(q.id).then((full) => setForm({ question: full }))}>
+                        Edit
+                      </Btn>
+                      <Btn kind="text" onClick={() => setAssigning([q])}>
+                        Assign<span className="sr-only"> {q.question_code} to a training</span>
+                      </Btn>
+                      <Btn kind="text" tone={q.status === "ACTIVE" ? "danger" : "success"} onClick={() => setToggling(q)}>
+                        {q.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                      </Btn>
+                    </div>,
+                  ])}
+                />
+              </>
+            );
+          }}
+        </Loaded>
+      </section>
+      {form ? <QuestionForm question={form.question} onClose={() => setForm(null)} onSaved={() => void state.reload()} /> : null}
+      {preview ? <QuestionPreviewDialog question={preview} onClose={() => setPreview(null)} /> : null}
+      {toggling ? (
+        <ConfirmDialog
+          title={toggling.status === "ACTIVE" ? "Deactivate question?" : "Activate question?"}
+          danger={toggling.status === "ACTIVE"}
+          confirmLabel="Confirm"
+          body={
+            <>
+              <p>{toggling.question_text}</p>
+              <p>Past and in-progress attempts keep their saved version. New attempts use active questions only.</p>
+            </>
+          }
+          onClose={() => setToggling(null)}
+          onConfirm={async () => {
+            await api.post(`/admin/questions/${toggling.id}/status`, { status: toggling.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" });
+            toast("Question updated.");
+            void state.reload();
+          }}
+        />
+      ) : null}
+      {assigning ? (
+        <AssignQuestionsDialog
+          questions={assigning}
+          onClose={() => setAssigning(null)}
+          onAssigned={(result) => {
+            setSelected((ids) => remainingSelection(ids, result));
+            void state.reload();
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** Choose a training and its Pre-test or Post-test, confirm, then see each question's outcome. The questions are
+    linked, never copied, and keep their status: an inactive one is linked but not drawn until it is activated. A
+    failed request keeps the selection, and a repeat is safe (questions already linked are reported, not linked twice). */
+function AssignQuestionsDialog({ questions, onClose, onAssigned }: { questions: QuestionRow[]; onClose: () => void; onAssigned: (result: AssignResult) => void }) {
+  const trainings = useApi<TrainingAdmin[]>("/admin/trainings");
+  const toast = useToast();
+  const [trainingId, setTrainingId] = useState("");
+  const [testType, setTestType] = useState<TestType | "">("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<AssignResult | null>(null);
+  const running = useRef(false);
+  const options = assignableTrainings(trainings.data ?? []);
+  const chosen = options.find((t) => t.id === trainingId);
+  const inactive = questions.filter((q) => q.status !== "ACTIVE").length;
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (running.current || !chosen || !testType) return; // One request at a time: a double click sends nothing more.
+    running.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const reply = await api.post<AssignResult>("/admin/questions/assign", { question_ids: questions.map((q) => q.id), training_id: chosen.id, test_type: testType });
+      setResult(reply);
+      toast(assignSummaryText(reply, TEST_TYPE_LABEL[testType]));
+      onAssigned(reply);
+    } catch (e) {
+      setError(fieldErrors(e));
+      if (e instanceof ApiError && e.status === 404) {
+        setTrainingId(""); // The training was deleted meanwhile: choose another from the refreshed list.
+        void trainings.reload();
+      }
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  };
+  if (result) {
+    return (
+      <Modal title="Assignment result" onClose={onClose} wide>
+        <p role="status">{assignSummaryText(result, TEST_TYPE_LABEL[result.test_type])}</p>
+        <DataTable
+          headers={["Question", "Outcome", "Details"]}
+          rows={result.results.map((r) => [
+            r.question_code ?? "Unknown question",
+            <span key="s" className={`badge ${QUESTION_ASSIGN_STATUS[r.status][1]}`}>
+              {QUESTION_ASSIGN_STATUS[r.status][0]}
+            </span>,
+            <div key="m">
+              {r.message}
+              {r.warning ? <small className="form-error">{r.warning}</small> : null}
+            </div>,
+          ])}
+        />
+        <div className="dialog-actions">
+          <button className="btn primary" type="button" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+  return (
+    <Modal title="Assign to Training" onClose={busy ? () => undefined : onClose}>
+      <form onSubmit={(e) => void submit(e)}>
+        <p>
+          <strong>{plural(questions.length, "question")}</strong> selected
+        </p>
+        <ul className="completion-selection-list small">
+          {questions.map((q) => (
+            <li key={q.id}>
+              {q.question_code} · {q.question_text}
+            </li>
+          ))}
+        </ul>
+        <SelectField
+          label="Training *"
+          name="training_id"
+          required
+          placeholder={trainings.data ? "Choose a training" : "Loading trainings…"}
+          options={options.map((t) => ({ value: t.id, label: `${t.title} (${t.training_code})` }))}
+          value={trainingId}
+          onChange={(e) => setTrainingId(e.target.value)}
+        />
+        <SelectField label="Test type *" name="test_type" required placeholder="Choose Pre-test or Post-test" options={TEST_TYPE_OPTIONS} value={testType} onChange={(e) => setTestType(e.target.value as TestType | "")} />
+        <p className="small">{TEST_TYPE_HELP} Only draft and active trainings are listed.</p>
+        {chosen && testType ? (
+          <div className="notice">
+            <div>
+              Assign {plural(questions.length, "question")} to <strong>{chosen.title}</strong> · <strong>{TEST_TYPE_LABEL[testType]}</strong>. The questions are linked, not copied: their content, correct answers, versions and status do not change.
+            </div>
+          </div>
+        ) : null}
+        {inactive ? (
+          <p className="small">
+            {inactive} selected {inactive === 1 ? "question is" : "questions are"} inactive: {inactive === 1 ? "it" : "they"} will be linked but not drawn into assessments until activated.
+          </p>
+        ) : null}
+        {trainings.error ? <FormError message="The trainings could not be loaded. Close this dialog and try again." /> : null}
+        <FormError message={error} />
+        <div className="dialog-actions">
+          <Btn onClick={onClose} disabled={busy}>
+            Cancel
+          </Btn>
+          <button className="btn primary" type="submit" disabled={busy || !chosen || !testType}>
+            {busy ? "Assigning…" : "Assign questions"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

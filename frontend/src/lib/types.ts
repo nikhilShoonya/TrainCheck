@@ -254,6 +254,8 @@ export interface ReportData {
   columns: string[];
   rows: (string | number)[][];
   definitions: string[];
+  /** The employee behind each row, in row order; empty for reports without one employee per row. */
+  employee_ids?: string[];
   filters: Record<string, string>;
   generated_at: string;
 }

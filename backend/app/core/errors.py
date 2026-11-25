@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -53,6 +53,10 @@ def error_body(code: str, message: str, details: Any = None) -> dict:
     return {"error": body}
 
 
+FOREIGN_KEY_VIOLATION = "23503"
+CONCURRENCY_SQLSTATES = {"40P01", "40001", "55P03"}  # deadlock_detected, serialization_failure, lock_not_available.
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
@@ -69,8 +73,23 @@ def install_error_handlers(app: FastAPI) -> None:
         code = {401: "UNAUTHENTICATED", 403: "FORBIDDEN", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}.get(exc.status_code, "HTTP_ERROR")
         return JSONResponse(status_code=exc.status_code, content=error_body(code, str(exc.detail)))
 
+    @app.exception_handler(IntegrityError)
+    async def _integrity(_: Request, exc: IntegrityError) -> JSONResponse:
+        # Endpoints report the conflicts they expect themselves. A foreign-key failure that reaches here means a
+        # record this change refers to was deleted meanwhile (for example a permanently deleted training).
+        if getattr(exc.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
+            logger.warning("Write refused: a referenced record was deleted meanwhile (%s)", type(exc.orig).__name__)
+            return JSONResponse(status_code=409, content=error_body("RECORD_REMOVED", "A record this change refers to was deleted meanwhile. Reload the page and try again."))
+        logger.exception("Unhandled integrity error", exc_info=exc)
+        return JSONResponse(status_code=500, content=error_body("INTERNAL_ERROR", "Something went wrong. Quote the reference if you contact support."))
+
     @app.exception_handler(OperationalError)
     async def _database_down(_: Request, exc: OperationalError) -> JSONResponse:
+        if getattr(exc.orig, "sqlstate", None) in CONCURRENCY_SQLSTATES:
+            # Two requests waited for each other's records (or a lock wait timed out): one was stopped and nothing it
+            # did was saved. Not an outage.
+            logger.warning("Request stopped by a concurrent change (%s)", type(exc.orig).__name__)
+            return JSONResponse(status_code=409, content=error_body("CONCURRENT_CHANGE", "Another change to the same records was being saved at the same moment, so nothing was saved. Reload the page and try again."))
         # Fails closed: no gate decision can be made, so no protected data is returned (TC-GATE-010).
         # The driver's first line names the cause (dropped connection, timeout, ...) without query parameters.
         detail = str(getattr(exc, "orig", None) or "").strip().splitlines()[:1]

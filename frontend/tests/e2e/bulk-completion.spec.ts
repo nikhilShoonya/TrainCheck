@@ -144,9 +144,9 @@ test("select all waives eligible assessments across pages with one required reas
   await expect(dialog).toBeHidden();
   await expect(page.getByText("0 employees selected", { exact: true })).toBeVisible();
   const row = page.locator("tbody tr").filter({ hasText: "Synthetic 05" });
-  await expect(row.locator("td").nth(4)).toHaveText("Waived");
-  await expect(row.locator("td").nth(2)).toContainText("Completed");
-  await expect(row.locator("td").nth(5)).toHaveText("Pending");
+  await expect(row.locator("td").nth(3)).toHaveText("Waived");
+  await expect(row.locator("td").nth(1)).toContainText("Completed");
+  await expect(row.locator("td").nth(4)).toHaveText("Pending");
   await expect(row.getByRole("checkbox")).toBeDisabled();
   await expect(page.locator(".metrics")).toHaveCount(1);
   expect(world.waiverCalls).toHaveLength(9);
@@ -154,11 +154,11 @@ test("select all waives eligible assessments across pages with one required reas
   expect(world.waiverCalls.every((call) => call.body.reason === "Approved exemption for this training")).toBe(true);
   expect(world.calls).toHaveLength(0);
   await page.getByRole("button", { name: "Next", exact: true }).click();
-  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 12" }).locator("td").nth(4)).toHaveText("Waived");
+  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 12" }).locator("td").nth(3)).toHaveText("Waived");
   await page.screenshot({ path: "test-results/waive-selected-updated.png", fullPage: true });
   world.staleReads = false;
   await page.reload();
-  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).locator("td").nth(4)).toHaveText("Waived");
+  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).locator("td").nth(3)).toHaveText("Waived");
 });
 
 test("mixed selection scopes each action and waiver failures remain on their employee row", async ({ context, page }) => {
@@ -182,7 +182,7 @@ test("mixed selection scopes each action and waiver failures remain on their emp
   await dialog.getByLabel("Reason *", { exact: true }).fill("Approved waiver by L&D");
   await dialog.getByRole("button", { name: "Confirm waiver", exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 04" }).locator("td").nth(4)).toContainText("Waived");
+  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 04" }).locator("td").nth(3)).toContainText("Waived");
   await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).getByRole("alert")).toContainText("An attempt is in progress");
   await expect(page.getByText("2 employees selected", { exact: true })).toBeVisible();
   expect(world.waiverCalls.map((call) => call.id)).toEqual(["obligation-3", "obligation-4"]);
@@ -200,7 +200,7 @@ test("individual Waive still works and refreshes the same employee row", async (
   world.staleReads = true;
   await dialog.getByRole("button", { name: "Waive assessment", exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(row.locator("td").nth(4)).toHaveText("Waived");
+  await expect(row.locator("td").nth(3)).toHaveText("Waived");
   expect(world.waiverCalls).toHaveLength(1);
 });
 
@@ -223,7 +223,7 @@ for (const status of ["DRAFT", "ARCHIVED"]) {
     await expect(page.locator(".metrics")).toHaveCount(1);
     const row = page.locator("tbody tr").filter({ hasText: "Synthetic 05" });
     await expect(row.getByRole("alert")).toContainText("Activate this training in Training Management before recording completion.");
-    await expect(row.locator("td").nth(2)).toContainText("Awaiting completion");
+    await expect(row.locator("td").nth(1)).toContainText("Awaiting completion");
     expect(world.rows.filter((row) => row.completed_at)).toHaveLength(1);
     expect(world.calls).toHaveLength(9);
   });
@@ -241,7 +241,7 @@ test("bulk confirmation uses the shared date, preserves recorded attendance, rep
   await page.getByRole("button", { name: "Mark Selected Completed", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Complete selected employees" });
   await dialog.getByLabel("Completion date *", { exact: true }).fill("2026-11-18");
-  await expect(dialog.getByRole("combobox", { name: "Attendance", exact: true })).toHaveValue("RECORDED");
+  await expect(dialog.getByRole("combobox", { name: "Attendance", exact: true })).toHaveCount(0); // Attendance is not changed here.
   await dialog.getByRole("button", { name: "Confirm completion", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Recording completion…", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
@@ -253,8 +253,8 @@ test("bulk confirmation uses the shared date, preserves recorded attendance, rep
   await expect(page.locator(".metrics")).toHaveCount(1);
   await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 04" }).getByRole("alert")).toContainText("Partial attendance does not count under the current policy.");
   const unscheduled = page.locator("tbody tr").filter({ hasText: "Synthetic 05" });
-  await expect(unscheduled.locator("td").nth(2)).toContainText("Completed");
-  await expect(unscheduled.locator("td").nth(4)).toContainText("Not scheduled");
+  await expect(unscheduled.locator("td").nth(1)).toContainText("Completed");
+  await expect(unscheduled.locator("td").nth(3)).toContainText("Not scheduled");
   await expect(page.locator(".metrics > div").filter({ has: page.locator("span", { hasText: /^Completion recorded$/ }) }).locator("strong")).toHaveText("9");
   expect(world.calls).toHaveLength(9);
   expect(new Set(world.calls.map((call) => call.id)).size).toBe(9);
@@ -265,7 +265,7 @@ test("bulk confirmation uses the shared date, preserves recorded attendance, rep
   await expect(page.getByText("1 employee selected", { exact: true })).toBeVisible();
 });
 
-test("individual selection and an explicit common attendance work at phone size", async ({ context, page }) => {
+test("individual selection works at phone size and keeps each recorded attendance", async ({ context, page }) => {
   const world = newWorld();
   await mockApi(context, world);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -277,13 +277,12 @@ test("individual selection and an explicit common attendance work at phone size"
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   await page.getByRole("button", { name: "Mark Selected Completed", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Complete selected employees" });
-  await dialog.getByRole("combobox", { name: "Attendance", exact: true }).selectOption("PRESENT");
   await dialog.getByRole("button", { name: "Confirm completion", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.locator(".metrics")).toHaveCount(1);
-  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).locator("td").nth(2)).toContainText("Completed");
+  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).locator("td").nth(1)).toContainText("Completed");
   expect(world.calls).toHaveLength(2);
-  expect(world.calls.every((call) => call.body.attendance_status === "PRESENT")).toBe(true);
+  expect(world.calls.every((call) => !("attendance_status" in call.body))).toBe(true);
 });
 
 test("bulk completion immediately updates rows and counts even when a background read returns older data", async ({ context, page }) => {
@@ -301,15 +300,15 @@ test("bulk completion immediately updates rows and counts even when a background
   await expect.poll(() => world.enrolmentReads).toBeGreaterThan(1);
   const row = page.locator("tbody tr").filter({ hasText: "Synthetic 05" });
   await expect(row.getByRole("checkbox")).toBeDisabled();
-  await expect(row.locator("td").nth(2)).toContainText("Completed");
+  await expect(row.locator("td").nth(1)).toContainText("Completed");
   await expect(row.getByRole("button", { name: "Mark Completed for Synthetic 05", exact: true })).toHaveCount(0);
-  await expect(row.locator("td").nth(5)).toContainText("Pending"); // Training completion never claims an assessment pass.
+  await expect(row.locator("td").nth(4)).toContainText("Pending"); // Training completion never claims an assessment pass.
   await expect(page.locator(".metrics > div").filter({ has: page.locator("span", { hasText: /^Completion recorded$/ }) }).locator("strong")).toHaveText("3");
-  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 06" }).locator("td").nth(2)).toContainText("Awaiting completion");
+  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 06" }).locator("td").nth(1)).toContainText("Awaiting completion");
   await page.screenshot({ path: "test-results/completion-status-updated.png", fullPage: true });
   world.staleReads = false;
   await page.reload();
-  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).locator("td").nth(2)).toContainText("Completed");
+  await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 05" }).locator("td").nth(1)).toContainText("Completed");
 });
 
 test("single completion stays visible across an older background read and a later page refresh", async ({ context, page }) => {
@@ -324,11 +323,11 @@ test("single completion stays visible across an older background read and a late
   await expect(dialog).toBeHidden();
   await expect.poll(() => world.enrolmentReads).toBeGreaterThan(1);
   await expect(row.getByRole("checkbox")).toBeDisabled();
-  await expect(row.locator("td").nth(2)).toContainText("Completed");
-  await expect(row.getByRole("combobox")).toHaveValue("PRESENT");
+  await expect(row.locator("td").nth(1)).toContainText("Completed");
+  expect(world.calls[0].body).toEqual({ completion_date: expect.any(String) }); // Attendance is not changed here.
   await expect(page.locator(".metrics > div").filter({ has: page.locator("span", { hasText: /^Completion recorded$/ }) }).locator("strong")).toHaveText("2");
   world.staleReads = false;
   await page.reload();
-  await expect(row.locator("td").nth(2)).toContainText("Completed");
+  await expect(row.locator("td").nth(1)).toContainText("Completed");
   expect(world.calls).toHaveLength(1);
 });

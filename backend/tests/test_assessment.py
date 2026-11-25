@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from app.core import clock
 from app.models import AssessmentAttempt, AssessmentObligation, AttemptSecurityEvent, Notification, Question, UserAccount
-from tests.conftest import NOW, answer_with_score, give_feedback, refresher_then_approval, relogin, start, submit, take
+from tests.conftest import NOW, answer_with_score, authorise_reattempt, give_feedback, relogin, start, submit, take
 
 
 def test_start_needs_acknowledgement_and_stores_snapshot(world, client_for, db):  # TC-ATT-001, SC-2L-106
@@ -374,7 +374,7 @@ def test_invalid_security_event_rejected(world, client_for):
 
 # ---------- Retakes ----------
 
-def test_failure_then_refresher_then_retake_after_approval(world, client_for, db):  # TC-RET-001, TC-RET-002
+def test_failure_then_retake_only_after_ld_authorises_it(world, client_for, db):  # TC-RET-001, TC-RET-002
     obligation = world.complete(world.employee, world.training())
     email = world.employee.work_email
     client = client_for(email)
@@ -387,9 +387,10 @@ def test_failure_then_refresher_then_retake_after_approval(world, client_for, db
     give_feedback(client, result["attempt_id"])
     assert client.get("/me/access-state").json()["data"]["access_status"] == "DASHBOARD_ALLOWED"
     assert client.get("/me/dashboard").status_code == 200
-    assert client.post(f"/assessment-obligations/{obligation.id}/attempts", json={"instructions_acknowledged": True}).status_code == 409
+    refused = client.post(f"/assessment-obligations/{obligation.id}/attempts", json={"instructions_acknowledged": True})
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "RETAKE_NOT_AUTHORISED"
 
-    assert client.post(f"/assessment-obligations/{obligation.id}/refresher-acknowledgement").status_code == 200
+    # L&D is asked to authorise the re-attempt as soon as the attempt fails; no refresher step comes first.
     admin_notices = db.scalars(select(Notification).join(UserAccount, UserAccount.id == Notification.user_account_id).where(UserAccount.employee_id == world.admin.id, Notification.type == "RETAKE_APPROVAL_REQUIRED")).all()
     assert len(admin_notices) == 1
     # A new sign-in alone no longer opens the retake.
@@ -397,13 +398,14 @@ def test_failure_then_refresher_then_retake_after_approval(world, client_for, db
     assert client.get("/me/access-state").json()["data"]["access_status"] == "DASHBOARD_ALLOWED"
     row = next(r for r in admin.get("/admin/enrolments").json()["data"] if r["obligation_id"] == str(obligation.id))
     assert (row["assessment_state"], row["attempts_used"], row["max_attempts"], row["retrainings"]) == ("Awaiting approval", 1, 3, 0)
+    assert (row["attempts_completed"], row["retry_action"]) == (1, "REATTEMPT")
 
     assert admin.post(f"/admin/obligations/{obligation.id}/approve-retake").status_code == 200
     assert client.get("/me/access-state").json()["data"]["access_status"] == "ASSESSMENT_REQUIRED"
     assert take(db, client, obligation.id, 8)["attempt_number"] == 2
 
 
-def test_retake_never_opens_by_itself_and_approval_needs_the_refresher(world, client_for, db):
+def test_retake_never_opens_by_itself_and_needs_no_refresher(world, client_for, db):
     obligation = world.complete(world.employee, world.training())
     client = client_for(world.employee)
     give_feedback(client, take(db, client, obligation.id, 5)["attempt_id"])
@@ -411,9 +413,9 @@ def test_retake_never_opens_by_itself_and_approval_needs_the_refresher(world, cl
     relogin(client, world.employee.work_email)
     admin = client_for(world.admin)  # Signed in after the clock moved: a session lasts 12 hours at most.
     assert client.get("/me/access-state").json()["data"]["access_status"] == "DASHBOARD_ALLOWED"
-    response = admin.post(f"/admin/obligations/{obligation.id}/approve-retake")
-    assert response.status_code == 409 and response.json()["error"]["code"] == "REFRESHER_NOT_ACKNOWLEDGED"
-    refresher_then_approval(client, admin, obligation.id)
+    authorise_reattempt(client, admin, obligation.id)  # Without any refresher acknowledgement.
+    gate = client.get("/me/access-state").json()["data"]
+    assert gate["access_status"] == "ASSESSMENT_REQUIRED" and gate["queue"][0]["refresher_required"] is False
     assert start(client, obligation.id)["attempt_number"] == 2
 
 
@@ -421,7 +423,7 @@ def _fail_all(db, client, admin, obligation_id, scores=(4, 5, 6)):
     result = None
     for score in scores:
         if result is not None:
-            refresher_then_approval(client, admin, obligation_id)
+            authorise_reattempt(client, admin, obligation_id)
         result = take(db, client, obligation_id, score)
     return result
 
@@ -467,24 +469,7 @@ def test_attempt_limit_holds_even_if_obligation_is_reopened(world, client_for, d
     assert client.post(f"/assessment-obligations/{obligation.id}/attempts", json={"instructions_acknowledged": True}).json()["error"]["code"] == "MAX_ATTEMPTS_REACHED"
 
 
-def test_retraining_cycle_keeps_failure_history(world, client_for, db):  # TC-RET-008, BR §9.6
-    obligation = world.complete(world.employee, world.training())
-    client = client_for(world.employee)
-    admin = client_for(world.admin)
-    _fail_all(db, client, admin, obligation.id)
-    # Once all attempts are used, only re-training can be approved, never another re-attempt.
-    refused = admin.post(f"/admin/obligations/{obligation.id}/approve-retake")
-    assert refused.status_code == 409 and refused.json()["error"]["code"] == "NO_RETAKE_PENDING"
-    response = admin.post(f"/admin/obligations/{obligation.id}/retraining-cycle", json={"reason": "Completed approved re-training"})
-    assert response.status_code == 200, response.text
-    new_id = response.json()["data"]["obligation_id"]
-    assert response.json()["data"]["cycle_number"] == 2
-    db.expire_all()
-    assert db.get(AssessmentObligation, obligation.id).retraining_flag == "RESOLVED"
-    assert len(db.get(AssessmentObligation, obligation.id).attempts) == 3
-    row = next(r for r in admin.get("/admin/enrolments").json()["data"] if r["obligation_id"] == new_id)
-    assert (row["attempts_used"], row["retrainings"]) == (0, 1)
-    assert take(db, client, new_id, 9)["result_status"] == "PASSED"
+# Re-training (TC-RET-008, BR §9.6): tests/test_retry_retraining.py covers the full cycle.
 
 
 def test_marks_change_after_attempt_does_not_change_result(world, client_for, db):  # DB design §7

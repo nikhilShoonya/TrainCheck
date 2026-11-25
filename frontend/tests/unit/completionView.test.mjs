@@ -2,7 +2,7 @@
    Back to Trainings. Run: npm run test:unit */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { completionCounts, filterEmployees, filterTrainings, isTrainingId, rowCounts, shortDescription, trainingCompletionHref, trainingsHref } from "@/features/admin/completionView";
+import { attemptsLabel, completionCounts, filterEmployees, filterTrainings, isTrainingId, retryNote, rowCounts, shortDescription, trainingCompletionHref, trainingsHref } from "@/features/admin/completionView";
 
 const ID = "3f2b8c1e-9a4d-4e6f-8b1a-2c3d4e5f6a7b";
 
@@ -66,4 +66,18 @@ test("a card shows a short description cut at a word", () => {
   assert.ok(short.endsWith("…"));
   assert.ok(long.startsWith(short.slice(0, -1)));
   assert.ok(!/\s…$/.test(short));
+});
+
+test("the Attempts column shows finished attempts of the current cycle out of the maximum", () => {
+  assert.equal(attemptsLabel({ attempts_completed: 0, max_attempts: 3 }), "0/3");
+  assert.equal(attemptsLabel({ attempts_completed: 3, max_attempts: 3 }), "3/3");
+  assert.equal(attemptsLabel({ attempts_completed: 0, max_attempts: null }), "—"); // No assessment rules yet.
+});
+
+test("no retry action is offered while a re-attempt is authorised or running", () => {
+  assert.equal(retryNote({ retry_action: "REATTEMPT", attempts_completed: 1, assessment_state: "Awaiting approval" }), null);
+  assert.equal(retryNote({ retry_action: null, attempts_completed: 1, assessment_state: "Due" }), "Reattempt authorised");
+  assert.equal(retryNote({ retry_action: null, attempts_completed: 2, assessment_state: "In progress" }), "Attempt in progress");
+  assert.equal(retryNote({ retry_action: null, attempts_completed: 0, assessment_state: "Due" }), null); // First attempt.
+  assert.equal(retryNote({ retry_action: null, attempts_completed: 1, assessment_state: "Submitted" }), null); // Passed.
 });

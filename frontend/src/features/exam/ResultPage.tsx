@@ -6,7 +6,6 @@ import { Icon } from "@/components/icons";
 import { FocusShell } from "@/components/shell/AppShell";
 import { HOME } from "@/components/shell/nav";
 import { Badge, Btn, ErrorPanel, Loading, Metrics, useToast } from "@/components/ui";
-import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import { browserStorage, clearPendingAnswers, countUnconfirmedAnswers } from "@/lib/pendingAnswers";
 import type { AccessState, FeedbackView, ResultView } from "@/lib/types";
@@ -26,8 +25,6 @@ export function ResultPage() {
   const access = useApi<AccessState>("/me/access-state");
   const { user } = useSession();
   const toast = useToast();
-  const [acknowledged, setAcknowledged] = useState(false);
-  const [error, setError] = useState<ApiError | null>(null);
   // Feedback is asked once per post-training assessment; the form opens by itself when it is still owed.
   const feedbackState = useApi<FeedbackView>(`/attempts/${attemptId}/feedback`);
   const [savedFeedback, setSavedFeedback] = useState<FeedbackView | null>(null);
@@ -72,15 +69,6 @@ export function ResultPage() {
   const passed = r.result_status === "PASSED";
   const more = access.data?.access_status === "ASSESSMENT_REQUIRED";
 
-  const acknowledge = async () => {
-    try {
-      await api.post(`/assessment-obligations/${r.obligation_id}/refresher-acknowledgement`);
-      setAcknowledged(true);
-      toast("Refresher acknowledged. L&D has been asked to approve your re-attempt.");
-    } catch (e) {
-      setError(e as ApiError);
-    }
-  };
   const proceed = () => {
     if (feedbackRequired) {
       setFeedbackOpen(true);
@@ -219,14 +207,12 @@ export function ResultPage() {
           <div className="notice left">
             {r.needs_retraining ? (
               <p>
-                <strong>Needs Re-training.</strong> You have used all attempts. Waiting for L&amp;D approval of your re-training; a new assessment opens once it is approved. This is a learning follow-up, not a disciplinary record.
-              </p>
-            ) : r.retake_pending && (acknowledged || r.refresher?.acknowledged) ? (
-              <p>
-                {r.attempts_remaining} attempt(s) remaining. <strong>Waiting for L&amp;D approval.</strong> Your re-attempt opens once L&amp;D approves it.
+                <strong>Needs Re-training.</strong> You have used all attempts. L&amp;D will assign this training to you again; a new assessment opens once your training completion is recorded. This is a learning follow-up, not a disciplinary record.
               </p>
             ) : r.retake_pending ? (
-              <p>{r.attempts_remaining} attempt(s) remaining. Acknowledge the refresher below; L&amp;D will then approve your re-attempt.</p>
+              <p>
+                {r.attempts_remaining} attempt(s) remaining. <strong>Waiting for L&amp;D approval.</strong> Your re-attempt opens once L&amp;D authorises it. Review the refresher material meanwhile.
+              </p>
             ) : null}
             {r.refresher?.text ? <p>{r.refresher.text}</p> : null}
             {r.refresher?.url ? (
@@ -236,12 +222,6 @@ export function ResultPage() {
                 </a>
               </p>
             ) : null}
-            {r.retake_pending ? (
-              <Btn tone="attention" disabled={acknowledged || r.refresher?.acknowledged} onClick={() => void acknowledge()}>
-                {acknowledged || r.refresher?.acknowledged ? "Refresher acknowledged" : "Acknowledge refresher"}
-              </Btn>
-            ) : null}
-            {error ? <ErrorPanel error={error} /> : null}
           </div>
         ) : null}
         {feedbackRequired ? (

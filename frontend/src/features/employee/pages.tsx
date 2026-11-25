@@ -2,12 +2,11 @@
 
 import { useParams } from "next/navigation";
 import { Icon } from "@/components/icons";
-import { Badge, Btn, BtnLink, DataTable, Empty, Loaded, Loading, PageTitle, useToast } from "@/components/ui";
+import { Badge, Btn, BtnLink, DataTable, Empty, Loaded, Loading, PageTitle } from "@/components/ui";
 import { ReviewFormPage, ReviewTable } from "@/features/behaviour/ReviewForm";
 import { ScoreTrend, type ScorePoint } from "@/features/dashboard/charts";
 import { cardEntry } from "@/features/exam/assessmentEntry";
 import { EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, Panel, RecentRow, ScoreTag, TrainingProgress, ViewAll, Welcome } from "@/features/dashboard/widgets";
-import { ApiError, api } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
 import type { BehaviourMeans, ReviewSummary, Summary, TrainingCard } from "@/lib/types";
 import { dateTimeIn, day, firstName, longDay, percent, ORG_TIMEZONE } from "@/lib/utils";
@@ -28,9 +27,8 @@ interface Dashboard {
 
 function AssessmentBanner({ data }: { data: Dashboard }) {
   const target = data.retake ?? data.upcoming;
-  const waiting = Boolean(data.retake?.refresher_acknowledged);
-  const heading = data.retake ? (waiting ? "Waiting for L&D Approval" : "Your Next Step: Refresher & Retake") : data.upcoming ? "You Have an Upcoming Assessment" : "You’re Up to Date with Your Assessments";
-  const text = data.retake ? (waiting ? "You acknowledged the refresher. Your re-attempt opens once L&D approves it." : "Review and acknowledge the refresher. L&D will then approve your re-attempt.") : data.upcoming ? `Your questionnaire opens ${dateTimeIn(data.upcoming.due_at, data.upcoming.timezone)}.` : "Keep building your skills and track how you apply them at work.";
+  const heading = data.retake ? "Waiting for L&D Approval" : data.upcoming ? "You Have an Upcoming Assessment" : "You’re Up to Date with Your Assessments";
+  const text = data.retake ? "Your re-attempt opens once L&D authorises it. Review the refresher material meanwhile." : data.upcoming ? `Your questionnaire opens ${dateTimeIn(data.upcoming.due_at, data.upcoming.timezone)}.` : "Keep building your skills and track how you apply them at work.";
   const href = data.retake ? "/employee/refresher" : data.upcoming ? "/employee/assessments" : "/employee/trainings";
   const label = data.retake ? "View Refresher" : data.upcoming ? "View Assessment" : "View My Training";
   return (
@@ -268,7 +266,7 @@ export function MyTrainings() {
   );
 }
 
-/** The next step for one assessment. After a failure the next attempt waits for the refresher and L&D approval.
+/** The next step for one assessment. After a failure the next attempt waits for L&D approval.
     Moments are shown in India time with the shared date and AM/PM format. */
 function nextDue(c: TrainingCard): string {
   const when = (iso: string) => dateTimeIn(iso, c.timezone);
@@ -319,19 +317,9 @@ export function MyAssessments() {
 
 export function MyRefresher() {
   const state = useApi<TrainingCard[]>("/me/refresher-materials");
-  const toast = useToast();
-  const acknowledge = async (obligationId: string) => {
-    try {
-      await api.post(`/assessment-obligations/${obligationId}/refresher-acknowledgement`);
-      toast("Refresher acknowledged. L&D has been asked to approve your re-attempt.");
-      void state.reload();
-    } catch (e) {
-      toast((e as ApiError).message);
-    }
-  };
   return (
     <>
-      <PageTitle eyebrow={EYEBROW} title="Refresher Materials" description="Guidance for assessments you have not yet passed. Acknowledging records that you reviewed it; it is not proof of learning." />
+      <PageTitle eyebrow={EYEBROW} title="Refresher Materials" description="Guidance for assessments you have not yet passed. Reviewing it is not proof of learning." />
       <Loaded state={state}>
         {(cards) =>
           cards.length ? (
@@ -358,11 +346,9 @@ export function MyRefresher() {
                     </p>
                   ))}
                   {c.retake_pending ? (
-                    <Btn tone="attention" disabled={c.refresher_acknowledged} onClick={() => void acknowledge(c.obligation_id!)}>
-                      {c.refresher_acknowledged ? "Acknowledged · waiting for L&D approval" : "Acknowledge refresher"}
-                    </Btn>
+                    <p className="notice">Waiting for L&amp;D to authorise your re-attempt.</p>
                   ) : c.result === "NEEDS_RETRAINING" ? (
-                    <p className="notice">You have used all attempts. Waiting for L&amp;D approval of your re-training.</p>
+                    <p className="notice">You have used all attempts. L&amp;D will assign this training to you again.</p>
                   ) : ["Due", "Overdue", "In progress"].includes(c.assessment_state) ? (
                     <p className="notice">L&amp;D has approved your re-attempt. Take it from My Assessments.</p>
                   ) : null}

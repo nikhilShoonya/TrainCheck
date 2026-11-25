@@ -1,9 +1,12 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
-import { Btn, DataTable, ErrorPanel, Loaded, SelectField, TextField, useToast } from "@/components/ui";
+import { Btn, DataTable, ErrorPanel, Loaded, Loading, SelectField, TextField, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
+import { parseReportState, reportStateQuery, scorecardHref } from "@/features/reports/employeeScorecardView";
 import { ApiError, api, downloadFile, toQuery } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import type { Named, ReportData } from "@/lib/types";
@@ -122,17 +125,47 @@ function ScheduleDialog({ code, filters, onClose }: { code: string; filters: Fil
   );
 }
 
-/** One report: filters, definitions, table and exports. Used by every role, scoped by the backend. */
-export function ReportPanel({ code, canSchedule = true, showFilters = true }: { code: string; canSchedule?: boolean; showFilters?: boolean }) {
-  const [filters, setFilters] = useState<Filters>({});
+/** The report's rows with each employee's name as a link to their Employee Scorecard (by employee ID, keeping
+    the report and filters to come back to). `hrefs` maps each row to its link, so a click anywhere on the row
+    opens it too; keyboard users reach the name link with Tab. */
+function linkedRows(report: ReportData, back: string): { rows: ReactNode[][]; hrefs: WeakMap<ReactNode[], string> } {
+  const hrefs = new WeakMap<ReactNode[], string>();
+  const ids = report.employee_ids ?? [];
+  const column = report.columns.indexOf("Employee");
+  if (column < 0 || ids.length !== report.rows.length) return { rows: report.rows, hrefs };
+  const rows = report.rows.map((row, index) => {
+    const href = scorecardHref(ids[index], back);
+    const name = String(row[column]);
+    const cells: ReactNode[] = [...row];
+    cells[column] = (
+      <Link key="employee" href={href} className="employee-scorecard-link" data-sort={name} aria-label={`Open the employee scorecard of ${name}`}>
+        {name}
+      </Link>
+    );
+    hrefs.set(cells, href);
+    return cells;
+  });
+  return { rows, hrefs };
+}
+
+/** One report: filters, definitions, table and exports. Used by every role, scoped by the backend. Filters are the
+    caller's when it passes them (Reports & Analytics keeps them in the URL); otherwise the panel keeps its own. */
+export function ReportPanel({ code, canSchedule = true, showFilters = true, filters: given, onFiltersChange }: { code: string; canSchedule?: boolean; showFilters?: boolean; filters?: Filters; onFiltersChange?: (filters: Filters) => void }) {
+  const [own, setOwn] = useState<Filters>({});
+  const filters = given ?? own;
+  const setFilters = onFiltersChange ?? setOwn;
   const path = useMemo(() => `/reports/${code}${toQuery(filters)}`, [code, filters]);
   const state = useApi<ReportData>(path);
   const [scheduling, setScheduling] = useState(false);
+  const router = useRouter();
+  const back = reportStateQuery(code, filters);
   return (
     <section className="panel">
       {showFilters ? <FilterBar filters={filters} onApply={setFilters} /> : null}
       <Loaded state={state}>
-        {(report) => (
+        {(report) => {
+          const { rows, hrefs } = linkedRows(report, back);
+          return (
           <>
             <div className="section-heading">
               <div>
@@ -150,14 +183,23 @@ export function ReportPanel({ code, canSchedule = true, showFilters = true }: { 
                 ) : null}
               </div>
             </div>
-            <DataTable headers={report.columns} rows={report.rows} emptyTitle="No rows match these filters." />
+            <DataTable
+              headers={report.columns}
+              rows={rows}
+              emptyTitle="No rows match these filters."
+              onRowClick={(row) => {
+                const href = hrefs.get(row);
+                if (href) router.push(href);
+              }}
+            />
             {report.definitions.map((d) => (
               <p className="small" key={d}>
                 {d}
               </p>
             ))}
           </>
-        )}
+          );
+        }}
       </Loaded>
       {scheduling ? <ScheduleDialog code={code} filters={filters} onClose={() => setScheduling(false)} /> : null}
     </section>
@@ -174,8 +216,23 @@ const CODES: [string, string][] = [
   ["scorecard", "Training Learning & Behaviour Scorecard"],
 ];
 
+/** The chosen report and its filters live in the URL, so a refresh, a shared link and Back to report (from an
+    Employee Scorecard) all show the same report with the same filters. */
 export function ReportsHub() {
-  const [code, setCode] = useState("compliance");
+  return (
+    <Suspense fallback={<Loading />}>
+      <ReportsHubInner />
+    </Suspense>
+  );
+}
+
+function ReportsHubInner() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const query = params.toString();
+  const { code, filters } = useMemo(() => parseReportState(new URLSearchParams(query)), [query]);
+  const show = (nextCode: string, nextFilters: Filters) => router.replace(`${pathname}?${reportStateQuery(nextCode, nextFilters)}`, { scroll: false });
   const exportsState = useApi<{ id: string; report_code: string; export_format: string; row_count: number; file_name: string; created_at: string }[]>("/reports/exports");
   const schedules = useApi<{ id: string; report_code: string; cadence: string; export_format: string; next_run_at: string; is_active: boolean; deliveries: { run_at: string; status: string }[] }[]>("/reports/schedules");
   const toast = useToast();
@@ -191,9 +248,10 @@ export function ReportsHub() {
   return (
     <>
       <section className="panel">
-        <SelectField label="Report" value={code} onChange={(e) => setCode(e.target.value)} options={CODES.map(([value, label]) => ({ value, label }))} />
+        {/* Choosing another report starts it without filters, as before. */}
+        <SelectField label="Report" value={code} onChange={(e) => show(e.target.value, {})} options={CODES.map(([value, label]) => ({ value, label }))} />
       </section>
-      <ReportPanel key={code} code={code} />
+      <ReportPanel key={code} code={code} filters={filters} onFiltersChange={(next) => show(code, next)} />
       <section className="panel">
         <h2>Downloads</h2>
         <p className="small">Files you generated. Only you can download them, and your current permissions are checked each time.</p>

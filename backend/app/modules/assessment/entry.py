@@ -19,9 +19,9 @@ from app.models import AssessmentObligation
 MESSAGES = {
     "AWAITING_COMPLETION": "Awaiting training completion. Your assessment is created when L&D records that you completed the training.",
     "AWAITING_SCHEDULING": "Your training completion is recorded. L&D is scheduling your assessment.",
-    "REFRESHER_REQUIRED": "Review and acknowledge the refresher material. L&D then approves your re-attempt.",
-    "AWAITING_APPROVAL": "Waiting for L&D to approve your re-attempt.",
-    "AWAITING_RETRAINING": "You have used all attempts. Waiting for L&D approval of your re-training.",
+    "REFRESHER_REQUIRED": "Review the refresher material. Your re-attempt opens once L&D authorises it.",
+    "AWAITING_APPROVAL": "Waiting for L&D to authorise your re-attempt. Review the refresher material meanwhile.",
+    "AWAITING_RETRAINING": "You have used all attempts. L&D will assign this training to you again.",
     "QUESTION_POOL_INSUFFICIENT": "This assessment cannot start yet because its question pool is incomplete. L&D has been notified, and you can keep using TrainCheck until it is ready.",
     "TRAINING_ARCHIVED": "This training has been archived, so its assessment is no longer available.",
     "WAIVED": "L&D waived this assessment. No action is needed.",
@@ -61,7 +61,7 @@ def obligation_entry(db: Session, obligation: AssessmentObligation, now: datetim
     if status == ObligationStatus.IN_PROGRESS:
         return available("IN_PROGRESS")
     if status == ObligationStatus.RETAKE_PENDING:
-        return unavailable("AWAITING_APPROVAL") if obligation.refresher_acknowledged_at else unavailable("REFRESHER_REQUIRED")
+        return unavailable("AWAITING_APPROVAL")  # No refresher acknowledgement is required (25 Nov 2026).
     if obligation.due_at is None:
         return unavailable("AWAITING_SCHEDULING")
     if obligation.due_at > now:

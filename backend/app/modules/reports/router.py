@@ -27,7 +27,10 @@ from app.modules.notifications.service import notify_account
 from app.modules.reports import exports
 from app.modules.reports.catalogue import BUILDERS, Report
 from app.modules.reports.data import ReportFilters, behaviour_reviews, departments_summary, employee_scope, load_rows, mean, monthly_trend, summary
+from app.modules.reports.employee_scorecard import load_employee, pdf_file_name, scorecard_for
+from app.modules.reports.employee_scorecard import render_pdf as render_employee_pdf
 from app.modules.reports.scorecard import build_scorecard, question_performance
+from app.modules.training.locks import hold_trainings
 
 router = APIRouter(route_class=ReleasingRoute, tags=["Reports"])
 logger = logging.getLogger("traincheck.reports")
@@ -51,6 +54,21 @@ def checked(filters: ReportFilters) -> ReportFilters:
     if filters.date_from and filters.date_to and filters.date_from > filters.date_to:
         raise validation("The start date is after the end date. Choose a start date on or before the end date.")
     return filters
+
+
+def hold_report_scope(db: Session, filters: ReportFilters) -> bool:
+    """Takes the lock of the training a report is filtered to, directly or through a batch (training.locks), so an
+    export or schedule is never created for a training while it is permanently deleted. False when it is gone."""
+    training_ids = {filters.training_id} if filters.training_id else set()
+    if filters.batch_id:
+        batch_training = db.scalar(select(TrainingBatch.training_id).where(TrainingBatch.id == filters.batch_id))
+        if batch_training is None:
+            return False
+        training_ids.add(batch_training)
+    return hold_trainings(db, training_ids) == training_ids
+
+
+SCOPE_GONE = "The training or batch this report is filtered to no longer exists. Choose another filter."
 
 
 def parse_stored_filters(data: dict) -> ReportFilters:
@@ -87,6 +105,8 @@ def report_view(report: Report, filters: ReportFilters) -> dict:
         "columns": report.columns,
         "rows": report.rows,
         "definitions": report.definitions,
+        # The employee behind each row (same order as rows), so a row can open that employee's scorecard. Not exported.
+        "employee_ids": report.employee_ids,
         "filters": filters.stored(),
         "generated_at": iso(utcnow()),
     }
@@ -163,6 +183,33 @@ def scorecard(training_id: uuid.UUID, filters: ReportFilters = Depends(filters_d
     return ok(build_scorecard(db, training, load_rows(db, employee_scope(db, user), filters)))
 
 
+# ---------- Employee Scorecard (one employee, opened from an employee row in Reports & Analytics) ----------
+
+def _employee_card(db: Session, user: CurrentUser, employee_id: uuid.UUID, training_id: uuid.UUID | None, date_from: date | None, date_to: date | None) -> tuple[Employee, dict]:
+    scope = employee_scope(db, user)  # L&D Admin: the organisation. Anyone else is refused here.
+    employee = load_employee(db, employee_id)
+    if scope is not None and employee.id not in scope:
+        raise not_found("This employee was not found.")
+    return employee, scorecard_for(db, employee, training_id, date_from, date_to, utcnow())
+
+
+@router.get("/reports/employees/{employee_id}/scorecard", dependencies=[expensive("report")])
+def employee_scorecard(employee_id: uuid.UUID, training_id: uuid.UUID | None = None, date_from: date | None = None, date_to: date | None = None, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Profile, summary, training record, learning gain, feedback and attempt history of one employee."""
+    return ok(_employee_card(db, user, employee_id, training_id, date_from, date_to)[1])
+
+
+@router.get("/reports/employees/{employee_id}/scorecard/pdf", dependencies=[expensive("export")])
+def employee_scorecard_pdf(employee_id: uuid.UUID, training_id: uuid.UUID | None = None, date_from: date | None = None, date_to: date | None = None, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> Response:
+    """The complete filtered scorecard (every matching record) as a PDF, generated for this request only."""
+    employee, card = _employee_card(db, user, employee_id, training_id, date_from, date_to)
+    content = render_employee_pdf(card, user.employee.full_name)
+    file_name = pdf_file_name(employee, utcnow())
+    record_audit(db, user.id, "EMPLOYEE_SCORECARD_EXPORTED", "employee", employee.id, after={"format": "PDF", "filters": card["filters"], "trainings": len(card["trainings"]), "attempts": len(card["attempts"])})
+    db.commit()
+    return Response(content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{file_name}"', "Cache-Control": "no-store"})
+
+
 # ---------- Analytics pages ----------
 
 @router.get("/reports/analytics", dependencies=[expensive("report")])
@@ -234,6 +281,8 @@ def create_export(body: ExportIn, user: CurrentUser = Depends(require_gate_clear
     filters = parse_stored_filters(body.filters)
     if body.own_record:  # The personal history export belonged to the removed Assessment History page.
         raise forbidden("Personal history exports are no longer available.")
+    if not hold_report_scope(db, filters):
+        raise validation(SCOPE_GONE)
     record = run_export(db, user, body.report_code, body.export_format, filters, body.own_record)
     db.commit()
     return ok(export_view(record))
@@ -321,6 +370,8 @@ def list_schedules(user: CurrentUser = Depends(require_admin), db: Session = Dep
 def create_schedule(body: ScheduleIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """The owner is the only recipient, so a schedule can never send a report beyond the owner's scope."""
     filters = parse_stored_filters(body.filters)
+    if not hold_report_scope(db, filters):
+        raise validation(SCOPE_GONE)
     now, tz = utcnow(), load_calendar(db).tz
     # created_at is the monthly anchor (see anchor_day), so it is set from the application clock here.
     schedule = ReportSchedule(owner_user_id=user.id, report_code=body.report_code, export_format=body.export_format, filters=filters.stored(), cadence=body.cadence, next_run_at=next_run(body.cadence, now, now.astimezone(tz).day, tz), created_at=now)
@@ -358,6 +409,19 @@ def schedule_owner_problem(account: UserAccount | None) -> str | None:
     return None
 
 
+def _schedule_still_exists(db: Session, schedule: ReportSchedule) -> bool:
+    """Takes the lock of the training the schedule is filtered to (training.locks) before its report is generated.
+    False when the schedule was removed meanwhile with a permanently deleted training: nothing is generated."""
+    try:
+        hold_report_scope(db, ReportFilters.from_stored(schedule.filters))
+    except (ValueError, TypeError):
+        pass  # Unreadable filters fail in the run itself, as before.
+    if db.scalar(select(ReportSchedule.id).where(ReportSchedule.id == schedule.id)) is None:
+        db.rollback()
+        return False
+    return True
+
+
 def run_due_schedules(db: Session, now: datetime | None = None) -> int:
     """Called by the scheduler. Delivers in-app with a private download; no email provider is approved."""
     from app.core.deps import CurrentUser as Actor
@@ -375,6 +439,8 @@ def run_due_schedules(db: Session, now: datetime | None = None) -> int:
         ).rowcount
         db.commit()
         if claimed != 1:
+            continue
+        if not _schedule_still_exists(db, schedule):
             continue
         db.refresh(schedule)
         account = db.get(UserAccount, schedule.owner_user_id)
