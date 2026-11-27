@@ -631,3 +631,7 @@ td .badge.warning{margin-left:8px}
   .org-page .org-card td .badge,.org-page .org-card td .btn.text{justify-self:start}
   .org-page .org-card td .btn.text{min-height:44px;padding:8px 12px;margin-left:-12px}
 }
+
+/* TrainCheck and Finvasia logos: transparent images (Finvasia in its original single colour), so the sidebar, top bar,
+   sign-in page and assessment header show their own background behind them. They keep the earlier crops' boxes. */
+.green-impact-login .login-traincheck-logo>svg,.green-impact-login .login-finvasia-logo>svg{mix-blend-mode:normal}

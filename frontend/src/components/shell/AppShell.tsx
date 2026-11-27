@@ -32,7 +32,7 @@ const subscribeMobileNav = (onChange: () => void) => {
 export function Brand() {
   return (
     <div className="reference-brand asset-logo">
-      <Art file="green-login" box="90 52 285 70" />
+      <svg viewBox="0 0 285 70" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><image href="/assets/brand/traincheck-logo.png" width="285" height="70" /></svg>
       <span className="sr-only">TrainCheck · Finvasia L&D Evaluation</span>
     </div>
   );
@@ -241,7 +241,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Icon name="menu" />
           </button>
           <span className="finvasia-wordmark" aria-label="Finvasia">
-            <Art file="green-login" box="462 52 196 52" className="finvasia-logo-crop" />
+            <svg className="finvasia-logo-crop" viewBox="0 0 606 105" preserveAspectRatio="xMinYMid meet" aria-hidden="true"><image href="/assets/brand/finvasia-logo.png" width="606" height="105" /></svg>
           </span>
           <form className="global-search" id="global-search" role="search" onSubmit={submitSearch}>
             <Icon name="search" />
@@ -357,7 +357,7 @@ export function FocusShell({ children, footer = "Your answers and timer are mana
     <div className="assessment-layout">
       <header className="focus-header">
         <div className="focus-logo">
-          <Art file="green-login" box="90 52 285 70" />
+          <svg viewBox="0 0 285 70" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><image href="/assets/brand/traincheck-logo.png" width="285" height="70" /></svg>
           <span className="sr-only">TrainCheck · Finvasia L&D Evaluation</span>
         </div>
         <span className="muted">Learning verification</span>

@@ -161,12 +161,12 @@ export function LoginPage() {
       <section className="impact-login-story">
         <header className="login-brand-head">
           <span className="login-traincheck-logo">
-            <Art file="green-login" box="90 52 285 70" />
+            <svg viewBox="0 0 285 70" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><image href="/assets/brand/traincheck-logo.png" width="285" height="70" /></svg>
             <span className="sr-only">TrainCheck · Finvasia L&D Evaluation</span>
           </span>
           <i />
           <span className="login-finvasia-logo">
-            <Art file="green-login" box="462 52 196 52" />
+            <svg className="finvasia-logo" viewBox="0 0 606 105" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><image href="/assets/brand/finvasia-logo.png" width="606" height="105" /></svg>
             <span className="sr-only">Finvasia</span>
           </span>
         </header>
