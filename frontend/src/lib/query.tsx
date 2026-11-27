@@ -12,7 +12,7 @@ import type { RoleCode } from "./types";
 /* ---------- Freshness and retry, by kind of data ---------- */
 
 // Gate and exam state must always come from the server; never show a cached copy.
-const ALWAYS_FRESH = [/^\/me\/access-state/, /^\/me\/assessment-queue/, /^\/me\/assessment-obligations\//, /^\/attempts\//];
+const ALWAYS_FRESH = [/^\/me\/access-state/, /^\/me\/assessment-queue/, /^\/me\/assessment-obligations\//, /^\/attempts\//, /^\/me\/induction(\/|$|\?)/];
 // Reference lists that change rarely and are reused by many forms.
 const CATALOGUE = [/^\/admin\/(departments|functions|trainers|competencies|locations|calendar)(\?|$)/, /^\/reports\/(filter-options|catalogue)(\?|$)/];
 const REPORTS = [/^\/reports\//, /^\/scorecards/];
@@ -51,7 +51,7 @@ export function clearApiCache() {
 // Writes to reference lists, including sub-resources such as /admin/calendar/holidays/{id}.
 const CATALOGUE_WRITES = /^\/admin\/(departments|functions|trainers|competencies|locations|calendar)(\/|\?|$)/;
 // Requests that happen many times during a live assessment and change nothing other screens show.
-const NO_INVALIDATION = [/^\/attempts\/[^/]+\/questions\//, /^\/attempts\/[^/]+\/security-events/, /^\/auth\//];
+const NO_INVALIDATION = [/^\/attempts\/[^/]+\/questions\//, /^\/attempts\/[^/]+\/security-events/, /^\/auth\//, /^\/me\/induction\/attempts\/[^/]+\/(questions\/|security-events)/];
 
 export function QueryProvider({ children }: { children: ReactNode }) {
   const [client] = useState(() => {

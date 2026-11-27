@@ -760,8 +760,15 @@ def test_answer_keys_are_not_written_to_the_audit_log(world, db, client_for):
 
 REMOVED = ("reaction", "feedback", "kpi", "roi", "nps", "l1_", "l4_", "monetis", "business_impact")
 # The post-assessment feedback form is part of the approved Level 2 scope (required after each post-test).
-APPROVED_FEEDBACK_TABLES = {"assessment_feedback"}
-APPROVED_FEEDBACK_ROUTES = {"/api/v1/attempts/{attempt_id}/feedback", "/api/v1/admin/feedback"}
+# The induction feedback form (separate Induction module) was approved by the product owner on 27 Nov 2026.
+APPROVED_FEEDBACK_TABLES = {"assessment_feedback", "induction_feedback", "induction_feedback_forms"}
+APPROVED_FEEDBACK_ROUTES = {
+    "/api/v1/attempts/{attempt_id}/feedback",
+    "/api/v1/admin/feedback",
+    "/api/v1/me/induction/feedback",
+    "/api/v1/admin/induction/feedback-form",
+    "/api/v1/admin/inductions/{induction_id}/records/feedback",
+}
 
 
 def test_no_level_1_or_level_4_tables_exist():

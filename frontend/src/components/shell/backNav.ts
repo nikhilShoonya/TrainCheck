@@ -11,6 +11,7 @@
 import { trainingsHref } from "@/features/admin/completionView";
 import { assignmentsHref } from "@/features/admin/employeeView";
 import { questionCardsHref } from "@/features/admin/questionBankView";
+import { inductionHref } from "@/features/induction/inductionView";
 import { reportsHref } from "@/features/reports/employeeScorecardView";
 import { canOpen, HOME, NAV } from "@/components/shell/nav";
 import type { RoleCode } from "@/lib/types";
@@ -23,7 +24,7 @@ export interface BackTarget {
 type Params = { get(name: string): string | null };
 
 const ORIGIN = "https://traincheck.invalid";
-const OUTSIDE_WORKSPACE = /^\/(login|access|assessment|results)(\/|$)/;
+const OUTSIDE_WORKSPACE = /^\/(login|access|assessment|results|induction)(\/|$)/;
 const ID_SEGMENT = /^[^/]+$/;
 
 /** A same-site workspace address ("/lnd/reports?report=x"), or null for anything else (another site, "//host",
@@ -50,6 +51,8 @@ export function parentTarget(pathname: string, params: Params): BackTarget | nul
   if (s[0] === "lnd" && s[1] === "completion" && s.length === 3) return { label: "Back to Trainings", href: trainingsHref(params.get("q") ?? "") };
   if (s[0] === "lnd" && s[1] === "questions" && (pathname === "/lnd/questions/unassigned" || s.length === 4)) return { label: "Back to Trainings", href: questionCardsHref(params.get("q") ?? "") };
   if (s[0] === "lnd" && s[1] === "reports" && s[2] === "employees" && s.length === 4) return { label: "Back to Reports", href: reportsHref(params.get("back")) };
+  if (s[0] === "lnd" && s[1] === "induction" && s.length === 3 && ID_SEGMENT.test(s[2]))
+    return { label: "Back to Induction", href: s[2] === "questions" ? inductionHref("assessment") : inductionHref(null, params.get("cards")) };
   if (s[0] === "employee" && s[1] === "behaviour" && s.length === 3 && ID_SEGMENT.test(s[2])) return { label: "Back to Self-Assessment", href: "/employee/behaviour" };
   return null;
 }
@@ -68,6 +71,7 @@ export function pageName(value: string, role: RoleCode): string | null {
   if (s[0] === "lnd" && s[1] === "completion" && s.length === 3) return "Training Completion";
   if (s[0] === "lnd" && s[1] === "questions" && s.length === 4) return "Question Bank";
   if (s[0] === "lnd" && s[1] === "reports" && s[2] === "employees" && s.length === 4) return "Employee Scorecard";
+  if (s[0] === "lnd" && s[1] === "induction" && s.length === 3) return s[2] === "questions" ? "Induction Questions" : "Selected Induction";
   if (s[0] === "employee" && s[1] === "behaviour" && s.length === 3) return "Self-Assessment";
   for (const items of [NAV[role], ...Object.values(NAV)]) {
     const item = items.find(([href]) => href === path);

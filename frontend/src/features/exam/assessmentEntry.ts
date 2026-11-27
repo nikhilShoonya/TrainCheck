@@ -113,7 +113,7 @@ export function waitingStep(
 ): WaitingStep {
   if (!access) return "loading";
   if (access.access_status === "ASSESSMENT_REQUIRED") return "gate";
-  if (access.access_status === "FEEDBACK_REQUIRED") return "workspace";
+  if (access.access_status === "FEEDBACK_REQUIRED" || access.access_status === "INDUCTION_REQUIRED" || access.access_status === "INDUCTION_FEEDBACK_REQUIRED") return "workspace";
   if (!detail) return "loading";
   if (detail.entry_state === "NOT_YET_OPEN") return "wait";
   if (detail.entry_state === "OPEN" || detail.entry_state === "IN_PROGRESS") return "confirm";

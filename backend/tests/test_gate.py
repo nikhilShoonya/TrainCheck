@@ -30,6 +30,17 @@ GATE_EXEMPT = {
     # The required post-assessment feedback is the very thing the FEEDBACK_REQUIRED gate asks for, so it cannot
     # itself require a clear gate. It still needs the employee's session (and the attempt must be their own).
     "/api/v1/attempts/{attempt_id}/feedback",
+    # The employee's own induction (27 Nov 2026): the INDUCTION_REQUIRED and INDUCTION_FEEDBACK_REQUIRED gates ask
+    # for exactly these. Each needs the session, and every request is checked against the employee's own assignment.
+    "/api/v1/me/induction",
+    "/api/v1/me/induction/attempt",
+    "/api/v1/me/induction/attempts/{attempt_id}",
+    "/api/v1/me/induction/attempts/{attempt_id}/questions/{attempt_question_id}/answer",
+    "/api/v1/me/induction/attempts/{attempt_id}/questions/{attempt_question_id}/mark",
+    "/api/v1/me/induction/attempts/{attempt_id}/security-events",
+    "/api/v1/me/induction/attempts/{attempt_id}/submit",
+    "/api/v1/me/induction/attempts/{attempt_id}/result",
+    "/api/v1/me/induction/feedback",
     # Demo data reset on the sign-in page: no session by design. Refused (404) unless DEMO_RESET_ENABLED is on
     # and the environment is not production, and rate-limited.
     "/api/v1/demo/status",

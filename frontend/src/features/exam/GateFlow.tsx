@@ -10,7 +10,7 @@ import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/lib/hooks";
 import type { AccessState, AttemptView } from "@/lib/types";
 import { clock, dateTime, firstName, greeting } from "@/lib/utils";
-import { ExamView } from "./ExamView";
+import { ExamView, type ExamPaths } from "./ExamView";
 import { enterFullscreen, isFullscreen, runSystemCheck, SYSTEM_CHECK_COUNT, systemCheckPassed, type Check } from "./monitor";
 
 const STEPS = ["System check", "Full screen", "Instructions", "Assessment"];
@@ -77,10 +77,12 @@ interface SecureStartProps {
   running: AttemptView | null;
   start: () => Promise<AttemptView>;
   onStartFailed: (error: ApiError) => void;
+  /** The attempt API and result page; Training's unless given (the induction assessment passes its own). */
+  examPaths?: ExamPaths;
 }
 
 /** System check → full screen (when required) → acknowledged instructions → the monitored exam. */
-function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStartFailed }: SecureStartProps) {
+export function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStartFailed, examPaths }: SecureStartProps) {
   const [screen, setScreen] = useState<SecureScreen>(running ? "resume" : "check");
   const [attempt, setAttempt] = useState<AttemptView | null>(running);
   const [checks, setChecks] = useState<Check[] | null>(null);
@@ -146,7 +148,7 @@ function SecureStart({ noun, trainingTitle, facts, rules, running, start, onStar
     }
   };
 
-  if (screen === "exam" && attempt) return <ExamView initial={attempt} />;
+  if (screen === "exam" && attempt) return <ExamView initial={attempt} paths={examPaths} />;
 
   if (screen === "check") {
     const passed = !checking && systemCheckPassed(checks);

@@ -24,7 +24,7 @@ from app.core.security import (
     validate_password_strength,
     verify_password,
 )
-from app.models import AuthAttempt, UserAccount, UserSession
+from app.models import AuthAttempt, InductionAssignment, UserAccount, UserSession
 from app.modules.assessment.gate import access_state
 
 router = APIRouter(route_class=ReleasingRoute, prefix="/auth", tags=["Authentication"])
@@ -84,7 +84,12 @@ def user_payload(user: CurrentUser, db: Session) -> dict:
         "roles": sorted(user.roles),
         "primary_role": user.primary_role,
         # Lets the interface hide switched-off workflows. The server still enforces them.
-        "features": {"behaviour": get_settings().behaviour_enabled, "password_change": may_change_own_password(user)},
+        "features": {
+            "behaviour": get_settings().behaviour_enabled,
+            "password_change": may_change_own_password(user),
+            # The employee's own Induction page is offered only to people who have an induction.
+            "induction": db.scalar(select(InductionAssignment.id).where(InductionAssignment.employee_id == e.id)) is not None,
+        },
     }
 
 

@@ -17,7 +17,7 @@ export interface User {
   roles: RoleCode[];
   primary_role: RoleCode;
   /** Switched-off workflows the interface should hide. The server enforces them regardless. */
-  features?: { behaviour: boolean; password_change?: boolean };
+  features?: { behaviour: boolean; password_change?: boolean; induction?: boolean };
 }
 
 /** Why an assessment could not be scheduled or started, with what L&D should do next. */
@@ -52,7 +52,7 @@ export interface QueueItem {
 }
 
 export interface AccessState {
-  access_status: "DASHBOARD_ALLOWED" | "ASSESSMENT_REQUIRED" | "FEEDBACK_REQUIRED";
+  access_status: "DASHBOARD_ALLOWED" | "ASSESSMENT_REQUIRED" | "FEEDBACK_REQUIRED" | "INDUCTION_REQUIRED" | "INDUCTION_FEEDBACK_REQUIRED";
   pending_count: number;
   next_action: string;
   queue: QueueItem[];
@@ -66,6 +66,17 @@ export interface AccessState {
   countdown?: { obligation_id: string; training_title: string; due_at: string; timezone: string | null } | null;
   /** When the next countdown begins, so an open page re-checks then (server clock). */
   countdown_starts_at?: string | null;
+  /** The employee's induction, when one is waiting: required now (INDUCTION_*), or UNAVAILABLE (not ready, never blocking). */
+  induction?: InductionRequirement | null;
+}
+
+export interface InductionRequirement {
+  kind: "ASSESSMENT" | "FEEDBACK" | "UNAVAILABLE";
+  assignment_id: string;
+  induction_name: string;
+  attempt_id?: string | null;
+  in_progress?: boolean;
+  reason?: string;
 }
 
 export interface Summary {
@@ -167,7 +178,7 @@ export interface AttemptQuestionView {
 export interface AttemptView {
   attempt_id: string;
   obligation_id: string;
-  assessment_type: "PRE_TEST" | "POST_TEST";
+  assessment_type: "PRE_TEST" | "POST_TEST" | "INDUCTION";
   training_title: string;
   attempt_number: number;
   max_attempts: number;
@@ -424,4 +435,283 @@ export interface FeedbackAdmin {
     submitted_at: string;
   }[];
   training_options: Named[];
+}
+
+/* ---------- Induction (separate module; backend/app/modules/induction) ---------- */
+
+export type InductionAssignmentStatus = "ASSIGNED" | "IN_PROGRESS" | "FEEDBACK_PENDING" | "COMPLETED";
+
+export interface InductionBatch {
+  id: string;
+  label: string;
+  year: number;
+  month: number;
+  batch_number: number;
+  name: string | null;
+  start_date: string | null;
+}
+
+export interface InductionBatchRow extends InductionBatch {
+  members: number;
+  assigned: number;
+  assessment_submitted: number;
+  feedback_submitted: number;
+  completed: number;
+  created_at: string;
+}
+
+export interface InductionCard {
+  id: string;
+  induction_code: string;
+  name: string;
+  category: string | null;
+  description: string | null;
+  department: { id: string; name: string; code: string };
+  trainer: { id: string; name: string } | null;
+  status: "ACTIVE" | "ARCHIVED";
+  counts: { assigned: number; completed: number; pending: number; assessment_submitted: number; batches: number; members: number } | null;
+  created_at: string;
+}
+
+export interface InductionReadiness {
+  ready: boolean;
+  assessment: { ready: boolean; problems: string[]; question_count: number; total_marks: number | null };
+  feedback: { ready: boolean; problems: string[]; question_count: number };
+}
+
+export interface InductionSettings {
+  id: string;
+  version: number;
+  duration_seconds: number;
+  pass_mark_percent: number;
+  violation_limit: number;
+  require_fullscreen: boolean;
+  max_attempts: 1;
+  created_at: string | null;
+}
+
+export interface InductionFormQuestion {
+  key: string;
+  section: string;
+  text: string;
+  control: "STARS" | "SCALE";
+}
+
+export interface InductionForm {
+  id: string;
+  version: number;
+  questions: InductionFormQuestion[];
+  comment_enabled: boolean;
+  comment_label: string | null;
+  created_at: string | null;
+}
+
+export interface InductionOverview {
+  readiness: InductionReadiness;
+  settings: InductionSettings | null;
+  feedback_form: InductionForm | null;
+}
+
+export interface InductionQuestion {
+  id: string;
+  question_code: string;
+  topic: string;
+  question_type: string;
+  question_text: string;
+  explanation: string | null;
+  marks: number;
+  status: "ACTIVE" | "INACTIVE";
+  display_order: number;
+  version: number;
+  options: { id: string; text: string; is_correct: boolean }[];
+  updated_at: string | null;
+}
+
+export interface InductionQuestionPreview {
+  file_name?: string;
+  total_rows: number;
+  valid_rows: number;
+  invalid_rows: number;
+  duplicate_rows: number;
+  conflict_rows: number;
+  ready: boolean;
+  created?: number;
+  rows: { row: number; status: "VALID" | "INVALID" | "DUPLICATE" | "CONFLICT"; question: string; topic: string; correct: string; errors: { field: string; message: string }[] }[];
+}
+
+export interface InductionAssignmentContext {
+  assignment_id: string;
+  induction_id: string;
+  induction_name: string;
+  batch_label: string;
+  status: InductionAssignmentStatus;
+  status_label: string;
+}
+
+export interface InductionMember {
+  employee_id: string;
+  employee_code: string;
+  full_name: string;
+  department: string | null;
+  employment_status: string;
+  batch: InductionBatch;
+  added_at: string;
+  assignment_id: string | null;
+  status: InductionAssignmentStatus | "NOT_ASSIGNED";
+  status_label: string;
+  assigned_at: string | null;
+  elsewhere: InductionAssignmentContext | null;
+  result_status: "PASSED" | "NOT_PASSED" | null;
+}
+
+export interface InductionEligible {
+  employee_id: string;
+  employee_code: string;
+  full_name: string;
+  department: string | null;
+  in_batch: boolean;
+  eligible: boolean;
+  state: "ELIGIBLE" | "IN_BATCH" | "ASSIGNED_HERE" | "ASSIGNED_ELSEWHERE" | "OTHER_BATCH";
+  reason: string | null;
+  existing: InductionAssignmentContext | null;
+}
+
+export interface InductionAssignResult {
+  batch: InductionBatch;
+  assigned: { employee_id: string; employee_code: string; full_name: string }[];
+  skipped: { employee_id: string; employee_code: string | null; full_name: string | null; reason: string; existing: InductionAssignmentContext | null }[];
+}
+
+export interface InductionPage<T> {
+  rows: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface InductionAssessmentRecord {
+  assignment_id: string;
+  employee: { id: string; full_name: string; employee_code: string };
+  department: string | null;
+  batch: InductionBatch;
+  assigned_at: string;
+  assessment_status: "IN_PROGRESS" | "SUBMITTED" | "TIMED_OUT" | null;
+  assessment_label: string;
+  started_at: string | null;
+  submitted_at: string | null;
+  score_percent: number | null;
+  result_status: "PASSED" | "NOT_PASSED" | null;
+  feedback_status: "SUBMITTED" | "PENDING";
+  feedback_submitted_at: string | null;
+  status: InductionAssignmentStatus;
+  status_label: string;
+  completed_at: string | null;
+}
+
+export interface InductionAnswer {
+  key: string;
+  section: string;
+  question: string;
+  control: "STARS" | "SCALE";
+  value: number | null;
+  answer: string;
+}
+
+export interface InductionFeedbackRecord {
+  feedback_id: string;
+  assignment_id: string;
+  employee: { id: string; full_name: string; employee_code: string };
+  department: string | null;
+  batch: InductionBatch;
+  submitted_at: string;
+  form_version: number;
+  answered: number;
+  average_rating: number | null;
+  has_comment: boolean;
+  answers: InductionAnswer[];
+  comment: string | null;
+  comment_label: string | null;
+}
+
+export interface InductionResultFacts {
+  attempt_id: string;
+  attempt_status: string;
+  score_percent: number | null;
+  result_status: "PASSED" | "NOT_PASSED" | null;
+  pass_mark_percent: number;
+  obtained_marks: number | null;
+  total_marks: number | null;
+  started_at: string;
+  submitted_at: string | null;
+  submission_reason: string | null;
+  time_taken_seconds: number | null;
+  question_count: number;
+  answered_count: number;
+  correct_count: number;
+  settings_version: number | null;
+  topics: { name: string; score: number | null }[];
+  violations: { number: number; type: string; signals: string[]; occurred_at: string }[];
+}
+
+export interface InductionRecordDetail {
+  assignment_id: string;
+  induction: { id: string; name: string };
+  employee: { id: string; full_name: string; employee_code: string; work_email: string; department: string | null; joining_date: string | null };
+  batch: InductionBatch;
+  status: InductionAssignmentStatus;
+  status_label: string;
+  assigned_at: string;
+  completed_at: string | null;
+  assessment: (Partial<InductionResultFacts> & { attempt_status: string; expires_at?: string }) | null;
+  feedback: { submitted_at: string; form_version: number; answers: InductionAnswer[]; comment: string | null; comment_label: string | null } | null;
+}
+
+export interface InductionExportRow {
+  id: string;
+  record_kind: "ASSESSMENT" | "FEEDBACK";
+  export_format: "CSV" | "XLSX" | "PDF";
+  filters: Record<string, string>;
+  row_count: number;
+  file_name: string | null;
+  created_at: string;
+}
+
+export interface MyInduction {
+  assigned: boolean;
+  assignment_id?: string;
+  status?: InductionAssignmentStatus;
+  induction?: { id: string; name: string; description: string | null; department: string };
+  batch_label?: string;
+  assigned_at?: string;
+  completed_at?: string | null;
+  ready?: boolean;
+  requirement?: "ASSESSMENT" | "FEEDBACK" | "UNAVAILABLE" | null;
+  facts?: { question_count: number; duration_seconds: number; pass_mark_percent: number; violation_limit: number; require_fullscreen: boolean } | null;
+  attempt?: { id: string; status: string; result_status: "PASSED" | "NOT_PASSED" | null; submitted_at: string | null; expires_at: string } | null;
+  active_attempt_id?: string | null;
+}
+
+export interface InductionResult extends InductionResultFacts {
+  assessment_type: "INDUCTION";
+  training_title: string;
+  induction_name: string;
+  batch_label: string;
+  attempt_number: 1;
+  max_attempts: 1;
+  explanations_enabled: false;
+  induction_status: InductionAssignmentStatus;
+  feedback_submitted: boolean;
+  feedback_submitted_at: string | null;
+  completed_at: string | null;
+}
+
+export interface InductionFeedbackView {
+  required: boolean;
+  submitted: boolean;
+  submitted_at: string | null;
+  training_title: string;
+  form_version: number | null;
+  questions: { key: string; text: string; section: string; short_label: string; options: { value: number; label: string }[]; stars: boolean; low_label: string; high_label: string }[];
+  comment_enabled: boolean;
+  comment_label: string | null;
 }

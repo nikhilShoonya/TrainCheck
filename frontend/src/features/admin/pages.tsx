@@ -40,7 +40,7 @@ const names = (items?: Named[]) => (items ?? []).map((x) => ({ value: x.id, labe
 
 /** A dialog form that keeps what was typed when the server rejects it. `extraAction` (optional) sits at the start of
     the dialog buttons, e.g. Delete in an Edit dialog. */
-function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide, submitBlockedReason, extraAction }: { title: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; submitLabel: string; children: ReactNode; wide?: boolean; submitBlockedReason?: string | null; extraAction?: ReactNode }) {
+export function DialogForm({ title, onClose, onSubmit, submitLabel, children, wide, submitBlockedReason, extraAction }: { title: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; submitLabel: string; children: ReactNode; wide?: boolean; submitBlockedReason?: string | null; extraAction?: ReactNode }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -1062,10 +1062,21 @@ function AssignDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (res
 
 /* ---------- Add Employee: one by form, or many from a file ---------- */
 
-function AddEmployeeDialog({ onClose }: { onClose: () => void }) {
+/** Set when employees are added from a selected induction: they join the chosen batch of that induction (its
+    department only). Creating or importing never assigns the induction assessment: that stays Assign Employees. */
+export interface EmployeeBatchContext {
+  inductionId: string;
+  inductionName: string;
+  department: { id: string; name: string; code: string };
+  batches: { id: string; label: string }[];
+  defaultBatchId?: string;
+  onAdded: () => void;
+}
+
+export function AddEmployeeDialog({ onClose, batchContext }: { onClose: () => void; batchContext?: EmployeeBatchContext }) {
   const [mode, setMode] = useState<AddEmployeeMode | null>(null);
-  if (mode === "single") return <NewEmployeeForm onBack={() => setMode(null)} onClose={onClose} />;
-  if (mode === "bulk") return <BulkEmployees onBack={() => setMode(null)} onClose={onClose} />;
+  if (mode === "single") return <NewEmployeeForm onBack={() => setMode(null)} onClose={onClose} batchContext={batchContext} />;
+  if (mode === "bulk") return <BulkEmployees onBack={() => setMode(null)} onClose={onClose} batchContext={batchContext} />;
   return (
     <Modal title="Add employee" onClose={onClose}>
       <p>How would you like to add employees?</p>
@@ -1081,7 +1092,10 @@ function AddEmployeeDialog({ onClose }: { onClose: () => void }) {
           <span>Upload a CSV or Excel file, check the preview, then import.</span>
         </button>
       </div>
-      <p className="small">{PASSWORD_RULE} Adding an employee does not assign any training.</p>
+      <p className="small">
+        {PASSWORD_RULE}{" "}
+        {batchContext ? `Employees join the batch you choose in ${batchContext.inductionName} (${batchContext.department.name} department). Adding an employee does not assign the induction assessment: use Assign Employees afterwards.` : "Adding an employee does not assign any training."}
+      </p>
       <div className="dialog-actions">
         <Btn onClick={onClose}>Cancel</Btn>
       </div>
@@ -1089,24 +1103,44 @@ function AddEmployeeDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function NewEmployeeForm({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+function NewEmployeeForm({ onBack, onClose, batchContext }: { onBack: () => void; onClose: () => void; batchContext?: EmployeeBatchContext }) {
   const departments = useApi<OrgUnit[]>("/admin/departments");
-  const choices = activeDepartments(departments.data);
+  // In an induction only its department can join a batch, so it is the one choice offered (the server checks it too).
+  const choices = activeDepartments(departments.data).filter((d) => !batchContext || d.id === batchContext.department.id);
   const toast = useToast();
   return (
     <DialogForm
       title="Add employee · New Employee"
       submitLabel="Add employee"
       onClose={onClose}
-      submitBlockedReason={departments.error ? `Departments could not be loaded. ${departments.error.message}` : !departments.data ? "Loading departments…" : !choices.length ? "No active department exists. Add one in Departments & Functions first." : null}
+      submitBlockedReason={
+        departments.error
+          ? `Departments could not be loaded. ${departments.error.message}`
+          : !departments.data
+            ? "Loading departments…"
+            : !choices.length
+              ? batchContext
+                ? `The ${batchContext.department.name} department is inactive. Activate it in Departments & Functions first.`
+                : "No active department exists. Add one in Departments & Functions first."
+              : batchContext && !batchContext.batches.length
+                ? "Create a batch first."
+                : null
+      }
       onSubmit={async (form) => {
-        const result = await api.post<{ created: number; employee: { full_name: string; employee_code: string } }>("/admin/employees", {
+        const body = {
           full_name: form.get("full_name"),
           employee_code: form.get("employee_code"),
           work_email: form.get("work_email"),
           joining_date: form.get("joining_date"),
           department_id: form.get("department_id"),
-        });
+        };
+        if (batchContext) {
+          const result = await api.post<{ batch: { label: string }; employee: { full_name: string; employee_code: string } }>(`/admin/inductions/${batchContext.inductionId}/batches/${form.get("batch_id")}/employees`, body);
+          toast(`${result.employee.full_name} (${result.employee.employee_code}) added to ${result.batch.label}. Use Assign Employees to give them the induction assessment.`);
+          batchContext.onAdded();
+          return;
+        }
+        const result = await api.post<{ created: number; employee: { full_name: string; employee_code: string } }>("/admin/employees", body);
         toast(`${result.employee.full_name} (${result.employee.employee_code}) added. They are now available in Assign Employees.`);
       }}
     >
@@ -1120,14 +1154,19 @@ function NewEmployeeForm({ onBack, onClose }: { onBack: () => void; onClose: () 
       </div>
       <div className="form-grid">
         <TextField label="Joining date *" name="joining_date" type="date" required min="1900-01-01" max="2100-12-31" />
-        <SelectField label="Department *" name="department_id" required placeholder={departments.data ? "Choose an active department" : "Loading departments…"} options={choices.map((d) => ({ value: d.id, label: `${d.name} (${d.code})` }))} />
+        <SelectField label="Department *" name="department_id" required defaultValue={batchContext?.department.id} placeholder={batchContext ? undefined : departments.data ? "Choose an active department" : "Loading departments…"} options={choices.map((d) => ({ value: d.id, label: `${d.name} (${d.code})` }))} />
       </div>
+      {batchContext ? <SelectField label="Batch *" name="batch_id" required defaultValue={batchContext.defaultBatchId} options={batchContext.batches.map((b) => ({ value: b.id, label: b.label }))} /> : null}
       <p className="small">{PASSWORD_RULE}</p>
     </DialogForm>
   );
 }
 
-function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+function BulkEmployees({ onBack, onClose, batchContext }: { onBack: () => void; onClose: () => void; batchContext?: EmployeeBatchContext }) {
+  const [batchId, setBatchId] = useState(batchContext?.defaultBatchId ?? batchContext?.batches[0]?.id ?? "");
+  // The preview belongs to the batch it was checked for: choosing another batch asks for a new check.
+  const [checkedBatch, setCheckedBatch] = useState("");
+  const base = batchContext ? `/admin/inductions/${batchContext.inductionId}/batches/${batchId}/employees/import` : "/admin/employees/import";
   const [file, setFile] = useState<File | null>(null);
   const [checked, setChecked] = useState<File | null>(null);
   const [preview, setPreview] = useState<EmployeePreview | null>(null);
@@ -1151,8 +1190,9 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
     setError("");
     setPreview(null);
     try {
-      setPreview(await api.upload<EmployeePreview>("/admin/employees/import/preview", form()));
+      setPreview(await api.upload<EmployeePreview>(`${base}/preview`, form()));
       setChecked(file);
+      setCheckedBatch(batchId);
     } catch (e) {
       setError(fieldErrors(e));
     } finally {
@@ -1163,9 +1203,10 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
     setBusy("import");
     setError("");
     try {
-      const result = await api.upload<EmployeeImportResult>("/admin/employees/import", form());
+      const result = await api.upload<EmployeeImportResult>(base, form());
       setDone(result);
       toast(createdMessage(result.created));
+      batchContext?.onAdded();
     } catch (e) {
       // Checked again on confirmation: show what changed (for example, someone added one of these employees meanwhile).
       if (e instanceof ApiError && e.code === "IMPORT_NOT_READY" && e.details) setPreview(e.details as EmployeePreview);
@@ -1174,7 +1215,7 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
       setBusy(null);
     }
   };
-  const blocked = confirmBlockedReason(preview, file !== checked);
+  const blocked = batchContext && !batchId ? "Choose a batch first." : confirmBlockedReason(preview, file !== checked || (batchContext ? batchId !== checkedBatch : false));
   // Rows with problems first, so they are on the first page of the table; each keeps its file row number.
   const shown = preview ? [...preview.rows].sort((a, b) => Number(b.status === "INVALID") - Number(a.status === "INVALID")) : [];
   return (
@@ -1182,7 +1223,8 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
       {done ? (
         <>
           <div className="notice" role="status">
-            <strong>{createdMessage(done.created)}</strong> Imported from {done.file_name}. No training was assigned.
+            <strong>{createdMessage(done.created)}</strong> Imported from {done.file_name}
+            {batchContext ? ` into ${batchContext.batches.find((b) => b.id === checkedBatch)?.label ?? "the batch"}. No induction assessment was assigned: use Assign Employees.` : ". No training was assigned."}
           </div>
           <DataTable all headers={["Employee ID", "Name"]} rows={done.employees.map((e) => [e.employee_code, e.full_name])} />
           <div className="dialog-actions">
@@ -1196,7 +1238,22 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
           <Btn kind="text" onClick={onBack} disabled={busy !== null}>
             <Icon name="back" /> Choose another way
           </Btn>
+          {batchContext ? (
+            <SelectField
+              label="Batch *"
+              name="batch_id"
+              value={batchId}
+              disabled={busy !== null}
+              placeholder={batchContext.batches.length ? undefined : "Create a batch first"}
+              onChange={(e) => {
+                setBatchId(e.target.value);
+                setPreview(null);
+              }}
+              options={batchContext.batches.map((b) => ({ value: b.id, label: b.label }))}
+            />
+          ) : null}
           <p className="small">
+            {batchContext ? `Every row's Department must be ${batchContext.department.name} (${batchContext.department.code}): only that department can join ${batchContext.inductionName}. ` : null}
             Columns: {EMPLOYEE_COLUMNS.join(", ")}. Departments must already exist and be active (code or exact name). Dates of joining are read day first: 19 Nov 2026, 19/11/2026, 19-11-2026, 2026-11-19 or 19112026 (Excel date cells work too). Keep employee numbers as text so leading zeros stay.
           </p>
           <div className="row wrap">
@@ -1223,7 +1280,7 @@ function BulkEmployees({ onBack, onClose }: { onBack: () => void; onClose: () =>
           </label>
           <small className="small">Up to 5 MB. The first worksheet is read as plain values; formulas, macros and external links are rejected.</small>
           <div className="row wrap">
-            <Btn kind="primary" onClick={() => void validate()} disabled={busy !== null || !file}>
+            <Btn kind="primary" onClick={() => void validate()} disabled={busy !== null || !file || (batchContext ? !batchId : false)}>
               {busy === "validate" ? "Validating file…" : "Validate file"}
             </Btn>
           </div>

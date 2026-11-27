@@ -34,12 +34,13 @@ export function parseAnswerAck(data: unknown, sent: readonly string[]): AnswerAc
 
 type Put = (path: string, body: unknown, options?: RequestOptions) => Promise<unknown>;
 
-/** The `send` the saving queue uses for one attempt. */
-export function answerSender(attemptId: string, put: Put = api.put) {
+/** The `send` the saving queue uses for one attempt. `base` is the attempts API: Training's by default, or the
+    induction module's (/me/induction/attempts), which answers in exactly the same shape. */
+export function answerSender(attemptId: string, put: Put = api.put, base = "/attempts") {
   return async (questionId: string, selected: string[], { baseRevision, signal, opId }: SendOptions): Promise<AnswerAck> => {
     // op_id lets the server say, on a conflict, whether its answer came from this very save (its reply was lost).
     const body = baseRevision === null ? { selected_option_ids: selected, op_id: opId } : { selected_option_ids: selected, base_revision: baseRevision, op_id: opId };
-    const data = await put(`/attempts/${attemptId}/questions/${questionId}/answer`, body, { signal: signal ?? undefined, timeoutMs: SAVE_TIMEOUT_MS });
+    const data = await put(`${base}/${attemptId}/questions/${questionId}/answer`, body, { signal: signal ?? undefined, timeoutMs: SAVE_TIMEOUT_MS });
     return parseAnswerAck(data, selected);
   };
 }

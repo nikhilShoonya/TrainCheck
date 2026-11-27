@@ -67,6 +67,8 @@ function handleAccessCodes(error: ApiError): void {
   if (typeof window === "undefined") return;
   const { pathname } = window.location;
   if (error.code === "UNAUTHENTICATED" && pathname !== "/login") reloadAt("/login");
+  if (error.code === "INDUCTION_REQUIRED" && pathname !== "/induction") reloadAt("/induction");
+  if (error.code === "INDUCTION_FEEDBACK_REQUIRED" && pathname !== "/induction/result") reloadAt("/induction/result");
   if (error.code === "ASSESSMENT_REQUIRED" && !pathname.startsWith("/access/")) reloadAt("/access/assessment-required");
   const owed = (error.details as { attempt_id?: string } | undefined)?.attempt_id;
   if (error.code === "FEEDBACK_REQUIRED" && owed && !pathname.startsWith("/results/")) reloadAt(`/results/${owed}`);

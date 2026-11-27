@@ -14,6 +14,8 @@ import { useUnsavedInput } from "@/lib/unsavedInput";
 import { dateTimeIn } from "@/lib/utils";
 
 const SESSION_RECHECK_MS = 30_000;
+/** Gate decisions that close the workspace until they are met (the server refuses workspace APIs meanwhile). */
+const BLOCKING = new Set(["ASSESSMENT_REQUIRED", "FEEDBACK_REQUIRED", "INDUCTION_REQUIRED", "INDUCTION_FEEDBACK_REQUIRED"]);
 /** Returning to the tab re-checks at most this often. */
 const RETURN_RECHECK_MS = 5_000;
 /** A page left open re-checks this often, so an assessment assigned or rescheduled meanwhile is noticed. */
@@ -30,7 +32,7 @@ export function WorkspaceGuard({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   // A due assessment or owed feedback closes the workspace until it is done (the server enforces the same).
-  const blocked = access?.access_status === "ASSESSMENT_REQUIRED" || access?.access_status === "FEEDBACK_REQUIRED";
+  const blocked = access ? BLOCKING.has(access.access_status) : false;
   // A post-test opening within five minutes opens its countdown, unless that would discard what is being typed here:
   // then the person is asked first. The server keeps the workspace open until the opening moment.
   const countdown = countdownTarget(access);

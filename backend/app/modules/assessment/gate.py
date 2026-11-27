@@ -280,7 +280,20 @@ def countdown_state(db: Session, employee_id: uuid.UUID, now: datetime) -> tuple
     return None, None
 
 
+def induction_first(induction: dict | None, training_queue: list[AssessmentObligation]) -> bool:
+    """Whether the induction comes before the Training gates (owner decision of 27 Nov 2026: the induction is required
+    straight after sign-in). A running Training attempt keeps its place, because its timer is running; a running
+    induction attempt always comes first for the same reason."""
+    if induction is None or induction["kind"] not in ("ASSESSMENT", "FEEDBACK"):
+        return False
+    if induction.get("in_progress"):
+        return True
+    return not any(o.status == ObligationStatus.IN_PROGRESS for o in training_queue)
+
+
 def access_state(db: Session, employee_id: uuid.UUID) -> dict:
+    from app.modules.induction.gate import requirement as induction_requirement
+
     now = utcnow()
     finalise_expired_attempts(db, employee_id, now)
     due = due_post_tests(db, employee_id, now)  # Read once; split into startable and unavailable below.
@@ -289,6 +302,7 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
     unavailable = [o for o in due if not obligation_startable(db, o, cache)]
     if unavailable:
         alert_unavailable(db, unavailable, now)
+    induction = induction_requirement(db, employee_id, now, alert=True)
     feedback = None if queue else feedback_due(db, employee_id)
     db.commit()  # Persist any timeout finalised above and any alert.
     held = [{"obligation_id": str(o.id), "training_title": o.training.title, "reason": "QUESTION_POOL_INSUFFICIENT"} for o in unavailable]
@@ -297,6 +311,19 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
     # Only offered while the workspace is otherwise open: a due assessment and owed feedback come first.
     countdown, countdown_starts_at = countdown_state(db, employee_id, now)
     timing = {"next_change_at": iso(next_opening(db, employee_id, now)), "server_now": iso(now), "countdown_starts_at": iso(countdown_starts_at)}
+    if induction_first(induction, queue):
+        kind = induction["kind"]
+        return {
+            "access_status": "INDUCTION_REQUIRED" if kind == "ASSESSMENT" else "INDUCTION_FEEDBACK_REQUIRED",
+            "pending_count": len(queue),
+            "next_action": "COMPLETE_INDUCTION" if kind == "ASSESSMENT" else "GIVE_INDUCTION_FEEDBACK",
+            "queue": [queue_item(o, i + 1) for i, o in enumerate(queue)],
+            "unavailable": held,
+            "feedback_due": None,
+            "countdown": None,
+            "induction": induction,
+            **timing,
+        }
     if queue:
         return {
             "access_status": "ASSESSMENT_REQUIRED",
@@ -306,12 +333,13 @@ def access_state(db: Session, employee_id: uuid.UUID) -> dict:
             "unavailable": held,
             "feedback_due": None,
             "countdown": None,
+            "induction": induction,
             **timing,
         }
     if feedback:
-        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback, "countdown": None, **timing}
+        return {"access_status": "FEEDBACK_REQUIRED", "pending_count": 0, "next_action": "GIVE_FEEDBACK", "queue": [], "unavailable": held, "feedback_due": feedback, "countdown": None, "induction": induction, **timing}
     if countdown:
         from app.modules.assessment.scheduling import load_calendar
 
         countdown["timezone"] = load_calendar(db).timezone  # The organisation timezone, for showing the opening time.
-    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None, "countdown": countdown, **timing}
+    return {"access_status": "DASHBOARD_ALLOWED", "pending_count": 0, "next_action": "OPEN_DASHBOARD", "queue": [], "unavailable": held, "feedback_due": None, "countdown": countdown, "induction": induction, **timing}

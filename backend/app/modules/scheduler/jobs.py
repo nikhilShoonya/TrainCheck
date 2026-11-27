@@ -46,6 +46,25 @@ def finalise_expired(db: Session, now: datetime | None = None) -> int:
     return done
 
 
+def finalise_expired_induction(db: Session, now: datetime | None = None) -> int:
+    """The same for induction attempts (a separate module with its own tables), one commit per attempt."""
+    from app.models import InductionAttempt
+    from app.modules.induction.engine import finalise_attempt as finalise_induction_attempt
+
+    now = now or utcnow()
+    ids = db.scalars(select(InductionAttempt.id).where(InductionAttempt.status == AttemptStatus.IN_PROGRESS, InductionAttempt.expires_at <= now)).all()
+    done = 0
+    for attempt_id in ids:
+        try:
+            finalise_induction_attempt(db, attempt_id, now=now)
+            db.commit()
+            done += 1
+        except Exception:
+            db.rollback()
+            logger.exception("Could not finalise expired induction attempt %s; it will be retried", attempt_id)
+    return done
+
+
 def pending_assessment_reminders(db: Session, now: datetime | None = None) -> int:
     now = now or utcnow()
     calendar = load_calendar(db)
@@ -127,6 +146,7 @@ def _run(job, name: str) -> None:
 def build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(_run, "interval", minutes=1, args=[finalise_expired, "finalise_expired"], id="finalise_expired", max_instances=1, coalesce=True)
+    scheduler.add_job(_run, "interval", minutes=1, args=[finalise_expired_induction, "finalise_expired_induction"], id="finalise_expired_induction", max_instances=1, coalesce=True)
     scheduler.add_job(_run, "cron", minute=30, args=[pending_assessment_reminders, "pending_assessment_reminders"], id="pending_assessment_reminders", max_instances=1, coalesce=True)
     if get_settings().behaviour_enabled:
         scheduler.add_job(_run, "cron", minute=45, args=[behaviour_reminders, "behaviour_reminders"], id="behaviour_reminders", max_instances=1, coalesce=True)

@@ -102,13 +102,26 @@ def require_session(request: Request, db: Session = Depends(get_db)) -> CurrentU
 
 
 def require_gate_clear(user: CurrentUser = Depends(require_session), db: Session = Depends(get_db)) -> CurrentUser:
-    from app.modules.assessment.gate import blocking_obligations, feedback_due  # Imported here to avoid an import cycle.
+    # Imported here to avoid an import cycle.
+    from app.modules.assessment.gate import blocking_obligations, feedback_due, induction_first
+    from app.modules.induction.gate import requirement as induction_requirement
 
-    blocked = bool(blocking_obligations(db, user.employee_id))
-    owed = None if blocked else feedback_due(db, user.employee_id)
+    queue = blocking_obligations(db, user.employee_id)
+    # The induction (assessment, then its feedback) is required straight after sign-in, in the same order as
+    # access_state decides it (induction_first).
+    induction = induction_requirement(db, user.employee_id, utcnow())
+    induction_code = None
+    if induction_first(induction, queue):
+        induction_code = "INDUCTION_REQUIRED" if induction["kind"] == "ASSESSMENT" else "INDUCTION_FEEDBACK_REQUIRED"
+    blocked = bool(queue)
+    owed = None if blocked or induction_code else feedback_due(db, user.employee_id)
     # Keeps any attempt the check finalised on timeout, and frees the connection before the endpoint waits for a
     # worker thread (see app.core.routing).
     db.commit()
+    if induction_code == "INDUCTION_REQUIRED":
+        raise ApiError(403, induction_code, "Complete your induction assessment before opening this page.")
+    if induction_code:
+        raise ApiError(403, induction_code, "Share your induction feedback before opening this page.")
     if blocked:
         raise ApiError(403, "ASSESSMENT_REQUIRED", "Complete your pending assessment before opening this page.")
     if owed:

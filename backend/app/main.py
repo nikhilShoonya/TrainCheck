@@ -21,6 +21,8 @@ from app.modules.employee.router import router as employee_router
 from app.modules.feedback.router import router as feedback_router
 from app.modules.identity.router import router as identity_router
 from app.modules.imports.router import router as imports_router
+from app.modules.induction.admin_router import router as induction_admin_router
+from app.modules.induction.employee_router import router as induction_employee_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.organisation.router import router as organisation_router
 from app.modules.question_bank.router import router as question_router
@@ -34,7 +36,9 @@ logger = logging.getLogger("traincheck")
 API_PREFIX = "/api/v1"
 # Import uploads: FastAPI reads and spools a multipart body before any dependency (sign-in included) runs, so these
 # are checked from their headers first (audit F-08). The allowance covers multipart framing and the form fields.
-UPLOAD_PATH = re.compile(rf"^{API_PREFIX}/admin/(imports(/[^/]+/replace)?|employees/import(/preview)?)/?$")
+UPLOAD_PATH = re.compile(
+    rf"^{API_PREFIX}/admin/(imports(/[^/]+/replace)?|employees/import(/preview)?|induction/questions/import(/preview)?|inductions/[^/]+/batches/[^/]+/employees/import(/preview)?)/?$"
+)
 MULTIPART_ALLOWANCE = 64 * 1024
 
 
@@ -138,6 +142,8 @@ def create_app() -> FastAPI:
         admin_misc_router,
         demo_router,
         feedback_router,
+        induction_admin_router,
+        induction_employee_router,
     ):
         api.include_router(router)
     app.include_router(api)

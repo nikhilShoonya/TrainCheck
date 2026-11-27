@@ -71,7 +71,16 @@ function flushProblem(outcome: Exclude<FlushOutcome, { ok: true }>): string {
   }
 }
 
-export function ExamView({ initial }: { initial: AttemptView }) {
+/** Where an attempt's API and result page live. Training assessments use the defaults; the induction module passes
+    its own (same request and response shapes, separate tables). */
+export interface ExamPaths {
+  api: string;
+  result: string;
+}
+
+const TRAINING_PATHS: ExamPaths = { api: "/attempts", result: "/results" };
+
+export function ExamView({ initial, paths = TRAINING_PATHS }: { initial: AttemptView; paths?: ExamPaths }) {
   const router = useRouter();
   const toast = useToast();
   const { user } = useSession();
@@ -90,7 +99,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
     const account = user?.id ?? null;
     const store = pendingStore(browserStorage(), account, initial.attempt_id, deadline);
     const engine = new AnswerSync({
-      send: answerSender(initial.attempt_id), // Bounded, cancellable, and confirmed only by a valid acknowledgement.
+      send: answerSender(initial.attempt_id, undefined, paths.api), // Bounded, cancellable, and confirmed only by a valid acknowledgement.
       now: () => Date.now() + offset,
       deadline,
       schedule: (run, ms) => {
@@ -212,9 +221,9 @@ export function ExamView({ initial }: { initial: AttemptView }) {
       sync.dispose();
       exitFullscreen();
       toast(message);
-      router.replace(`/results/${attempt.attempt_id}`);
+      router.replace(paths.result === TRAINING_PATHS.result ? `/results/${attempt.attempt_id}` : paths.result);
     },
-    [attempt.attempt_id, router, sync, toast],
+    [attempt.attempt_id, paths.result, router, sync, toast],
   );
 
   /** The server reports the attempt finished (time, violations, or another tab). */
@@ -272,7 +281,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
     try {
       await Promise.race([sync.settled(), wait(IN_FLIGHT_WAIT_MS)]);
       if (!current()) return;
-      const outcome = await loadFinalResult((signal) => api.get(`/attempts/${attempt.attempt_id}/result`, { signal: signal ?? undefined }), wait, Math.random);
+      const outcome = await loadFinalResult((signal) => api.get(`${paths.api}/${attempt.attempt_id}/result`, { signal: signal ?? undefined }), wait, Math.random);
       if (!current()) return;
       if (!outcome.ok) {
         giveUp(outcome.failure.message);
@@ -283,7 +292,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
     } finally {
       clearTimeout(watchdog);
     }
-  }, [attempt.attempt_id, goToResult, sync]);
+  }, [attempt.attempt_id, goToResult, paths.api, sync]);
 
   const saveAnswer = (questionId: string, selected: string[]) => {
     if (!sync.set(questionId, selected)) return; // After the deadline, once closed, or while submitting.
@@ -324,7 +333,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
     if (!attempt.monitored) return;
     const report = async (type: ViolationType) => {
       try {
-        const result = await api.post<{ counted: boolean; violation_count: number; violation_limit: number; auto_submitted: boolean; status: string }>(`/attempts/${attempt.attempt_id}/security-events`, { event_type: type });
+        const result = await api.post<{ counted: boolean; violation_count: number; violation_limit: number; auto_submitted: boolean; status: string }>(`${paths.api}/${attempt.attempt_id}/security-events`, { event_type: type });
         setAttempt((a) => ({ ...a, violation_count: result.violation_count }));
         if (result.auto_submitted || result.status !== "IN_PROGRESS") closedByServer(`Your assessment was submitted automatically after ${result.violation_count} security violations.`);
         else if (result.counted) {
@@ -339,7 +348,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
       (type) => void report(type),
       () => setFullscreen(isFullscreen()),
     );
-  }, [attempt.attempt_id, attempt.monitored, closedByServer]);
+  }, [attempt.attempt_id, attempt.monitored, closedByServer, paths.api]);
 
   /* ---------- Connection: an interruption is recorded, never counted as a violation ---------- */
 
@@ -354,7 +363,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
       toast("Connection restored. You are continuing the same attempt; the timer was not paused.");
       if (interruptedAt.current !== null && attempt.monitored) {
         interruptedAt.current = null;
-        void api.post(`/attempts/${attempt.attempt_id}/security-events`, { event_type: "NETWORK_INTERRUPTION" }).catch(() => {});
+        void api.post(`${paths.api}/${attempt.attempt_id}/security-events`, { event_type: "NETWORK_INTERRUPTION" }).catch(() => {});
       }
       sync.retryNow();
     };
@@ -376,7 +385,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
-  }, [attempt.attempt_id, attempt.monitored, sync, toast]);
+  }, [attempt.attempt_id, attempt.monitored, paths.api, sync, toast]);
 
   /* ---------- Actions ---------- */
 
@@ -400,7 +409,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
     setAttempt((a) => ({ ...a, questions: a.questions.map((q) => (q.attempt_question_id === question.attempt_question_id ? { ...q, marked_for_review: marked } : q)) }));
     setAnnouncement(marked ? "Marked for review." : "Review mark removed.");
     try {
-      await api.post(`/attempts/${attempt.attempt_id}/questions/${question.attempt_question_id}/mark`, { marked });
+      await api.post(`${paths.api}/${attempt.attempt_id}/questions/${question.attempt_question_id}/mark`, { marked });
     } catch (error) {
       handleApiError(error as ApiError);
     }
@@ -445,7 +454,7 @@ export function ExamView({ initial }: { initial: AttemptView }) {
     try {
       // Idempotent on the server: a repeat returns the same result, so a submission whose reply was lost is safe
       // to send again.
-      await api.post(`/attempts/${attempt.attempt_id}/submit`, {}, { timeoutMs: SUBMIT_TIMEOUT_MS });
+      await api.post(`${paths.api}/${attempt.attempt_id}/submit`, {}, { timeoutMs: SUBMIT_TIMEOUT_MS });
       if (!current()) return;
       sync.close("submitted");
       sync.forget();

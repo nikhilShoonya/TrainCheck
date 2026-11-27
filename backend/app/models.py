@@ -816,3 +816,265 @@ class ReportDelivery(Base):
     export_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("report_exports.id"))
     error: Mapped[str | None] = mapped_column(String(300))
     __table_args__ = (UniqueConstraint("schedule_id", "run_at"),)
+
+
+# ---------- Induction (separate module, 27 Nov 2026) ----------
+# New-joiner induction. Its own tables: no Training table or relationship is shared or made optional. Employees are
+# the shared employee records. The one-time rule (one assessment attempt and one feedback submission per employee
+# across the whole module) is held by unique constraints on employee_id in induction_assignments,
+# induction_attempts and induction_feedback.
+
+class InductionProgramme(Base, Timestamped):
+    """An admin-created induction card (e.g. IT Induction). Belongs to one department: only that department's
+    employees can be assigned."""
+
+    __tablename__ = "induction_programmes"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    induction_code: Mapped[str] = mapped_column(String(40), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str | None] = mapped_column(String(120))
+    description: Mapped[str | None] = mapped_column(Text)
+    department_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("departments.id"), index=True)
+    trainer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("trainers.id"))
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    department: Mapped[Department] = relationship()
+    trainer: Mapped[Trainer | None] = relationship()
+    __table_args__ = (CheckConstraint("status IN ('ACTIVE', 'ARCHIVED')", name="ck_induction_status"),)
+
+
+class InductionBatch(Base):
+    """A monthly batch inside one induction, e.g. November 2026 · Batch 1. Display text is never relational identity."""
+
+    __tablename__ = "induction_batches"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    induction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_programmes.id"), index=True)
+    batch_year: Mapped[int] = mapped_column(Integer)
+    batch_month: Mapped[int] = mapped_column(Integer)
+    batch_number: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str | None] = mapped_column(String(120))  # Optional label shown beside "Batch n".
+    start_date: Mapped[date | None] = mapped_column(Date)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    created_at: Mapped[datetime] = created_at()
+    induction: Mapped[InductionProgramme] = relationship()
+    __table_args__ = (
+        UniqueConstraint("induction_id", "batch_year", "batch_month", "batch_number", name="uq_induction_batch"),
+        CheckConstraint("batch_month BETWEEN 1 AND 12", name="ck_induction_batch_month"),
+        CheckConstraint("batch_year BETWEEN 2000 AND 2100", name="ck_induction_batch_year"),
+        CheckConstraint("batch_number > 0", name="ck_induction_batch_number"),
+    )
+
+
+class InductionBatchMember(Base):
+    """An employee's place in a batch. At most one batch per employee within one induction."""
+
+    __tablename__ = "induction_batch_members"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    induction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_programmes.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_batches.id"), index=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    added_at: Mapped[datetime] = created_at()
+    employee: Mapped[Employee] = relationship()
+    batch: Mapped[InductionBatch] = relationship()
+    __table_args__ = (UniqueConstraint("induction_id", "employee_id", name="uq_induction_member"),)
+
+
+class InductionAssessmentSettings(Base):
+    """Module-wide assessment rules, saved as numbered versions. Attempts copy the version they start with.
+    Exactly one attempt is allowed, so there is no attempts setting."""
+
+    __tablename__ = "induction_assessment_settings"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    version: Mapped[int] = mapped_column(Integer, unique=True)
+    duration_seconds: Mapped[int] = mapped_column(Integer)
+    pass_mark_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    violation_limit: Mapped[int] = mapped_column(Integer)
+    require_fullscreen: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    created_at: Mapped[datetime] = created_at()
+    __table_args__ = (
+        Index("uq_induction_settings_current", "is_current", unique=True, postgresql_where=text("is_current")),
+        CheckConstraint("duration_seconds > 0", name="ck_induction_settings_duration"),
+        CheckConstraint("pass_mark_percent >= 0 AND pass_mark_percent <= 100", name="ck_induction_settings_pass_mark"),
+        CheckConstraint("violation_limit > 0", name="ck_induction_settings_violations"),
+    )
+
+
+class InductionQuestion(Base, Timestamped):
+    """A question of the one common induction paper. Separate from the Training question bank."""
+
+    __tablename__ = "induction_questions"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    question_code: Mapped[str] = mapped_column(String(60), unique=True)
+    topic: Mapped[str] = mapped_column(String(160))
+    question_type: Mapped[str] = mapped_column(String(20))
+    question_text: Mapped[str] = mapped_column(Text)
+    explanation: Mapped[str | None] = mapped_column(Text)
+    marks: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    status: Mapped[str] = mapped_column(String(10), default="ACTIVE", index=True)
+    display_order: Mapped[int] = mapped_column(Integer)  # The paper's fixed order.
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    options: Mapped[list["InductionQuestionOption"]] = relationship(cascade="all, delete-orphan", order_by="InductionQuestionOption.display_order")
+    __table_args__ = (CheckConstraint("marks > 0", name="ck_induction_question_marks"),)
+
+
+class InductionQuestionOption(Base):
+    """is_correct is the answer key: read only by scoring and L&D administration, never sent to employees."""
+
+    __tablename__ = "induction_question_options"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_questions.id", ondelete="CASCADE"), index=True)
+    option_text: Mapped[str] = mapped_column(Text)
+    display_order: Mapped[int] = mapped_column(Integer)
+    is_correct: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class InductionFeedbackForm(Base):
+    """The common induction feedback form, saved as numbered versions. Answers keep the version they were given on."""
+
+    __tablename__ = "induction_feedback_forms"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    version: Mapped[int] = mapped_column(Integer, unique=True)
+    questions: Mapped[list[dict[str, Any]]] = mapped_column(JSON)  # [{"key", "section", "text", "control"}]
+    comment_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    comment_label: Mapped[str | None] = mapped_column(String(300))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    created_at: Mapped[datetime] = created_at()
+    __table_args__ = (Index("uq_induction_feedback_form_current", "is_current", unique=True, postgresql_where=text("is_current")),)
+
+
+class InductionAssignment(Base, Timestamped):
+    """The employee's one induction. employee_id is unique: a second card, month, batch or department change can
+    never give the same person another assessment or feedback."""
+
+    __tablename__ = "induction_assignments"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), unique=True)
+    induction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_programmes.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_batches.id"), index=True)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("departments.id"))  # At assignment time.
+    status: Mapped[str] = mapped_column(String(20), default="ASSIGNED", index=True)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_accounts.id"))
+    # Frozen when the attempt starts: the feedback form this employee will be asked.
+    feedback_form_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("induction_feedback_forms.id"))
+    assessment_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    employee: Mapped[Employee] = relationship()
+    induction: Mapped[InductionProgramme] = relationship()
+    batch: Mapped[InductionBatch] = relationship()
+    feedback_form: Mapped[InductionFeedbackForm | None] = relationship()
+    __table_args__ = (CheckConstraint("status IN ('ASSIGNED', 'IN_PROGRESS', 'FEEDBACK_PENDING', 'COMPLETED')", name="ck_induction_assignment_status"),)
+
+
+class InductionAttempt(Base):
+    """The one induction assessment attempt. Unique per employee and per assignment."""
+
+    __tablename__ = "induction_attempts"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    assignment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_assignments.id"), unique=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), unique=True)
+    induction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_programmes.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_batches.id"), index=True)
+    settings_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_assessment_settings.id"))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submission_reason: Mapped[str | None] = mapped_column(String(20))
+    obtained_marks: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    total_marks: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    score_percent: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))  # Truncated, never rounded up.
+    result_status: Mapped[str | None] = mapped_column(String(20), index=True)
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    violation_count: Mapped[int] = mapped_column(Integer, default=0)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at()
+    assignment: Mapped[InductionAssignment] = relationship()
+    employee: Mapped[Employee] = relationship()
+    induction: Mapped[InductionProgramme] = relationship()
+    questions: Mapped[list["InductionAttemptQuestion"]] = relationship(back_populates="attempt", order_by="InductionAttemptQuestion.display_order")
+    security_events: Mapped[list["InductionAttemptSecurityEvent"]] = relationship(order_by="InductionAttemptSecurityEvent.occurred_at")
+
+
+class InductionAttemptQuestion(Base):
+    """The exact question shown. answer_key_snapshot is server-only: no employee response may include it."""
+
+    __tablename__ = "induction_attempt_questions"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_attempts.id"), index=True)
+    question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_questions.id"), index=True)
+    question_version: Mapped[int] = mapped_column(Integer)
+    display_order: Mapped[int] = mapped_column(Integer)
+    question_text_snapshot: Mapped[str] = mapped_column(Text)
+    question_type_snapshot: Mapped[str] = mapped_column(String(20))
+    topic_snapshot: Mapped[str] = mapped_column(String(160))
+    options_snapshot: Mapped[list[dict[str, str]]] = mapped_column(JSON)  # [{"option_id", "label", "text"}]
+    marks_snapshot: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    answer_key_snapshot: Mapped[list[str]] = mapped_column(JSON)
+    explanation_snapshot: Mapped[str | None] = mapped_column(Text)
+    attempt: Mapped[InductionAttempt] = relationship(back_populates="questions")
+    answer: Mapped["InductionAttemptAnswer | None"] = relationship(uselist=False)
+    __table_args__ = (UniqueConstraint("attempt_id", "display_order", name="uq_induction_attempt_question_order"),)
+
+
+class InductionAttemptAnswer(Base):
+    __tablename__ = "induction_attempt_answers"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    attempt_question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_attempt_questions.id"), unique=True)
+    selected_option_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # Compare-and-set, as for Training.
+    last_op_id: Mapped[str | None] = mapped_column(String(64))
+    marked_for_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    saved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_correct: Mapped[bool | None] = mapped_column(Boolean)  # Set only at finalisation.
+    marks_awarded: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+
+
+class InductionAttemptSecurityEvent(Base):
+    __tablename__ = "induction_attempt_security_events"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_attempts.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(30))
+    signals: Mapped[list[str]] = mapped_column(JSON, default=list)
+    violation_number: Mapped[int | None] = mapped_column(Integer)  # Null for interruptions.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InductionFeedback(Base):
+    """The employee's one induction feedback submission, with the form version and a copy of its questions."""
+
+    __tablename__ = "induction_feedback"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), unique=True)
+    assignment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_assignments.id"), unique=True)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_attempts.id"), unique=True)
+    induction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_programmes.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_batches.id"), index=True)
+    form_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_feedback_forms.id"))
+    form_version: Mapped[int] = mapped_column(Integer)
+    form_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)  # Questions and comment label as shown.
+    ratings: Mapped[dict[str, int]] = mapped_column(JSON)
+    comment_text: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    employee: Mapped[Employee] = relationship()
+
+
+class InductionExport(Base):
+    """A generated induction records file (CSV, XLSX or PDF), kept in private storage for its owner."""
+
+    __tablename__ = "induction_exports"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_accounts.id"), index=True)
+    induction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("induction_programmes.id"), index=True)
+    record_kind: Mapped[str] = mapped_column(String(20))
+    export_format: Mapped[str] = mapped_column(String(10))
+    filters: Mapped[dict[str, Any]] = mapped_column(JSON)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    artifact_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("file_artifacts.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    artifact: Mapped[FileArtifact | None] = relationship()

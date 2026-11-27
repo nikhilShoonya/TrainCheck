@@ -199,3 +199,31 @@ class ReportCode(StrEnum):
     QUESTION_ANALYTICS = "question-analytics"
     EMPLOYEE_HISTORY = "employee-history"
     SCORECARD = "scorecard"
+
+
+# ---------- Induction (a separate module; 27 Nov 2026) ----------
+
+class InductionStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class InductionAssignmentStatus(StrEnum):
+    """Participation, derived in order. Assessment pass/fail is kept separately on the attempt."""
+
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    FEEDBACK_PENDING = "FEEDBACK_PENDING"
+    COMPLETED = "COMPLETED"
+
+
+class InductionFeedbackControl(StrEnum):
+    """The existing feedback controls: a 1-5 star rating, or the five-point Very Poor ... Excellent scale."""
+
+    STARS = "STARS"
+    SCALE = "SCALE"
+
+
+class InductionRecordKind(StrEnum):
+    ASSESSMENT = "ASSESSMENT"
+    FEEDBACK = "FEEDBACK"

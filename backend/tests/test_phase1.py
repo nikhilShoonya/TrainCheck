@@ -372,7 +372,7 @@ def test_new_completion_creates_no_behaviour_follow_ups(world, db, client_for):
     assert behaviour_reminders(db, NOW + timedelta(days=40)) == 0
     assert "behaviour_reminders" not in {job.id for job in build_scheduler().get_jobs()}
     me = client_for(world.employee).get("/auth/me").json()["data"]["user"]
-    assert me["features"] == {"behaviour": False, "password_change": False}
+    assert me["features"] == {"behaviour": False, "password_change": False, "induction": False}
 
 
 def test_behaviour_writes_are_refused_but_history_is_readable(world, db, client_for, monkeypatch):
