@@ -575,6 +575,17 @@ td .badge.warning{margin-left:8px}
 .dialog-actions .dialog-delete{margin-right:auto}
 /* Reports > Downloads: Download and Delete side by side in each row. */
 .export-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* Report name over its file name, so two exports of the same report can be told apart. */
+.export-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.export-name strong{font-size:14px;font-weight:600;color:var(--text)}
+.export-name span{font-size:13px;color:var(--secondary);overflow-wrap:anywhere}
+/* Desktop: the name takes the free width, short columns stay narrow, and the actions sit at the right edge. */
+@media(min-width:641px){
+  .downloads-card th:nth-child(2),.downloads-card td:nth-child(2),.downloads-card th:nth-child(3),.downloads-card td:nth-child(3){width:110px}
+  .downloads-card th:nth-child(4),.downloads-card td:nth-child(4){width:200px;white-space:nowrap}
+  .downloads-card th:last-child,.downloads-card td:last-child{width:1%;white-space:nowrap}
+  .downloads-card .export-actions{justify-content:flex-end;flex-wrap:nowrap}
+}
 /* Departments (55%) and Functions (45%) side by side on desktop; stacked on tablet and phone. */
 .org-units-grid{display:grid;grid-template-columns:minmax(0,11fr) minmax(0,9fr);gap:20px;align-items:stretch;margin-bottom:24px}
 .org-units-grid>.panel{margin:0}

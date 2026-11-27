@@ -260,6 +260,7 @@ const CODES: [string, string][] = [
   ["employee-history", "Employee Training History"],
   ["scorecard", "Training Learning & Behaviour Scorecard"],
 ];
+const REPORT_NAMES: Record<string, string> = Object.fromEntries(CODES);
 
 /** The chosen report and its filters live in the URL, so a refresh, a shared link and Back to report (from an
     Employee Scorecard) all show the same report with the same filters. */
@@ -298,7 +299,7 @@ function ReportsHubInner() {
         <SelectField label="Report" value={code} onChange={(e) => show(e.target.value, {})} options={CODES.map(([value, label]) => ({ value, label }))} />
       </section>
       <ReportPanel key={code} code={code} filters={filters} onFiltersChange={(next) => show(code, next)} />
-      <section className="panel">
+      <section className="panel downloads-card">
         <h2>Downloads</h2>
         <p className="small">Files you generated. Only you can download them, and your current permissions are checked each time.</p>
         <Loaded state={exportsState}>
@@ -308,7 +309,10 @@ function ReportsHubInner() {
               emptyTitle="No exports yet."
               emptyHint="Use CSV, Excel or PDF above."
               rows={rows.map((r) => [
-                r.report_code,
+                <div key="n" className="export-name" data-sort={REPORT_NAMES[r.report_code] ?? r.report_code}>
+                  <strong>{REPORT_NAMES[r.report_code] ?? r.report_code}</strong>
+                  {r.file_name ? <span>{r.file_name}</span> : null}
+                </div>,
                 r.export_format,
                 r.row_count,
                 dateTime(r.created_at),
