@@ -109,7 +109,7 @@ test.describe("Employee Scorecard (mocked API)", () => {
     expect(world.unknown, "every API request must be mocked").toEqual([]);
   });
 
-  test("an employee row opens that employee's scorecard by ID, and Back to report restores the report and filters", async ({ page }) => {
+  test("an employee row opens that employee's scorecard by ID, and Back to Reports restores the report and filters", async ({ page }) => {
     await page.goto("/lnd/reports");
     await page.locator('#main select').first().selectOption("pass-fail");
     await expect(page).toHaveURL(/report=pass-fail/);
@@ -121,7 +121,10 @@ test.describe("Employee Scorecard (mocked API)", () => {
     await page.getByRole("cell", { name: "Synthetic Training 2" }).click();
     await expect(page).toHaveURL(new RegExp(`/lnd/reports/employees/${OTHER_EMPLOYEE}\\?back=`));
     await expect(page.getByRole("heading", { name: "Second Learner" })).toBeVisible();
-    await page.getByRole("link", { name: "Back to report" }).click();
+    // One Back control, at the top (the breadcrumb is wayfinding, not a second Back button).
+    await expect(page.locator("#main").getByRole("link", { name: /^Back to / })).toHaveCount(1);
+    await page.screenshot({ path: "test-results/back-employee-scorecard.png", fullPage: true });
+    await page.getByRole("link", { name: "Back to Reports" }).click();
     await expect(page).toHaveURL(/\/lnd\/reports\?report=pass-fail&department_id=dep-1$/);
     await expect(page.locator('#main [name="department_id"]')).toHaveValue("dep-1");
 
@@ -246,7 +249,7 @@ test.describe("Employee Scorecard (mocked API)", () => {
     await page.getByRole("button", { name: "Reset", exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/lnd/reports/employees/${EMPLOYEE}\\?back=report%3Dpass-fail$`));
     await expect(bodyRows(page, "Training record")).toHaveCount(5);
-    await page.getByRole("link", { name: "Back to report" }).click();
+    await page.getByRole("link", { name: "Back to Reports" }).click();
     await expect(page).toHaveURL(/\/lnd\/reports\?report=pass-fail$/);
   });
 
@@ -256,6 +259,6 @@ test.describe("Employee Scorecard (mocked API)", () => {
     await page.goto("/lnd/reports/employees/Synthetic%20Learner");
     await expect(page.getByRole("heading", { name: "Employee not found" })).toBeVisible();
     expect(world.requested.some((r) => r.includes("Synthetic"))).toBe(false);
-    await expect(page.getByRole("link", { name: "Back to report" })).toHaveAttribute("href", "/lnd/reports");
+    await expect(page.getByRole("link", { name: "Back to Reports" })).toHaveAttribute("href", "/lnd/reports");
   });
 });

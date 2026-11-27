@@ -68,7 +68,7 @@ test("the list shows each employee once, and opening one shows only their assign
   await expect(page.getByText("Employee not found.")).toBeVisible();
 });
 
-test("Back to employees keeps the search, the table page and the scroll position", async ({ page }) => {
+test("Back to Employees keeps the search, the table page and the scroll position", async ({ page }) => {
   await signIn(page, ACCOUNTS.admin);
   await page.setViewportSize({ width: 1280, height: 600 });
   await openList(page);
@@ -85,7 +85,7 @@ test("Back to employees keeps the search, the table page and the scroll position
 
   await listPanel(page).locator("tbody tr").first().getByRole("button").click();
   await expect(page.getByRole("region", { name: "Selected employee" })).toBeVisible();
-  await page.getByRole("button", { name: "Back to employees" }).click();
+  await page.getByRole("link", { name: "Back to Employees" }).click();
   await expect(listPanel(page)).toBeVisible();
   await expect(listPanel(page).getByLabel("Search")).toHaveValue("@");
   await expect(pager).toContainText("Page 2 of");
@@ -124,7 +124,7 @@ test("Department and Status filters narrow the list, combine with search and sur
   // Opening an employee and coming back keeps the filters.
   await list.locator("tbody tr").getByRole("button").click();
   await expect(page.getByRole("region", { name: "Selected employee" })).toContainText("H001");
-  await page.getByRole("button", { name: "Back to employees" }).click();
+  await page.getByRole("link", { name: "Back to Employees" }).click();
   await expect(list.locator('select[name="employee_department"]')).toHaveValue("Human Resources");
   await expect(list.locator('select[name="employee_status"]')).toHaveValue("active");
   await expect(list.locator("tbody tr")).toHaveCount(1);

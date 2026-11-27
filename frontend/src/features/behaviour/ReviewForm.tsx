@@ -70,12 +70,10 @@ export function ReviewFormPage({ reviewId }: { reviewId: string }) {
                   </>
                 ) : null}
                 <p className="small">Ratings are one person&apos;s observation, compared only for the same competency and period. They do not determine an employment outcome.</p>
-                <BtnLink href={back}>Back to the list</BtnLink>
               </section>
             ) : !editable ? (
               <section className="panel">
                 <p>This review is not due yet. It opens on {day(form.due_at)}.</p>
-                <BtnLink href={back}>Back to the list</BtnLink>
               </section>
             ) : (
               <form className="panel" onSubmit={(e) => void submit(e, form)}>

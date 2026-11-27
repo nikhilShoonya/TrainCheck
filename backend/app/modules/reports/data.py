@@ -249,6 +249,34 @@ def departments_summary(rows: list[Row]) -> list[dict]:
     return [{"department": name, **summary(group)} for name, group in sorted(groups.items())]
 
 
+def assessment_completion(rows: list[Row]) -> dict:
+    """Assessment Completion Rate: required post-test assessments with at least one graded submission.
+
+    One assessment obligation per assignment and training cycle (a re-training cycle has its own), counted once
+    however many attempts it has. Required: every post-test obligation that is not waived or cancelled, including
+    scheduled, due and unfinished ones. Completed: at least one attempt with a result (Passed or Not Passed),
+    including attempts submitted automatically when time ran out. Pre-tests are not counted. None when nothing is
+    required. `rows` are live assignments (load_rows), so cancelled assignments are left out too."""
+    required = completed = 0
+    for r in rows:
+        for o in r.enrolment.obligations:
+            if o.assessment_type != AssessmentType.POST_TEST or o.status in (ObligationStatus.WAIVED, ObligationStatus.CANCELLED):
+                continue
+            required += 1
+            if any(a.result_status is not None for a in o.attempts):
+                completed += 1
+    return {"required": required, "completed": completed, "rate": rate(completed, required)}
+
+
+def assessment_completion_by_department(rows: list[Row]) -> list[dict]:
+    """assessment_completion per department, grouped and ordered as departments_summary."""
+    groups: dict[str, list[Row]] = defaultdict(list)
+    for r in rows:
+        department = r.enrolment.employee.department
+        groups[department.name if department else "Unassigned"].append(r)
+    return [{"department": name, **assessment_completion(group)} for name, group in sorted(groups.items())]
+
+
 def behaviour_reviews(db: Session, enrolment_ids: list[uuid.UUID]) -> list[BehaviourReview]:
     if not enrolment_ids:
         return []

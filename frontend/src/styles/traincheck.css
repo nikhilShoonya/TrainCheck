@@ -635,3 +635,41 @@ td .badge.warning{margin-left:8px}
 /* TrainCheck and Finvasia logos: transparent images (Finvasia in its original single colour), so the sidebar, top bar,
    sign-in page and assessment header show their own background behind them. They keep the earlier crops' boxes. */
 .green-impact-login .login-traincheck-logo>svg,.green-impact-login .login-finvasia-logo>svg{mix-blend-mode:normal}
+
+/* Remove employees from a training: the dialog's own searchable checklist. */
+.remove-assign-tools{margin:12px 0 8px}
+.remove-assign-list{list-style:none;margin:0 0 14px;padding:4px 12px;max-height:min(320px,40vh);overflow:auto;border:1px solid var(--border);border-radius:8px}
+.remove-assign-list li{border-bottom:1px solid #eef2f4}
+.remove-assign-list li:last-child{border-bottom:0}
+.remove-assign-list .completion-select{padding:8px 0}
+.remove-assign-list .completion-select small{display:block;color:var(--secondary)}
+.remove-assign-list .muted{padding:12px 0}
+/* Training completion header: Remove employees and Import Attendance side by side; they wrap only on narrow screens. */
+@media(min-width:761px){.page-heading>.completion-header-actions{flex:none;flex-wrap:nowrap}}
+
+/* L&D Admin dashboard: Assessment Completion Rate (six summary cards) and Assessment Completion by Department (four
+   panels: Learning, Assessment Completion, Training Completion, Training Trend). Other role dashboards keep theirs. */
+.image-metric.teal{background:linear-gradient(110deg,#f9fefe,#f1fafa);border-color:#d3e8e8}
+.image-metric.teal .image-metric-icon{background:#e0f5f5;color:#0e8a8a}
+.admin-image-dashboard .image-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+.admin-image-dashboard .image-metric:nth-child(n){grid-column:auto}
+.admin-image-dashboard .admin-primary{grid-template-columns:repeat(2,minmax(0,1fr))}
+.admin-image-dashboard .admin-primary>.panel:last-child{grid-column:auto}
+.admin-image-dashboard .admin-primary>.panel:last-child .monthly-trend{max-width:none}
+.assessment-department-bar span{display:flex;flex-direction:column;align-items:flex-end;line-height:1.15;min-width:48px}
+.assessment-department-bar span small{font-size:12px;font-weight:500;color:var(--secondary);margin-top:2px}
+@media(min-width:1600px){
+  .admin-image-dashboard .image-metrics{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .admin-image-dashboard .admin-primary{grid-template-columns:minmax(0,.75fr) minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr)}
+}
+@media(max-width:700px){
+  .admin-image-dashboard .image-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .admin-image-dashboard .admin-primary{grid-template-columns:1fr}
+}
+
+/* The one Back control at the top of workspace pages ("Back to Employees"): a secondary button with its destination,
+   on its own line above the page heading. It replaces the unlabelled arrow (.page-back). */
+.btn.page-return{display:flex;width:fit-content;max-width:100%;margin:14px 0 10px;gap:8px;white-space:normal;text-align:left}
+.btn.page-return svg{width:18px;height:18px;flex-shrink:0}
+.btn.page-return+.page-heading,.btn.page-return+*>.page-heading:first-child{padding-top:6px}
+@media(max-width:640px){.btn.page-return{min-height:44px;margin:10px 0 8px}}

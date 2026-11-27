@@ -217,6 +217,30 @@ export function DepartmentBars({ departments }: { departments: ({ department: st
   );
 }
 
+/** Assessment completion per department: the Training Completion bars, with completed / required counts. "—" when a
+    department has no required post-test assessment. */
+export function AssessmentDepartmentBars({ departments }: { departments: { department: string; required: number; completed: number; rate: number | null }[] }) {
+  if (!departments.length) return <div className="quiet-empty">No departments have assignments yet.</div>;
+  return (
+    <>
+      {departments.map((d) => (
+        <div className="image-department-bar assessment-department-bar" key={d.department}>
+          <strong>{d.department}</strong>
+          <div>
+            <progress max={100} value={d.rate ?? 0} aria-label={`${d.department} assessment completion`} />
+            <span>
+              {percent(d.rate)}
+              <small>
+                {d.completed}/{d.required}
+              </small>
+            </span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function ScoreTag({ value, threshold = 70 }: { value: number | null | undefined; threshold?: number }) {
   const cls = value === null || value === undefined ? "neutral" : value >= threshold ? "success" : "danger";
   return (

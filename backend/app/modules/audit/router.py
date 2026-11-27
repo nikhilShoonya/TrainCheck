@@ -13,7 +13,7 @@ from app.models import AssessmentConfig, Employee, Enrolment, ImportJob, Trainin
 from app.modules.assessment.scheduling import load_calendar
 from app.modules.assessment.service import PoolData, pool_problem
 from app.modules.organisation.people import is_learner
-from app.modules.reports.data import departments_summary, load_rows, monthly_trend, summary
+from app.modules.reports.data import assessment_completion, assessment_completion_by_department, departments_summary, load_rows, monthly_trend, summary
 
 router = APIRouter(route_class=ReleasingRoute, tags=["Administration"])
 SEARCH_LIMIT = 20
@@ -48,6 +48,9 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
             "training_programmes": sum(t.status in (TrainingStatus.DRAFT, TrainingStatus.ACTIVE) for t in trainings),
             "summary": summary(rows),
             "departments": departments_summary(rows),
+            # Required post-test assessments with a graded submission, overall and per department (reports.data).
+            "assessment_completion": assessment_completion(rows),
+            "assessment_departments": assessment_completion_by_department(rows),
             "trend": monthly_trend(rows, now, load_calendar(db).tz),
             "recent_trainings": recent[:3],
             "completions_awaiting": sum(1 for r in rows if not r.enrolment.completion),

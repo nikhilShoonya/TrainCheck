@@ -49,7 +49,7 @@ from app.modules.assessment.service import PoolData, active_config, counted_atte
 from app.modules.behaviour.service import FOLLOWUP_DAYS
 from app.modules.notifications.service import notify_employee
 from app.modules.organisation.people import is_learner
-from app.modules.training import deletion, service
+from app.modules.training import deletion, removal, service
 from app.modules.training.locks import hold_training
 
 router =APIRouter(route_class=ReleasingRoute, prefix="/admin", tags=["L&D Administration"])
@@ -846,6 +846,29 @@ def cancel_enrolment(enrolment_id: uuid.UUID, body: ReasonIn, user: CurrentUser 
     record_audit(db, user.id, "ENROLMENT_CANCELLED", "enrolment", enrolment.id, reason=body.reason)
     db.commit()
     return ok({"cancelled": True})
+
+
+class RemoveAssignmentsIn(ReasonIn):
+    enrolment_ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+
+
+@router.post("/trainings/{training_id}/assignments/remove")
+def remove_assignments(training_id: uuid.UUID, body: RemoveAssignmentsIn, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """For employees assigned by mistake: permanently removes their assignments of this training, even completed ones,
+    with their completions, tests, feedback and notifications (training.removal). Employees and every other record
+    are kept. Atomic: all of the chosen assignments are removed, or none."""
+    try:
+        training = deletion.lock_for_deletion(db, training_id)
+        if training is None:
+            raise not_found(ALREADY_DELETED)
+        result = removal.remove_assignments(db, training, body.enrolment_ids, user.id, body.reason)
+        db.commit()
+    except OperationalError as exc:
+        db.rollback()
+        if deletion.is_busy(exc):
+            raise conflict("TRAINING_BUSY", "This training is being changed by requests that are still running (for example an employee submitting an assessment). Nothing was removed. Try again in a moment.") from exc
+        raise
+    return ok(result)
 
 
 # ---------- Exceptions ----------

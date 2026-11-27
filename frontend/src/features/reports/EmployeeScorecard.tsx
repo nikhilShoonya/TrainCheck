@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
-import { Btn, BtnLink, DataTable, Empty, ErrorPanel, Loading, useToast } from "@/components/ui";
+import { Btn, DataTable, Empty, ErrorPanel, Loading, useToast } from "@/components/ui";
 import { ApiError, downloadFile, toQuery } from "@/lib/api";
 import { FEEDBACK_LABELS } from "@/lib/feedback";
 import { useSession } from "@/lib/hooks";
@@ -103,16 +103,10 @@ function EmployeeScorecardInner() {
     }
   };
 
-  const backButton = (
-    <BtnLink href={backHref} tone="data">
-      <Icon name="back" /> Back to report
-    </BtnLink>
-  );
-
   if (!valid || (error?.status === 404 && !data)) {
     return (
       <>
-        <Heading title="Employee not found" description="This employee does not exist, was removed, or is not covered by reports." backHref={backHref} action={<div className="page-actions">{backButton}</div>} />
+        <Heading title="Employee not found" description="This employee does not exist, was removed, or is not covered by reports." backHref={backHref} action={null} />
         <Empty title="No employee has this link." hint="Go back to the report and choose an employee from the table." />
       </>
     );
@@ -120,7 +114,6 @@ function EmployeeScorecardInner() {
 
   const actions = (
     <div className="page-actions">
-      {backButton}
       <Btn kind="primary" className="esc-export" onClick={() => void exportPdf()} disabled={!data || exporting || query.isFetching}>
         <Icon name="file" /> {exporting ? "Preparing…" : "Export PDF"}
       </Btn>

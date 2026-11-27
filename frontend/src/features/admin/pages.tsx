@@ -3,10 +3,11 @@
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
+import { useBackHandler } from "@/components/shell/PageBack";
 import { Badge, Btn, BtnLink, DataTable, Empty, ErrorPanel, Field, fieldErrors, FormError, Loaded, Loading, Metrics, PageTitle, SelectField, TextField, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { MonthlyTrend } from "@/features/dashboard/charts";
-import { ActionItem, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, ViewAll, Welcome } from "@/features/dashboard/widgets";
+import { ActionItem, AssessmentDepartmentBars, DepartmentBars, EvidenceHelp, EvidenceTiles, Glyph, GoodMorning, ImageMetrics, Panel, ScorecardCta, ScoreTag, ViewAll, Welcome } from "@/features/dashboard/widgets";
 import { ReportsHub } from "@/features/reports/ReportView";
 import { ScorecardPage } from "@/features/reports/ScorecardView";
 import { attemptsLabel, completionCounts, filterEmployees, filterTrainings, isTrainingId, retryNote, rowCounts, shortDescription, trainingCompletionHref, trainingsHref, type EnrolmentRow, type SchedulingOutcome } from "@/features/admin/completionView";
@@ -118,12 +119,23 @@ interface AdminDashboardData {
   training_programmes: number;
   summary: Summary;
   departments: ({ department: string } & Summary)[];
+  /** Required post-test assessments with at least one graded submission (backend reports.data.assessment_completion). */
+  assessment_completion: AssessmentCompletion;
+  assessment_departments: ({ department: string } & AssessmentCompletion)[];
   trend: TrendPoint[];
   recent_trainings: { id: string; title: string; status: string; enrolled: number; pass_rate: number | null }[];
   completions_awaiting: number;
   import_rows_need_review: number;
   programmes_need_setup: number;
 }
+
+interface AssessmentCompletion {
+  required: number;
+  completed: number;
+  rate: number | null;
+}
+
+const assessmentCounts = (a: AssessmentCompletion) => (a.required ? `${a.completed} / ${a.required} required assessments completed` : "No post-test assessments required yet");
 
 export function AdminDashboard() {
   const { user } = useSession();
@@ -141,6 +153,7 @@ export function AdminDashboard() {
               ["users", "Total Employees", d.total_employees, "purple", "Active employee records"],
               ["cap", "Training Programmes", d.training_programmes, "blue", "Draft and active programmes"],
               ["check", "Training Completion", percent(d.summary.completion_rate), "green", "Completed / assigned records"],
+              ["clipboard", "Assessment Completion Rate", percent(d.assessment_completion.rate), "teal", assessmentCounts(d.assessment_completion)],
               ["target", "Assessment Pass Rate", percent(d.summary.pass_rate), "red", "Passed / assessed outcomes"],
               ["question", "Red-Flag Employees", d.summary.not_passed_employees, "amber", "At least one Not Passed outcome"],
             ]}
@@ -148,6 +161,9 @@ export function AdminDashboard() {
           <div className="image-primary-grid admin-primary">
             <Panel title={<>{user?.features?.behaviour ? "Learning & Behaviour" : "Learning"} <span className="heading-note">(Evidence)</span></>} action={<EvidenceHelp />}>
               <EvidenceTiles learning={d.summary.mean_latest_score} assessed={d.summary.assessed} behaviour={latest ?? null} behaviourEnabled={Boolean(user?.features?.behaviour)} />
+            </Panel>
+            <Panel title="Assessment Completion by Department">
+              <AssessmentDepartmentBars departments={d.assessment_departments} />
             </Panel>
             <Panel title="Training Completion by Department">
               <DepartmentBars departments={d.departments} />
@@ -1315,6 +1331,8 @@ function AssignmentsInner() {
     if (listScroll.current !== null) window.history.back();
     else window.history.pushState(null, "", assignmentsHref({ search, ...filters }));
   };
+  // The page's one Back control (Back to Employees, at the top) uses this while an employee is open.
+  useBackHandler(selected ? back : null);
 
   return (
     <>
@@ -1333,7 +1351,7 @@ function AssignmentsInner() {
           </div>
         }
       />
-      {/* Hidden, not removed, while an employee is open, so Back to employees finds it exactly as it was left. */}
+      {/* Hidden, not removed, while an employee is open, so Back to Employees finds it exactly as it was left. */}
       <section className="panel" hidden={Boolean(selected)} aria-label="Employees">
         <div className="filters">
           <TextField label="Search" name="employee_search" type="search" placeholder="Employee name, ID or email" value={search} onChange={(e) => changeSearch(e.target.value)} />
@@ -1381,7 +1399,7 @@ function AssignmentsInner() {
           }}
         </Loaded>
       </section>
-      {selected ? <SelectedEmployee key={selected} id={selected} employees={employees} onBack={back} /> : null}
+      {selected ? <SelectedEmployee key={selected} id={selected} employees={employees} /> : null}
       {adding ? <AddEmployeeDialog onClose={() => setAdding(false)} /> : null}
       {assigning ? <AssignDialog onClose={() => setAssigning(false)} onSaved={(result) => setOutcome(result)} /> : null}
       {outcome ? <AssignmentOutcome result={outcome} onClose={() => setOutcome(null)} /> : null}
@@ -1391,7 +1409,7 @@ function AssignmentsInner() {
 
 /** One employee's details and assignments. Keyed by the employee ID, so switching people starts from a clean state
  *  and never shows the previous person's rows. Saved changes refresh it (and the list) through the shared cache. */
-function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { data: EmployeeListItem[] | null; error: ApiError | null; reload: () => Promise<void> }; onBack: () => void }) {
+function SelectedEmployee({ id, employees }: { id: string; employees: { data: EmployeeListItem[] | null; error: ApiError | null; reload: () => Promise<void> } }) {
   const employee = findEmployee(employees.data, id);
   const state = useApi<EnrolmentRow[]>(employee ? `/admin/enrolments${toQuery({ employee_id: employee.id })}` : null);
   const [stage, setStage] = useState("");
@@ -1399,15 +1417,9 @@ function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { 
   const [retake, setRetake] = useState<EnrolmentRow | null>(null);
   const [retraining, setRetraining] = useState<EnrolmentRow | null>(null);
   const toast = useToast();
-  const backButton = (
-    <Btn onClick={onBack}>
-      <Icon name="back" /> Back to employees
-    </Btn>
-  );
   if (!employee) {
     return (
       <section className="panel" aria-label="Selected employee">
-        {backButton}
         {employees.error ? <ErrorPanel error={employees.error} retry={() => void employees.reload()} /> : !employees.data && isEmployeeId(id) ? <Loading label="Loading the employee…" /> : <Empty title="Employee not found." hint="This employee does not exist. Go back to the employees and choose one from the list." />}
       </section>
     );
@@ -1421,7 +1433,6 @@ function SelectedEmployee({ id, employees, onBack }: { id: string; employees: { 
   return (
     <>
       <section className="panel" aria-label="Selected employee">
-        {backButton}
         <h2 className="employee-heading">
           {employee.full_name} {isInactive(employee) ? <span className="badge warning">Inactive</span> : null}
         </h2>
@@ -1743,22 +1754,16 @@ export function TrainingCompletion() {
 
 function TrainingCompletionInner() {
   const { trainingId } = useParams<{ trainingId: string }>();
-  const cardSearch = useSearchParams().get("q") ?? "";
   const valid = isTrainingId(trainingId);
   // The list is usually cached already (the cards page and sign-in prefetch it); it names the training and tells
   // an unknown ID apart from a training without employees. The employees load at the same time.
   const trainings = useApi<TrainingAdmin[]>(valid ? "/admin/trainings" : null);
   const training = valid ? trainings.data?.find((t) => t.id.toLowerCase() === trainingId.toLowerCase()) : undefined;
-  const back = (
-    <BtnLink href={trainingsHref(cardSearch)}>
-      <Icon name="back" /> Back to Trainings
-    </BtnLink>
-  );
   const eyebrow = `${EYEBROW} · TRAINING COMPLETION`;
   if (!valid || (trainings.data && !training)) {
     return (
       <>
-        <PageTitle eyebrow={eyebrow} title="Training not found" description="This training does not exist or was removed." action={back} />
+        <PageTitle eyebrow={eyebrow} title="Training not found" description="This training does not exist or was removed." />
         <Empty title="No training has this link." hint="Go back to the trainings and choose one from the list." />
       </>
     );
@@ -1766,15 +1771,15 @@ function TrainingCompletionInner() {
   if (!trainings.data) {
     return (
       <>
-        <PageTitle eyebrow={eyebrow} title="Training Completion" description={trainings.error ? "The training could not be loaded." : "Loading the training…"} action={back} />
+        <PageTitle eyebrow={eyebrow} title="Training Completion" description={trainings.error ? "The training could not be loaded." : "Loading the training…"} />
         {trainings.error ? <ErrorPanel error={trainings.error} retry={() => void trainings.reload()} /> : <Loading />}
       </>
     );
   }
-  return <TrainingEmployees key={training!.id} training={training!} eyebrow={eyebrow} back={back} />;
+  return <TrainingEmployees key={training!.id} training={training!} eyebrow={eyebrow} />;
 }
 
-function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmin; eyebrow: string; back: ReactNode }) {
+function TrainingEmployees({ training, eyebrow }: { training: TrainingAdmin; eyebrow: string }) {
   // Only this training's enrolments, filtered on the server.
   const state = useApi<EnrolmentRow[]>(`/admin/enrolments${toQuery({ training_id: training.id })}`);
   const { user } = useSession();
@@ -1791,6 +1796,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
   const [confirmedCompletions, setConfirmedCompletions] = useState<Record<string, EnrolmentRow>>({});
   const [reattempt, setReattempt] = useState<EnrolmentRow | null>(null);
   const [retraining, setRetraining] = useState<EnrolmentRow | null>(null);
+  const [removing, setRemoving] = useState(false);
   const toast = useToast();
   const latest = (e: EnrolmentRow) => {
     // Completion records cannot be undone. An older GET must not erase a confirmed save; use fresh
@@ -1827,8 +1833,10 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
         title={training.title}
         description={completionDescription(user?.features?.behaviour)}
         action={
-          <div className="row wrap">
-            {back}
+          <div className="row wrap completion-header-actions">
+            <Btn tone="danger" disabled={!state.data?.length} onClick={() => setRemoving(true)}>
+              Remove employees
+            </Btn>
             {importAttendance}
           </div>
         }
@@ -2000,6 +2008,18 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
           }}
         />
       ) : null}
+      {removing && state.data ? (
+        <RemoveAssignmentsDialog
+          training={training}
+          assigned={state.data}
+          onClose={() => setRemoving(false)}
+          onRemoved={(count, gone) => {
+            setSelected((ids) => new Set([...ids].filter((id) => !gone.has(id))));
+            toast(`${count} ${count === 1 ? "employee" : "employees"} removed from ${training.title}.`);
+            void state.reload();
+          }}
+        />
+      ) : null}
       {completing ? (
         <DialogForm
           title="Record training completion"
@@ -2076,6 +2096,92 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
         />
       ) : null}
     </>
+  );
+}
+
+/* For employees assigned by mistake: removes their assignments of this training permanently, completed or not, with
+   their completions, tests, feedback and notifications. The employees and every other record stay. The choice is
+   separate from the completion selection on the page: search (name, code or department), tick, give a reason. */
+function RemoveAssignmentsDialog({ training, assigned, onClose, onRemoved }: { training: TrainingAdmin; assigned: EnrolmentRow[]; onClose: () => void; onRemoved: (count: number, removed: Set<string>) => void }) {
+  const [search, setSearch] = useState("");
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const needle = search.trim().toLowerCase();
+  const matching = needle ? assigned.filter((e) => [e.employee_name, e.employee_code, e.department ?? ""].some((v) => v.toLowerCase().includes(needle))) : assigned;
+  const picked = assigned.filter((e) => chosen.has(e.id));
+  const tested = picked.filter((e) => e.attempts_used > 0).length;
+  const completed = picked.filter((e) => e.completed_at).length;
+  const allMatching = matching.length > 0 && matching.every((e) => chosen.has(e.id));
+  const label = (n: number) => `${n} ${n === 1 ? "employee" : "employees"}`;
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!picked.length) return setError("Choose at least one employee to remove.");
+    setBusy(true);
+    setError("");
+    try {
+      const reason = String(new FormData(event.currentTarget).get("reason") ?? "");
+      const done = await api.post<{ removed: number }>(`/admin/trainings/${training.id}/assignments/remove`, { reason, enrolment_ids: picked.map((e) => e.id) });
+      onRemoved(done.removed, new Set(picked.map((e) => e.id)));
+      onClose();
+    } catch (e) {
+      setError(fieldErrors(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Remove employees from this training" onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)}>
+        <p>{training.title}. Use this for employees assigned by mistake. Search by name, employee code or department, then tick the employees to remove.</p>
+        <TextField label="Search assigned employees" name="remove_search" type="search" placeholder="Name, employee code or department" autoComplete="off" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="row wrap remove-assign-tools">
+          <Btn disabled={!matching.length || allMatching} onClick={() => setChosen((ids) => new Set([...ids, ...matching.map((e) => e.id)]))}>
+            {needle ? `Select all matching (${matching.length})` : `Select all (${matching.length})`}
+          </Btn>
+          <Btn disabled={!chosen.size} onClick={() => setChosen(new Set())}>
+            Clear
+          </Btn>
+          <span role="status" aria-live="polite">
+            {label(picked.length)} chosen
+          </span>
+        </div>
+        <ul className="remove-assign-list" aria-label="Assigned employees">
+          {matching.map((e) => (
+            <li key={e.id}>
+              <label className="completion-select">
+                <input type="checkbox" aria-label={`Remove ${e.employee_name} (${e.employee_code})`} checked={chosen.has(e.id)} onChange={() => setChosen((ids) => toggleOne(ids, e.id))} />
+                <span>
+                  {e.employee_name}
+                  <small>
+                    {e.employee_code} · {e.department ?? "No department"} · {e.completed_at ? "Completed" : "Awaiting completion"}
+                    {e.attempts_used > 0 ? " · Test taken" : ""}
+                  </small>
+                </span>
+              </label>
+            </li>
+          ))}
+          {!matching.length ? <li className="muted">No assigned employee matches “{search.trim()}”.</li> : null}
+        </ul>
+        {picked.length ? (
+          <div className={`notice${tested ? " danger" : ""}`}>
+            {label(picked.length)} will be removed from this training permanently
+            {completed ? `, with ${completed} recorded ${completed === 1 ? "completion" : "completions"}` : ""}, their scheduled tests and notifications.
+            {tested ? ` ${tested} of them ${tested === 1 ? "has" : "have"} already taken the test: those attempts, results and feedback are deleted too.` : " None of them has taken the test."} The employees and
+            their other trainings are not changed. This cannot be undone; the reason is recorded in the audit log.
+          </div>
+        ) : null}
+        <Field label="Reason *">
+          <textarea name="reason" required minLength={5} maxLength={1000} />
+        </Field>
+        <FormError message={error} />
+        <div className="dialog-actions">
+          <Btn onClick={onClose}>Cancel</Btn>
+          <button className="btn primary tone-danger" type="submit" disabled={busy || !picked.length}>
+            {busy ? "Removing…" : `Remove ${label(picked.length)}`}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -2301,21 +2407,15 @@ export function QuestionBankTraining() {
     links and Back/Forward keep them. */
 function QuestionBankTrainingInner() {
   const { trainingId, test } = useParams<{ trainingId: string; test: string }>();
-  const cardSearch = useSearchParams().get("q") ?? "";
   const testType = testTypeFromSlug(test);
   const valid = isTrainingId(trainingId) && testType !== null;
   const trainings = useApi<TrainingAdmin[]>(valid ? "/admin/trainings" : null);
   const training = valid ? trainings.data?.find((t) => t.id.toLowerCase() === trainingId.toLowerCase()) : undefined;
-  const back = (
-    <BtnLink href={questionCardsHref(cardSearch)}>
-      <Icon name="back" /> Back to Trainings
-    </BtnLink>
-  );
   const eyebrow = `${EYEBROW} · QUESTION BANK`;
   if (!valid || (trainings.data && !training)) {
     return (
       <>
-        <PageTitle eyebrow={eyebrow} title="Training not found" description="This training or test does not exist or was removed." action={back} />
+        <PageTitle eyebrow={eyebrow} title="Training not found" description="This training or test does not exist or was removed." />
         <Empty title="No training test has this link." hint="Go back to the trainings and choose a training and test from the list." />
       </>
     );
@@ -2323,17 +2423,17 @@ function QuestionBankTrainingInner() {
   if (!trainings.data) {
     return (
       <>
-        <PageTitle eyebrow={eyebrow} title="Question Bank" description={trainings.error ? "The training could not be loaded." : "Loading the training…"} action={back} />
+        <PageTitle eyebrow={eyebrow} title="Question Bank" description={trainings.error ? "The training could not be loaded." : "Loading the training…"} />
         {trainings.error ? <ErrorPanel error={trainings.error} retry={() => void trainings.reload()} /> : <Loading />}
       </>
     );
   }
-  return <QuestionBankInner key={`${training!.id}-${testType}`} training={training!} testType={testType!} trainings={trainings} eyebrow={eyebrow} back={back} />;
+  return <QuestionBankInner key={`${training!.id}-${testType}`} training={training!} testType={testType!} trainings={trainings} eyebrow={eyebrow} />;
 }
 
 /** The question table, restricted on the server to one training's pre-test or post-test. Every filter narrows
     within that selection; the training and test cannot be removed. */
-function QuestionBankInner({ training, testType, trainings, eyebrow, back }: { training: TrainingAdmin; testType: TestType; trainings: { data: TrainingAdmin[] | null }; eyebrow: string; back: ReactNode }) {
+function QuestionBankInner({ training, testType, trainings, eyebrow }: { training: TrainingAdmin; testType: TestType; trainings: { data: TrainingAdmin[] | null }; eyebrow: string }) {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const state = useApi<QuestionRow[]>(`/admin/questions${toQuery({ ...filters, training_id: training.id, test_type: testType })}`);
   const c = useCatalogue();
@@ -2355,7 +2455,6 @@ function QuestionBankInner({ training, testType, trainings, eyebrow, back }: { t
         }
         action={
           <div className="row wrap">
-            {back}
             <Btn kind="primary" onClick={() => setForm({ question: null })}>
               <Icon name="plus" /> Add Question
             </Btn>
@@ -2522,7 +2621,6 @@ export function QuestionBankUnassigned() {
     direct links and Back keep the page. Preview, edit and activation work as in a training's table; questions are
     assigned to a training's pre-test or post-test one at a time (Assign) or in bulk (select, then Assign to Training). */
 function QuestionBankUnassignedInner() {
-  const cardSearch = useSearchParams().get("q") ?? "";
   const [filters, setFilters] = useState<Record<string, string>>({});
   const state = useApi<QuestionRow[]>(`/admin/questions${toQuery({ ...filters, unassigned: "true" })}`);
   const c = useCatalogue();
@@ -2540,11 +2638,6 @@ function QuestionBankUnassignedInner() {
         eyebrow={`${EYEBROW} · QUESTION BANK`}
         title="Unassigned Questions"
         description="Questions not linked to any training. They keep their options, correct answers and versions. Assign them to a training's pre-test or post-test to use them again."
-        action={
-          <BtnLink href={questionCardsHref(cardSearch)}>
-            <Icon name="back" /> Back to Trainings
-          </BtnLink>
-        }
       />
       <section className="panel">
         <form

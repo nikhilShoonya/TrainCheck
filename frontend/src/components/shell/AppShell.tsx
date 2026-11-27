@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { Btn, Empty, ErrorPanel, useToast } from "@/components/ui";
 import { Modal } from "@/components/ui/dialog";
 import { Art } from "@/components/shell/Art";
 import { navFor, ROLE_LABEL, SIDEBAR_COPY } from "@/components/shell/nav";
+import { BackHandlerProvider, PageBack } from "@/components/shell/PageBack";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import { useApi, useSession } from "@/lib/hooks";
@@ -287,8 +288,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           You are offline. Reconnect to load or save your work.
         </div>
         <main id="main" className="content" ref={main}>
-          {pathname !== items[0][0] ? <BackButton /> : null}
-          {children}
+          {/* The one Back control of every workspace page (none on the Dashboard); see backNav.ts. */}
+          <BackHandlerProvider>
+            <Suspense fallback={null}>
+              <PageBack userId={user.id} role={role} roles={user.roles} />
+            </Suspense>
+            {children}
+          </BackHandlerProvider>
         </main>
         <footer>
           <span>TrainCheck · Finvasia L&D Evaluation</span>
@@ -340,15 +346,6 @@ function SignOutButton({ reloadToStay = false }: { reloadToStay?: boolean }) {
         </Modal>
       ) : null}
     </>
-  );
-}
-
-function BackButton() {
-  const router = useRouter();
-  return (
-    <button className="btn secondary page-back" aria-label="Go back to the previous page" title="Back" onClick={() => router.back()}>
-      <Icon name="back" />
-    </button>
   );
 }
 

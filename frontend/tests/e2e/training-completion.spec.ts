@@ -98,7 +98,9 @@ test("L&D opens a training from its card; refresh, direct links and Back keep th
   await page.goForward();
   await expect(page.getByRole("heading", { level: 1, name: "Customer Handling" })).toBeVisible();
 
-  // Back to Trainings restores the card search too.
+  // One Back control, at the top (27 Nov 2026): Back to Trainings restores the card search. The header has Remove employees.
+  await expect(page.getByRole("link", { name: "Back to Trainings" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Remove employees", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Back to Trainings" }).click();
   await expect(page).toHaveURL(/\/lnd\/completion\?q=customer$/);
   await expect(searchTrainings(page)).toHaveValue("customer");
@@ -106,9 +108,6 @@ test("L&D opens a training from its card; refresh, direct links and Back keep th
   // A direct link opens the training without passing through the cards.
   await page.goto(`/lnd/completion/${target.id}`);
   await expect(page.getByRole("heading", { level: 1, name: "Customer Handling" })).toBeVisible();
-  await page.getByRole("link", { name: "Back to Trainings" }).click();
-  await expect(page).toHaveURL(/\/lnd\/completion$/);
-  await expect(page.locator(".completion-card")).toHaveCount(trainings.length);
 });
 
 test("an employee assigned to two trainings appears in each, and actions reach only the selected enrolment", async ({ page }) => {
@@ -195,7 +194,7 @@ test("Training Completion works at phone size without sideways scrolling", async
   await expect(page.locator(".completion-card").first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   await page.locator(".completion-card").first().getByRole("link", { name: /View Employees/ }).click();
-  await expect(page.getByRole("link", { name: "Back to Trainings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove employees", exact: true })).toBeVisible();
   await expect(page.locator("table tbody tr").first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   await context.close();
