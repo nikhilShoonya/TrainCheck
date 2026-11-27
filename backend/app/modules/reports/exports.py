@@ -1,6 +1,8 @@
 """CSV, XLSX and PDF rendering. Files go to private storage and are never publicly served."""
 import csv
 import io
+import logging
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,8 @@ from app.core.display import display_datetime, display_filters
 from app.core.enums import ExportFormat
 from app.models import FileArtifact
 from app.modules.reports.catalogue import Report
+
+logger = logging.getLogger("traincheck.reports")
 
 CONTENT_TYPES = {
     ExportFormat.CSV: "text/csv; charset=utf-8",
@@ -133,3 +137,16 @@ def store_file(db: Session, owner_id: uuid.UUID, file_name: str, content: bytes,
 
 def read_file(artifact: FileArtifact) -> bytes:
     return (get_settings().storage_path / artifact.storage_key).read_bytes()
+
+
+def remove_file(storage_key: str) -> bool:
+    """Removes a stored file whose record was already deleted and committed. A file that is already gone counts as
+    removed. Returns False if removal failed: the file then stays on disk, unreachable, because no record points to it."""
+    if not re.fullmatch(r"[0-9a-f]{32}", storage_key):  # store_file names every file uuid4().hex; never touch anything else.
+        return False
+    try:
+        (get_settings().storage_path / storage_key).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove stored export file %s after its record was deleted", storage_key)
+        return False
+    return True

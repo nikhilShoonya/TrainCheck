@@ -50,11 +50,11 @@ export async function startSecurePreTest(page: Page) {
   await expect(page.locator(".exam-mode")).toContainText("Secure pre-test mode");
 }
 
-/** The five-question feedback, required once after each post-training assessment. */
+/** Official training feedback, required once after each post-training assessment. */
 export async function giveFeedback(page: Page) {
-  const form = page.getByRole("dialog", { name: "Training & assessment feedback" });
+  const form = page.getByRole("dialog", { name: "Training Feedback Form" });
   await expect(form).toBeVisible();
-  for (let i = 0; i < 5; i++) await form.locator(".feedback-scale").nth(i).locator("label").nth(3).click();
+  for (const group of await form.locator(".feedback-scale").all()) await group.locator("label").nth(3).click();
   await form.getByRole("button", { name: "Submit feedback" }).click();
   await expect(page.getByText("Thank you for your feedback")).toBeVisible();
 }

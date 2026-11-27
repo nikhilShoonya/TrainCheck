@@ -80,7 +80,7 @@ test("real proxy and browser: assessed training deletion preserves questions, su
     await startSecureAssessment(employee);
     await answerAll(employee);
     await submitAssessment(employee);
-    await expect(employee.getByRole("dialog", { name: "Training & assessment feedback" })).toBeVisible();
+    await expect(employee.getByRole("dialog", { name: "Training Feedback Form" })).toBeVisible();
     const before = await read<{ access_status: string; feedback_due: unknown }>(employee, "/me/access-state");
     expect(before.feedback_due).toBeTruthy(); // Deletion must remove this actual access blocker as well.
 

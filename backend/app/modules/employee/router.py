@@ -144,16 +144,15 @@ def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Dep
     now = utcnow()
     rows = _rows(db, user)
     cards = _cards(db, rows, now)
+    upcoming_cards = [c for c in order_cards(cards) if c["entry_state"] == "NOT_YET_OPEN"]
     window = now - timedelta(days=90)
     points = sorted(
         ({"label": r.enrolment.training.title, "score": display_percent(r.latest), "date": iso(r.post_attempts[-1].submitted_at)} for r in rows if r.post_attempts and r.post_attempts[-1].submitted_at >= window),
         key=lambda p: p["date"],
     )
     reviews = reviews_for_self(db, user.employee_id)
-    calendar = []
+    calendar = [{"date": c["due_at"], "title": c["title"], "tag": "Assessment", "link": "/employee/assessments"} for c in upcoming_cards]
     for r in rows:
-        if r.obligation and r.obligation.due_at and not r.post_attempts and r.obligation.due_at > now:
-            calendar.append({"date": iso(r.obligation.due_at), "title": r.enrolment.training.title, "tag": "Assessment", "link": "/employee/assessments"})
         if r.enrolment.batch and r.enrolment.batch.start_date and r.enrolment.batch.start_date >= india_date(now):
             calendar.append({"date": r.enrolment.batch.start_date.isoformat(), "title": f"{r.enrolment.batch.name} · {r.enrolment.training.title}", "tag": "Training session", "link": "/employee/trainings"})
     for review in reviews:
@@ -162,14 +161,14 @@ def dashboard(user: CurrentUser = Depends(require_gate_clear), db: Session = Dep
     calendar.sort(key=lambda c: c["date"])
 
     retake = next((c for c in cards if c["retake_pending"]), None)
-    upcoming = next((c for c in cards if c["due_at"] and c["due_at"] > iso(now) and not c["attempts"]), None)
+    upcoming = next(iter(upcoming_cards), None)
     means = behaviour_means(behaviour_reviews(db, [r.enrolment.id for r in rows]))
     return ok(
         {
             "summary": summary(rows),
             "overall_score": mean([p["score"] for p in points]),
             "trend_points": points,
-            "recent": cards[:3],
+            "recent": sorted(cards, key=lambda c: (c["assigned_at"], c["enrolment_id"]), reverse=True)[:3],
             "calendar": calendar,
             "retake": retake,
             "upcoming": upcoming,
@@ -241,4 +240,3 @@ def personal_scorecard(user: CurrentUser = Depends(require_gate_clear), db: Sess
             }
         )
     return ok(items)
-

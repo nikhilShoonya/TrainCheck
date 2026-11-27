@@ -27,6 +27,7 @@ from app.core.errors import not_found, validation
 from app.core.responses import display_percent, iso
 from app.models import AssessmentAttempt, AssessmentFeedback, Employee, Enrolment, Training
 from app.modules.assessment.gate import feedback_exempt
+from app.modules.feedback.questionnaire import LABELS as FEEDBACK_LABELS
 from app.modules.feedback.router import ratings_of
 from app.modules.organisation.people import RESERVED_ADMIN_CODE
 from app.modules.reports.catalogue import SUBMISSION_LABELS
@@ -44,7 +45,6 @@ DEFINITIONS = [
 ]
 RESULT_LABELS = {"PASSED": "Passed", "NOT_PASSED": "Not Passed", "NEEDS_RETRAINING": "Needs Re-training", "PENDING": "Pending", "BASELINE": "Baseline (not pass/fail)"}
 TYPE_LABELS = {AssessmentType.PRE_TEST.value: "Pre-test", AssessmentType.POST_TEST.value: "Post-test"}
-FEEDBACK_LABELS = {"relevance": "Relevance", "clarity": "Clarity", "alignment": "Assessment match", "fairness": "Fairness", "confidence": "Confidence"}
 
 
 def load_employee(db: Session, employee_id: uuid.UUID) -> Employee:
@@ -170,7 +170,7 @@ def _feedback(db: Session, employee: Employee, rows: list[Row]) -> list[dict]:
                 **base,
                 "status": "SUBMITTED",
                 "ratings": ratings,
-                # The existing overall: the plain mean of the five ratings, two decimals (as on Training Feedback).
+                # Plain mean of the submitted questionnaire's ratings, as on Training Feedback.
                 "overall": round(sum(ratings.values()) / len(ratings), 2),
                 "comment": feedback.comment_text,
                 "submitted_at": iso(feedback.submitted_at),
@@ -368,11 +368,11 @@ def render_pdf(card: dict, generated_by: str) -> bytes:
         ),
         Paragraph(_xml(f"Training feedback ({len(card['feedback'])})"), heading),
         table(
-            ["Training", *FEEDBACK_LABELS.values(), "Overall /5", "Comment", "Submitted"],
+            ["Training", "Ratings /5", "Overall /5", "Comment", "Submitted"],
             [
                 [
                     f["training"] + (f" (cycle {f['training_cycle']})" if f["show_cycle"] else ""),
-                    *([str(f["ratings"][k]) for k in FEEDBACK_LABELS] if f["ratings"] else ["—"] * len(FEEDBACK_LABELS)),
+                    "; ".join(f"{FEEDBACK_LABELS[k]}: {value}" for k, value in f["ratings"].items()) if f["ratings"] else "—",
                     _num(f["overall"]),
                     f["comment"] or ("No comment" if f["status"] == "SUBMITTED" else ""),
                     _moment(f["submitted_at"], "Not submitted" if f["status"] == "NOT_SUBMITTED" else "Not required"),
@@ -380,7 +380,7 @@ def render_pdf(card: dict, generated_by: str) -> bytes:
                 for f in card["feedback"]
             ],
             "No feedback for these filters. Feedback is asked after a post-test result.",
-            [2.6, 0.9, 0.9, 1.1, 0.9, 1, 0.9, 3, 1.6],
+            [2.6, 5.5, 0.9, 3, 1.6],
         ),
         Paragraph(_xml(f"Assessment attempt history ({len(card['attempts'])})"), heading),
         table(

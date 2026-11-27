@@ -127,14 +127,15 @@ interface AdminDashboardData {
 
 export function AdminDashboard() {
   const { user } = useSession();
+  const behaviourOn = Boolean(user?.features?.behaviour);
   const state = useApi<AdminDashboardData>("/admin/dashboard");
-  const behaviour = useApi<{ behaviour_trend: { self_mean: number | null; manager_mean: number | null; self_count: number; manager_count: number }[] }>("/reports/analytics");
+  const behaviour = useApi<{ behaviour_trend: { self_mean: number | null; manager_mean: number | null; self_count: number; manager_count: number }[] }>(behaviourOn ? "/reports/analytics" : null);
   const latest = behaviour.data?.behaviour_trend.at(-1);
   return (
     <Loaded state={state}>
       {(d) => (
         <div className="reference-dashboard image-role-dashboard admin-image-dashboard">
-          <Welcome heading={<GoodMorning name={firstName(user?.full_name ?? "")} />} description="Manage trainings, assessments, question bank and behaviour follow-ups." />
+          <Welcome heading={<GoodMorning name={firstName(user?.full_name ?? "")} />} description={behaviourOn ? "Manage trainings, assessments, question bank and behaviour follow-ups." : "Manage trainings, assessments and question bank."} />
           <ImageMetrics
             cards={[
               ["users", "Total Employees", d.total_employees, "purple", "Active employee records"],
@@ -164,7 +165,7 @@ export function AdminDashboard() {
                     <strong>{t.title}</strong>
                     <small>
                       <i className={`dot ${t.status === "ACTIVE" ? "green" : "grey"}`} />
-                      {t.status === "ACTIVE" ? "Active" : "Draft"} · {t.enrolled} enrolled
+                      {t.status === "ACTIVE" ? "Active" : t.status === "ARCHIVED" ? "Archived" : "Draft"} · {t.enrolled} enrolled
                     </small>
                   </span>
                   <ScoreTag value={t.pass_rate} />
@@ -598,15 +599,31 @@ function DeleteRecordDialog({ label, name, path, onClose, onDeleted }: { label: 
   );
 }
 
+/** Card title on the Departments & Functions page, with a record count once the list has loaded.
+    The count sits beside the heading (not inside it) so the heading's accessible name stays the plain title. */
+function OrgCardTitle({ title, count }: { title: string; count?: number }) {
+  return (
+    <div className="org-card-title">
+      <h2>{title}</h2>
+      {count !== undefined ? (
+        <span className="org-count">
+          {count}
+          <span className="sr-only"> {count === 1 ? "record" : "records"}</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function UnitTable({ title, path, label, showCode = true }: { title: string; path: string; label: string; showCode?: boolean }) {
   const state = useApi<OrgUnit[]>(path);
   const [edit, setEdit] = useState<{ unit: OrgUnit | null } | null>(null);
   const [deleting, setDeleting] = useState<OrgUnit | null>(null);
   const toast = useToast();
   return (
-    <section className="panel">
+    <section className="panel org-card">
       <div className="section-heading">
-        <h2>{title}</h2>
+        <OrgCardTitle title={title} count={state.data?.length} />
         <Btn onClick={() => setEdit({ unit: null })}>
           <Icon name="plus" /> Add {label}
         </Btn>
@@ -622,7 +639,7 @@ function UnitTable({ title, path, label, showCode = true }: { title: string; pat
               u.name,
               <Badge key="s" status={u.is_active ? "ACTIVE" : "INACTIVE"} />,
               <Btn key="e" kind="text" onClick={() => setEdit({ unit: u })}>
-                Edit
+                Edit<span className="sr-only"> {u.name}</span>
               </Btn>,
             ])}
           />
@@ -672,9 +689,9 @@ function SimpleList({ title, path, label, fields, editFields, columns, rowOf }: 
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
   const toast = useToast();
   return (
-    <section className="panel">
+    <section className="panel org-card">
       <div className="section-heading">
-        <h2>{title}</h2>
+        <OrgCardTitle title={title} count={state.data?.length} />
         <Btn onClick={() => setAdding(true)}>
           <Icon name="plus" /> Add {label}
         </Btn>
@@ -842,10 +859,12 @@ function CalendarPanel() {
 
 export function Organisation() {
   return (
-    <>
+    <div className="org-page">
       <PageTitle eyebrow={EYEBROW} title="Department and Function Management" description="Organisation dimensions used for training targeting, question categories and reporting." />
-      <UnitTable title="Departments" path="/admin/departments" label="department" />
-      <UnitTable title="Functions" path="/admin/functions" label="function" showCode={false} />
+      <div className="org-units-grid">
+        <UnitTable title="Departments" path="/admin/departments" label="department" />
+        <UnitTable title="Functions" path="/admin/functions" label="function" showCode={false} />
+      </div>
       <SimpleList
         title="Trainers"
         label="trainer"
@@ -889,7 +908,7 @@ export function Organisation() {
         )}
       />
       <CalendarPanel />
-    </>
+    </div>
   );
 }
 
@@ -1868,7 +1887,7 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                 <p className="small">Select All includes matching employees eligible for completion or an assessment waiver across all table pages. Each action applies to eligible selected employees. Changing the search clears selection.</p>
                 {rows.length ? (
                   <DataTable
-                    headers={["Employee", "Completion", "Assessment Due", "Assessment", "Result", "", "Attempts", "Reattempt / Retraining"]}
+                    headers={["Employee", "Completion", "Assessment Due", "Assessment", "Attempts", "Reattempt / Retraining", "Result", "Actions"]}
                     emptyTitle="No assignments yet."
                     rows={rows.map((e) => [
                       <div key="p" data-sort={e.employee_name}>
@@ -1888,19 +1907,6 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                         {e.assessment_issue ? <small className="form-error">{e.assessment_issue.code === "UNAVAILABLE" ? "Cannot start: question pool" : "No assessment scheduled"}</small> : null}
                         {waiverErrors[e.id] && e.assessment_state !== "Waived" ? <small className="form-error" role="alert">{waiverErrors[e.id]}</small> : null}
                       </div>,
-                      resultOf(e),
-                      <div className="row wrap" key="x">
-                        {e.completed_at ? null : (
-                          <Btn tone="success" onClick={() => setCompleting(e)}>
-                            Mark Completed<span className="sr-only"> for {e.employee_name}</span>
-                          </Btn>
-                        )}
-                        {canWaiveAssessment(e) ? (
-                          <Btn kind="text" onClick={() => setWaiving(e)}>
-                            Waive<span className="sr-only"> assessment for {e.employee_name}</span>
-                          </Btn>
-                        ) : null}
-                      </div>,
                       <span key="n" data-sort={`${e.attempts_completed}`}>{attemptsLabel(e)}</span>,
                       <div key="r" data-sort={e.retry_action ?? ""}>
                         {e.retry_action === "REATTEMPT" && e.obligation_id ? (
@@ -1916,6 +1922,19 @@ function TrainingEmployees({ training, eyebrow, back }: { training: TrainingAdmi
                         ) : (
                           <span className="muted" aria-label="No action">—</span>
                         )}
+                      </div>,
+                      resultOf(e),
+                      <div className="row wrap" key="x">
+                        {e.completed_at ? null : (
+                          <Btn tone="success" onClick={() => setCompleting(e)}>
+                            Mark Completed<span className="sr-only"> for {e.employee_name}</span>
+                          </Btn>
+                        )}
+                        {canWaiveAssessment(e) ? (
+                          <Btn kind="text" onClick={() => setWaiving(e)}>
+                            Waive<span className="sr-only"> assessment for {e.employee_name}</span>
+                          </Btn>
+                        ) : null}
                       </div>,
                     ])}
                   />

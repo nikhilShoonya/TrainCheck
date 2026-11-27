@@ -24,7 +24,7 @@ LIKE_ESCAPE = "!"
 def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     now = utcnow()
     rows = load_rows(db, None)
-    trainings = db.scalars(select(Training).order_by(Training.title)).all()
+    trainings = db.scalars(select(Training).order_by(Training.created_at.desc(), Training.id.desc())).all()
     groups: dict = {}
     for r in rows:
         groups.setdefault(r.enrolment.training_id, []).append(r)
@@ -36,7 +36,7 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
     pools = PoolData(db, ids)
     for t in trainings:
         config = configs.get(t.id)
-        if t.status != TrainingStatus.ACTIVE or config is None or pool_problem(db, config, pools):
+        if t.status in (TrainingStatus.DRAFT, TrainingStatus.ACTIVE) and (t.status == TrainingStatus.DRAFT or config is None or pool_problem(db, config, pools)):
             needs_setup += 1
         group = groups.get(t.id, [])
         recent.append({"id": str(t.id), "title": t.title, "status": t.status, "enrolled": len(group), "pass_rate": summary(group)["pass_rate"]})
@@ -45,7 +45,7 @@ def admin_dashboard(_: CurrentUser = Depends(require_admin), db: Session = Depen
     return ok(
         {
             "total_employees": len(db.scalars(select(Employee.id).where(Employee.employment_status != "INACTIVE", is_learner())).all()),
-            "training_programmes": len(trainings),
+            "training_programmes": sum(t.status in (TrainingStatus.DRAFT, TrainingStatus.ACTIVE) for t in trainings),
             "summary": summary(rows),
             "departments": departments_summary(rows),
             "trend": monthly_trend(rows, now, load_calendar(db).tz),

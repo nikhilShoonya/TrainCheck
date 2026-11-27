@@ -93,6 +93,51 @@ export function ExportButtons({ code, filters, ownRecord = false }: { code: stri
   );
 }
 
+interface ExportRow {
+  id: string;
+  report_code: string;
+  export_format: string;
+  row_count: number;
+  file_name: string;
+  created_at: string;
+}
+
+/** Asks before deleting a generated file from Downloads. Deleting cannot be undone; the report can be exported again. */
+function DeleteExportDialog({ row, onClose, onDeleted }: { row: ExportRow; onClose: () => void; onDeleted: () => void }) {
+  const toast = useToast();
+  const [error, setError] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api.del(`/reports/exports/${row.id}`);
+      toast("File deleted.");
+      onDeleted();
+      onClose();
+    } catch (e) {
+      setError(e as ApiError);
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Delete file" onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)}>
+        <p>
+          Delete <strong>{row.file_name || `${row.report_code} (${row.export_format})`}</strong>, generated {dateTime(row.created_at)}? This cannot be undone. You can export the report again at any time.
+        </p>
+        {error ? <ErrorPanel error={error} /> : null}
+        <div className="dialog-actions">
+          <Btn onClick={onClose}>Cancel</Btn>
+          <button className="btn primary tone-danger" type="submit" disabled={busy}>
+            Delete file
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function ScheduleDialog({ code, filters, onClose }: { code: string; filters: Filters; onClose: () => void }) {
   const toast = useToast();
   const [error, setError] = useState<ApiError | null>(null);
@@ -233,7 +278,8 @@ function ReportsHubInner() {
   const query = params.toString();
   const { code, filters } = useMemo(() => parseReportState(new URLSearchParams(query)), [query]);
   const show = (nextCode: string, nextFilters: Filters) => router.replace(`${pathname}?${reportStateQuery(nextCode, nextFilters)}`, { scroll: false });
-  const exportsState = useApi<{ id: string; report_code: string; export_format: string; row_count: number; file_name: string; created_at: string }[]>("/reports/exports");
+  const exportsState = useApi<ExportRow[]>("/reports/exports");
+  const [deleting, setDeleting] = useState<ExportRow | null>(null);
   const schedules = useApi<{ id: string; report_code: string; cadence: string; export_format: string; next_run_at: string; is_active: boolean; deliveries: { run_at: string; status: string }[] }[]>("/reports/schedules");
   const toast = useToast();
   const stop = async (id: string) => {
@@ -266,13 +312,19 @@ function ReportsHubInner() {
                 r.export_format,
                 r.row_count,
                 dateTime(r.created_at),
-                <Btn key={r.id} kind="text" tone="data" onClick={() => downloadFile(`/reports/exports/${r.id}/download`, r.file_name).catch((e: ApiError) => toast(e.message))}>
-                  Download
-                </Btn>,
+                <div key={r.id} className="export-actions">
+                  <Btn kind="text" tone="data" onClick={() => downloadFile(`/reports/exports/${r.id}/download`, r.file_name).catch((e: ApiError) => toast(e.message))}>
+                    Download
+                  </Btn>
+                  <Btn kind="text" tone="danger" onClick={() => setDeleting(r)}>
+                    Delete<span className="sr-only"> {r.file_name || r.report_code}</span>
+                  </Btn>
+                </div>,
               ])}
             />
           )}
         </Loaded>
+        {deleting ? <DeleteExportDialog row={deleting} onClose={() => setDeleting(null)} onDeleted={() => void exportsState.reload()} /> : null}
       </section>
       <section className="panel">
         <h2>Scheduled delivery</h2>

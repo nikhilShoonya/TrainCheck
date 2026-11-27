@@ -1,10 +1,12 @@
 """Feedback after a post-training assessment: asked once per assessment, own attempts only, visible to L&D Admin."""
+import uuid
+
 from sqlalchemy import func, select
 
 from app.models import AssessmentFeedback
-from tests.conftest import authorise_reattempt, start, take
+from tests.conftest import FEEDBACK, authorise_reattempt, start, take
 
-GOOD = {"ratings": {"relevance": 5, "clarity": 4, "alignment": 4, "fairness": 3, "confidence": 5}, "comment": "  Useful session.  "}
+GOOD = {"ratings": {**FEEDBACK["ratings"], "satisfaction": 5}, "comment": "  Useful session.  "}
 
 
 def test_feedback_is_required_after_a_post_test_and_saved_once(world, client_for, db):
@@ -14,7 +16,15 @@ def test_feedback_is_required_after_a_post_test_and_saved_once(world, client_for
 
     before = client.get(f"/attempts/{attempt_id}/feedback").json()["data"]
     assert before["required"] is True and before["submitted"] is None
-    assert [q["key"] for q in before["questions"]] == ["relevance", "clarity", "alignment", "fairness", "confidence"]
+    assert [q["key"] for q in before["questions"]] == list(FEEDBACK["ratings"])
+    assert len(before["questions"]) == 10
+    assert len({q["section"] for q in before["questions"]}) == 6  # Comments make section seven.
+    assert before["questions"][0]["stars"] is True
+    assert [o["label"] for o in before["questions"][1]["options"]] == ["Very Poor", "Poor", "Neutral", "Good", "Excellent"]
+    trainer_questions = [q for q in before["questions"] if q["section"] == "Trainer Expertise & Preparation"]
+    assert len(trainer_questions) == 1
+    assert trainer_questions[0]["text"] == "The session was well-prepared and organized."
+    assert before["questions"][6]["options"] == [{"value": 2, "label": "Fair"}, {"value": 4, "label": "Very good"}, {"value": 5, "label": "Exceptional"}, {"value": 3, "label": "Average"}, {"value": 1, "label": "Below average"}]
 
     response = client.post(f"/attempts/{attempt_id}/feedback", json=GOOD)
     assert response.status_code == 200, response.text
@@ -47,7 +57,7 @@ def test_feedback_validation_and_ownership(world, client_for, db):
     assert client.get(f"/attempts/{running['attempt_id']}/feedback").json()["data"]["required"] is False
 
     done = take(db, client, obligation.id, 8)
-    for bad in ({"ratings": {**GOOD["ratings"], "clarity": 6}}, {"ratings": {**GOOD["ratings"], "fairness": 0}}, {"ratings": {"relevance": 5}}, {**GOOD, "comment": "x" * 2001}):
+    for bad in ({"ratings": {**GOOD["ratings"], "objectives": 6}}, {"ratings": {**GOOD["ratings"], "logistics": 0}}, {"ratings": {"satisfaction": 5}}, {**GOOD, "comment": "x" * 2001}, {"ratings": {**GOOD["ratings"], "pace": True}}, {"ratings": {**GOOD["ratings"], "extra": 4}}, {"ratings": {key: 4 for key in ("relevance", "clarity", "alignment", "fairness", "confidence")}}):
         assert client.post(f"/attempts/{done['attempt_id']}/feedback", json=bad).status_code == 400, bad
     # Another employee cannot read or answer someone else's attempt.
     other = client_for(world.teammate)
@@ -57,7 +67,7 @@ def test_feedback_validation_and_ownership(world, client_for, db):
 
 def test_admin_sees_feedback_and_employee_cannot(world, client_for, db):
     training = world.training()
-    for employee, ratings in ((world.employee, GOOD["ratings"]), (world.teammate, {"relevance": 3, "clarity": 2, "alignment": 4, "fairness": 5, "confidence": 1})):
+    for employee, ratings in ((world.employee, GOOD["ratings"]), (world.teammate, {**FEEDBACK["ratings"], "satisfaction": 3})):
         obligation = world.complete(employee, training)
         client = client_for(employee)
         attempt_id = take(db, client, obligation.id, 8)["attempt_id"]
@@ -66,12 +76,61 @@ def test_admin_sees_feedback_and_employee_cannot(world, client_for, db):
     assert client_for(world.employee).get("/admin/feedback").status_code == 403
     data = client_for(world.admin).get("/admin/feedback").json()["data"]
     assert data["summary"]["responses"] == 2 and data["summary"]["trainings"] == 1
-    assert data["summary"]["averages"] == {"relevance": 4.0, "clarity": 3.0, "alignment": 4.0, "fairness": 4.0, "confidence": 3.0}
+    assert data["summary"]["averages"] == {key: 4.0 for key in FEEDBACK["ratings"]}
+    assert data["summary"]["overall"] == 4.0
     assert data["trainings"][0]["training_title"] == training.title and data["trainings"][0]["responses"] == 2
     assert {r["employee_code"] for r in data["responses"]} == {world.employee.employee_code, world.teammate.employee_code}
     assert all(r["score_percent"] == 80.0 and r["result_status"] == "PASSED" for r in data["responses"])
     filtered = client_for(world.admin).get(f"/admin/feedback?training_id={world.training('T2').id}").json()["data"]
     assert filtered["summary"]["responses"] == 0
+
+
+def test_historical_feedback_remains_readable_and_is_not_relabelled(world, client_for, db):
+    from app.core.clock import utcnow
+    from app.modules.feedback.questionnaire import LEGACY_COLUMNS
+
+    training = world.training()
+    obligation = world.complete(world.employee, training)
+    client = client_for(world.employee)
+    attempt_id = take(db, client, obligation.id, 8)["attempt_id"]
+    db.add(AssessmentFeedback(obligation_id=obligation.id, attempt_id=uuid.UUID(attempt_id), employee_id=world.employee.id, training_id=training.id, submitted_at=utcnow(), **{column: 3 for column in LEGACY_COLUMNS.values()}))
+    db.commit()
+    old = client.get(f"/attempts/{attempt_id}/feedback").json()["data"]
+    assert old["required"] is False
+    assert old["submitted"]["ratings"] == {key: 3 for key in LEGACY_COLUMNS}
+    assert [q["key"] for q in old["questions"]] == list(LEGACY_COLUMNS)
+    teammate = client_for(world.teammate)
+    new_attempt = take(db, teammate, world.complete(world.teammate, training).id, 8)["attempt_id"]
+    assert teammate.post(f"/attempts/{new_attempt}/feedback", json=GOOD).status_code == 200
+    admin = client_for(world.admin)
+    report = admin.get("/admin/feedback").json()["data"]
+    assert report["summary"]["responses"] == 2
+    assert report["summary"]["averages"]["satisfaction"] == 5.0
+    assert report["summary"]["averages"]["alignment"] == 3.0
+    assert len(report["questions"]) == 15
+    assert admin.get(f"/reports/employees/{world.employee.id}/scorecard/pdf").status_code == 200
+
+
+def test_previous_eleven_question_responses_are_preserved(world, client_for, db):
+    obligation = world.complete(world.employee, world.training())
+    client = client_for(world.employee)
+    attempt_id = take(db, client, obligation.id, 8)["attempt_id"]
+    assert client.post(f"/attempts/{attempt_id}/feedback", json=GOOD).status_code == 200
+    feedback = db.scalar(select(AssessmentFeedback).where(AssessmentFeedback.obligation_id == obligation.id))
+    # Represents a response already saved by the earlier 11-question form.
+    feedback.training_ratings = {**feedback.training_ratings, "trainer_organisation": 2}
+    db.commit()
+    saved = client.get(f"/attempts/{attempt_id}/feedback").json()["data"]
+    assert saved["required"] is False
+    assert saved["submitted"]["ratings"]["trainer_organisation"] == 2
+    assert len(saved["questions"]) == 11
+    admin = client_for(world.admin)
+    report = admin.get("/admin/feedback").json()["data"]
+    assert report["summary"]["averages"]["trainer_organisation"] == 2
+    assert any(q["key"] == "trainer_organisation" and "previous duplicate" in q["short_label"] for q in report["questions"])
+    scorecard = admin.get(f"/reports/employees/{world.employee.id}/scorecard").json()["data"]
+    assert scorecard["feedback"][0]["ratings"]["trainer_organisation"] == 2
+    assert admin.get(f"/reports/employees/{world.employee.id}/scorecard/pdf").status_code == 200
 
 
 # ---------- Feedback cutoff (decision of 19 Nov 2026) ----------

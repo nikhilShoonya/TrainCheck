@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, contains_eager, joinedload, selectinload
 
 from app.core.deps import CurrentUser
-from app.core.enums import AssessmentType, AttemptStatus, EnrolmentStatus, ObligationStatus, ResultStatus, ReviewerType, RoleCode
+from app.core.enums import AssessmentType, AttemptStatus, EnrolmentStatus, ObligationStatus, ResultStatus, ReviewerType, RoleCode, TrainingStatus
 from app.core.errors import forbidden
 from app.core.responses import display_percent
 from app.models import (
@@ -206,8 +206,8 @@ def summary(rows: list[Row]) -> dict:
         "needs_retraining_employees": len({r.enrolment.employee_id for r in flagged}),
         "pending_assessment": len(rows) - len(assessed),
         # Completed training whose post-test has no result yet. Unlike pending_assessment, it leaves out
-        # assignments whose training is not finished (those have no assessment to take).
-        "awaiting_assessment": sum(1 for r in completed if not r.post_attempts),
+        # unfinished or archived training, and assessments L&D waived or cancelled.
+        "awaiting_assessment": sum(1 for r in completed if not r.post_attempts and r.enrolment.training.status != TrainingStatus.ARCHIVED and (not r.obligation or r.obligation.status not in (ObligationStatus.WAIVED, ObligationStatus.CANCELLED))),
         "in_progress": len(in_progress),
         "pass_rate": rate(len(passed), len(assessed)),
         "completion_rate": rate(len(completed), len(rows)),

@@ -7,6 +7,7 @@ import { Suspense, useState, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { Btn, BtnLink, DataTable, Empty, ErrorPanel, Loading, useToast } from "@/components/ui";
 import { ApiError, downloadFile, toQuery } from "@/lib/api";
+import { FEEDBACK_LABELS } from "@/lib/feedback";
 import { useSession } from "@/lib/hooks";
 import { apiQuery } from "@/lib/query";
 import { dateTime, day, initials, todayInOrg } from "@/lib/utils";
@@ -41,8 +42,6 @@ import {
 } from "./employeeScorecardView";
 
 const NOT_RECORDED = "Not recorded";
-const FEEDBACK_SHORT: Record<FeedbackKey, string> = { relevance: "Relevance", clarity: "Clarity", alignment: "Assessment match", fairness: "Fairness", confidence: "Confidence" };
-const FEEDBACK_KEYS = Object.keys(FEEDBACK_SHORT) as FeedbackKey[];
 
 /** Zero-padded so text sorting orders scores numerically (69.25 before 69.5); missing scores sort first. */
 const sortKey = (value: number | null) => (value === null ? "" : value.toFixed(2).padStart(6, "0"));
@@ -502,9 +501,9 @@ function Feedback({ items }: { items: FeedbackItem[] }) {
                 <div>
                   <dt>Ratings</dt>
                   <dd className="esc-ratings">
-                    {FEEDBACK_KEYS.map((key) => (
+                    {(Object.keys(item.ratings!) as FeedbackKey[]).map((key) => (
                       <span key={key}>
-                        {FEEDBACK_SHORT[key]} <strong>{item.ratings![key]}</strong>
+                        {FEEDBACK_LABELS[key]} <strong>{item.ratings![key]}</strong>
                       </span>
                     ))}
                   </dd>

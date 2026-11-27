@@ -71,7 +71,7 @@ test("L&D opens a training from its card; refresh, direct links and Back keep th
   expect(rows.length).toBeGreaterThan(0);
   const table = page.locator("table");
   await expect(page.getByRole("status").filter({ hasText: `${rows.length} employees assigned.` })).toBeVisible();
-  await expect(table.getByRole("columnheader")).toHaveText(["Employee", "Completion", "Assessment Due", "Assessment", "Result", "", "Attempts", "Reattempt / Retraining"]);
+  await expect(table.getByRole("columnheader")).toHaveText(["Employee", "Completion", "Assessment Due", "Assessment", "Attempts", "Reattempt / Retraining", "Result", "Actions"]);
   await expect(page.getByRole("combobox", { name: /^Attendance for / })).toHaveCount(0); // Attendance is not edited here.
   const shown = await table.locator("tbody tr td:first-child small").allInnerTexts();
   expect(shown.length).toBe(Math.min(rows.length, 8)); // Eight rows per page.

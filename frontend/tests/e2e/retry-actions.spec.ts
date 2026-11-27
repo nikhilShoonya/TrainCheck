@@ -67,14 +67,16 @@ async function mockApi(context: BrowserContext, world: ReturnType<typeof newWorl
 
 const rowFor = (page: Page, name: string) => page.locator("tbody tr").filter({ hasText: name });
 const cell = (page: Page, name: string, index: number) => rowFor(page, name).locator("td").nth(index);
-const ATTEMPTS = 6;
-const RETRY = 7;
+const ATTEMPTS = 4;
+const RETRY = 5;
 
-test("Attempts and Reattempt / Retraining are the last two columns and follow each employee's state", async ({ context, page }) => {
+test("Result and Actions are the last columns and rows follow each employee's state", async ({ context, page }) => {
   await mockApi(context, newWorld());
   await page.goto(url);
   await expect(page.getByRole("heading", { level: 1, name: TITLE })).toBeVisible();
-  await expect(page.locator("table").getByRole("columnheader")).toHaveText(["Employee", "Completion", "Assessment Due", "Assessment", "Result", "", "Attempts", "Reattempt / Retraining"]);
+  await expect(page.locator("table").getByRole("columnheader")).toHaveText(["Employee", "Completion", "Assessment Due", "Assessment", "Attempts", "Reattempt / Retraining", "Result", "Actions"]);
+  await expect(rowFor(page, "Synthetic 01").locator("td").last().getByRole("button", { name: "Mark Completed for Synthetic 01", exact: true })).toBeVisible();
+  await expect(rowFor(page, "Synthetic 03").locator("td").last().getByRole("button", { name: "Waive assessment for Synthetic 03", exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: /^Attendance for / })).toHaveCount(0);
   const expected: [string, string, string][] = [
     ["Synthetic 01", "0/3", "—"],

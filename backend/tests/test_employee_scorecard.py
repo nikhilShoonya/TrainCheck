@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.core import clock
 from app.core.config import get_settings
 from app.models import AssessmentConfig, AuditLog, Employee, Enrolment
-from tests.conftest import NOW, answer_with_score, authorise_reattempt, give_feedback, submit, take
+from tests.conftest import FEEDBACK, NOW, answer_with_score, authorise_reattempt, give_feedback, submit, take
 
 
 def card(client, employee: Employee, **params) -> dict:
@@ -104,7 +104,7 @@ def test_no_other_employees_attempts_feedback_or_trainings_appear(world, db, cli
     give_feedback(me, take(db, me, mine_obligation.id, 9)["attempt_id"])
     tick(1)
     their_attempt = take(db, them, their_obligation.id, 4)["attempt_id"]
-    them.post(f"/attempts/{their_attempt}/feedback", json={"ratings": {"relevance": 1, "clarity": 1, "alignment": 1, "fairness": 1, "confidence": 1}, "comment": "Teammate private comment"})
+    them.post(f"/attempts/{their_attempt}/feedback", json={"ratings": {key: 1 for key in FEEDBACK["ratings"]}, "comment": "Teammate private comment"})
 
     data = card(client_for(world.admin), world.employee)
     assert data["employee"]["id"] == str(world.employee.id) and data["employee"]["employee_code"] == "E1"
@@ -267,7 +267,7 @@ def test_feedback_shows_ratings_overall_comment_and_missing_states(world, db, cl
     client = client_for(world.employee)
     first = world.complete(world.employee, given)
     attempt = take(db, client, first.id, 9)["attempt_id"]
-    response = client.post(f"/attempts/{attempt}/feedback", json={"ratings": {"relevance": 5, "clarity": 4, "alignment": 4, "fairness": 3, "confidence": 5}, "comment": "Clear examples."})
+    response = client.post(f"/attempts/{attempt}/feedback", json={"ratings": {**FEEDBACK["ratings"], "satisfaction": 5}, "comment": "Clear examples."})
     assert response.status_code == 200, response.text
     tick(1)
     take(db, client, world.complete(world.employee, owed).id, 9)  # Feedback not given yet.
@@ -276,8 +276,8 @@ def test_feedback_shows_ratings_overall_comment_and_missing_states(world, db, cl
     items = by_training(card(admin, world.employee)["feedback"])
     submitted = items["Training T1"]
     assert submitted["status"] == "SUBMITTED"
-    assert submitted["ratings"] == {"relevance": 5, "clarity": 4, "alignment": 4, "fairness": 3, "confidence": 5}
-    assert submitted["overall"] == 4.2 and submitted["comment"] == "Clear examples." and submitted["submitted_at"]
+    assert submitted["ratings"] == {**FEEDBACK["ratings"], "satisfaction": 5}
+    assert submitted["overall"] == 4.1 and submitted["comment"] == "Clear examples." and submitted["submitted_at"]
     assert (items["Training T2"]["status"], items["Training T2"]["overall"], items["Training T2"]["submitted_at"]) == ("NOT_SUBMITTED", None, None)
     # Results from before feedback began are never asked: the same exemption as the feedback form.
     monkeypatch.setattr(get_settings(), "feedback_required_from", "2026-12-31")

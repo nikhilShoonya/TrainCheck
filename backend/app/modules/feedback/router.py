@@ -1,4 +1,4 @@
-"""Feedback after a post-training assessment: five 1-5 ratings about the training and the assessment.
+"""Official training feedback after a post-training assessment: ten ratings and optional comments.
 
 Asked once per assessment (obligation), on the result page of its first submitted attempt; retakes do not ask
 again. Pre-tests never ask. L&D Admins read every response and the per-training averages.
@@ -6,7 +6,7 @@ again. Pre-tests never ask. L&D Admins read every response and the per-training 
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -22,28 +22,26 @@ from app.core.routing import ReleasingRoute
 from app.models import AssessmentAttempt, AssessmentFeedback, Employee, Training
 from app.modules.assessment.gate import feedback_exempt
 from app.modules.assessment.service import get_own_attempt
+from app.modules.feedback.questionnaire import LEGACY_COLUMNS, LEGACY_QUESTIONS, QUESTIONS, RETIRED_TRAINER_QUESTION
 from app.modules.training.locks import hold_training
 
 router = APIRouter(route_class=ReleasingRoute, tags=["Assessment feedback"])
 
-# (key, model column, question, label for 1, label for 5). Order is the order shown to the employee.
-QUESTIONS: list[tuple[str, str, str, str, str]] = [
-    ("relevance", "relevance_rating", "How relevant was this training to your day-to-day role?", "Not relevant", "Highly relevant"),
-    ("clarity", "clarity_rating", "How clearly were the training content and examples explained?", "Very unclear", "Very clear"),
-    ("alignment", "alignment_rating", "How well did the assessment questions match what was taught in the training?", "Not at all", "Very well"),
-    ("fairness", "fairness_rating", "How fair were the assessment's difficulty level and time limit?", "Very unfair", "Very fair"),
-    ("confidence", "confidence_rating", "How confident are you to apply what you learned in your daily work?", "Not confident", "Very confident"),
-]
-COLUMN = {key: column for key, column, *_ in QUESTIONS}
 MAX_COMMENT = 2000
 
 
 class Ratings(BaseModel):
-    relevance: int = Field(ge=1, le=5)
-    clarity: int = Field(ge=1, le=5)
-    alignment: int = Field(ge=1, le=5)
-    fairness: int = Field(ge=1, le=5)
-    confidence: int = Field(ge=1, le=5)
+    model_config = ConfigDict(extra="forbid", strict=True)
+    satisfaction: int = Field(ge=1, le=5)
+    role_relevance: int = Field(ge=1, le=5)
+    objectives: int = Field(ge=1, le=5)
+    applicability: int = Field(ge=1, le=5)
+    interaction: int = Field(ge=1, le=5)
+    pace: int = Field(ge=1, le=5)
+    trainer_preparation: int = Field(ge=1, le=5)
+    materials: int = Field(ge=1, le=5)
+    environment: int = Field(ge=1, le=5)
+    logistics: int = Field(ge=1, le=5)
 
 
 class FeedbackIn(BaseModel):
@@ -51,12 +49,19 @@ class FeedbackIn(BaseModel):
     comment: str | None = Field(default=None, max_length=MAX_COMMENT)
 
 
-def questions_payload() -> list[dict]:
-    return [{"key": key, "text": text, "low_label": low, "high_label": high} for key, _, text, low, high in QUESTIONS]
+def questions_payload(feedback: AssessmentFeedback | None = None) -> list[dict]:
+    if feedback is not None:
+        if feedback.training_ratings is None:
+            return LEGACY_QUESTIONS
+        if RETIRED_TRAINER_QUESTION["key"] in feedback.training_ratings:
+            return QUESTIONS[:7] + [RETIRED_TRAINER_QUESTION] + QUESTIONS[7:]
+    return QUESTIONS
 
 
 def ratings_of(feedback: AssessmentFeedback) -> dict[str, int]:
-    return {key: getattr(feedback, column) for key, column in COLUMN.items()}
+    if feedback.training_ratings is not None:
+        return feedback.training_ratings
+    return {key: getattr(feedback, column) for key, column in LEGACY_COLUMNS.items()}
 
 
 def _average(values: list[int]) -> float | None:
@@ -74,7 +79,7 @@ def _feedback_view(db: Session, attempt: AssessmentAttempt, feedback: Assessment
     return {
         "required": required,
         "training_title": attempt.training.title,
-        "questions": questions_payload(),
+        "questions": questions_payload(feedback),
         "submitted": None if feedback is None else {"ratings": ratings_of(feedback), "comment": feedback.comment_text, "submitted_at": iso(feedback.submitted_at)},
     }
 
@@ -103,7 +108,7 @@ def submit_feedback(attempt_id: uuid.UUID, body: FeedbackIn, user: CurrentUser =
         training_id=attempt.training_id,
         comment_text=comment,
         submitted_at=utcnow(),
-        **{COLUMN[key]: value for key, value in body.ratings.model_dump().items()},
+        training_ratings=body.ratings.model_dump(),
     )
     db.add(feedback)
     try:
@@ -130,16 +135,22 @@ def admin_feedback(training_id: uuid.UUID | None = Query(default=None), _: Curre
     if training_id:
         query = query.where(AssessmentFeedback.training_id == training_id)
     rows = db.scalars(query).all()
+    # Never present old assessment-specific answers as answers to the new training questions.
+    report_questions = list(QUESTIONS)
+    if any(RETIRED_TRAINER_QUESTION["key"] in (r.training_ratings or {}) for r in rows):
+        report_questions.insert(7, RETIRED_TRAINER_QUESTION)
+    if any(r.training_ratings is None for r in rows):
+        report_questions += LEGACY_QUESTIONS
 
     by_training: dict[uuid.UUID, list[AssessmentFeedback]] = {}
     for row in rows:
         by_training.setdefault(row.training_id, []).append(row)
 
     def averages(items: list[AssessmentFeedback]) -> dict[str, float | None]:
-        return {key: _average([getattr(i, column) for i in items]) for key, column in COLUMN.items()}
+        return {q["key"]: _average([ratings_of(i)[q["key"]] for i in items if q["key"] in ratings_of(i)]) for q in report_questions}
 
     def overall(items: list[AssessmentFeedback]) -> float | None:
-        return _average([getattr(i, column) for i in items for column in COLUMN.values()])
+        return _average([value for i in items for value in ratings_of(i).values()])
 
     trainings = sorted(
         (
@@ -178,7 +189,7 @@ def admin_feedback(training_id: uuid.UUID | None = Query(default=None), _: Curre
     ).all()
     return ok(
         {
-            "questions": questions_payload(),
+            "questions": report_questions,
             "summary": {"responses": len(rows), "trainings": len(by_training), "averages": averages(rows), "overall": overall(rows)},
             "trainings": trainings,
             "responses": responses,

@@ -4,17 +4,8 @@ import { useState } from "react";
 import { Badge, DataTable, Empty, Loaded, Metrics, PageTitle, SelectField } from "@/components/ui";
 import { toQuery } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
-import type { FeedbackAdmin, FeedbackKey } from "@/lib/types";
+import type { FeedbackAdmin } from "@/lib/types";
 import { dateTime } from "@/lib/utils";
-
-const SHORT: Record<FeedbackKey, string> = {
-  relevance: "Relevance",
-  clarity: "Clarity",
-  alignment: "Assessment match",
-  fairness: "Fairness",
-  confidence: "Confidence",
-};
-const KEYS = Object.keys(SHORT) as FeedbackKey[];
 
 const score = (value: number | null | undefined) => (value === null || value === undefined ? "—" : value.toFixed(1));
 
@@ -27,7 +18,7 @@ export function TrainingFeedback() {
       <PageTitle
         eyebrow="L&D ADMIN"
         title="Training Feedback"
-        description="Employees answer five questions once they finish a post-training assessment. Ratings run from 1 (lowest) to 5 (highest)."
+        description="Employees complete the official 10-question Training Feedback Form after a post-training assessment. Ratings run from 1 (lowest) to 5 (highest). Previous responses retain their original question labels."
       />
       <Loaded state={state}>
         {(data) => (
@@ -45,13 +36,13 @@ export function TrainingFeedback() {
               items={[
                 ["Responses", data.summary.responses, "Feedback forms submitted"],
                 ["Trainings", data.summary.trainings, "With at least one response"],
-                ["Average rating", score(data.summary.overall), "Across all five questions"],
-                ["Applying it at work", score(data.summary.averages.confidence), "Confidence to apply, out of 5"],
+                ["Average rating", score(data.summary.overall), "Across submitted ratings"],
+                ["Training satisfaction", score(data.summary.averages.satisfaction), "Overall satisfaction, out of 5"],
               ]}
             />
             {data.summary.responses === 0 ? (
               <section className="panel">
-                <Empty title="No feedback yet." hint="Feedback appears here after employees finish a post-training assessment and answer the five questions." />
+                <Empty title="No feedback yet." hint="Feedback appears here after employees finish a post-training assessment and complete the Training Feedback Form." />
               </section>
             ) : (
               <>
@@ -64,7 +55,7 @@ export function TrainingFeedback() {
                     {data.questions.map((q) => (
                       <div className="feedback-average" key={q.key}>
                         <span>{q.text}</span>
-                        <progress value={data.summary.averages[q.key] ?? 0} max={5} aria-label={`${SHORT[q.key]} average`} />
+                        <progress value={data.summary.averages[q.key] ?? 0} max={5} aria-label={`${q.short_label} average`} />
                         <strong>{score(data.summary.averages[q.key])}</strong>
                       </div>
                     ))}
@@ -75,14 +66,14 @@ export function TrainingFeedback() {
                     <h2 id="feedback-trainings-title">By training</h2>
                   </div>
                   <DataTable
-                    headers={["Training", "Responses", ...KEYS.map((k) => SHORT[k]), "Overall", "Latest"]}
+                    headers={["Training", "Responses", ...data.questions.map((q) => q.short_label), "Overall", "Latest"]}
                     rows={data.trainings.map((t) => [
                       <div key="t" data-sort={t.training_title}>
                         {t.training_title}
                         <small>{t.training_code}</small>
                       </div>,
                       t.responses,
-                      ...KEYS.map((k) => score(t.averages[k])),
+                      ...data.questions.map((q) => score(t.averages[q.key])),
                       <strong key="o">{score(t.overall)}</strong>,
                       dateTime(t.latest_at),
                     ])}
@@ -94,7 +85,7 @@ export function TrainingFeedback() {
                     <span>{data.responses.length} shown, newest first</span>
                   </div>
                   <DataTable
-                    headers={["Employee", "Training", "Assessment", ...KEYS.map((k) => SHORT[k]), "Average", "Comment", "Submitted"]}
+                    headers={["Employee", "Training", "Assessment", ...data.questions.map((q) => q.short_label), "Average", "Comment", "Submitted"]}
                     rows={data.responses.map((r) => [
                       <div key="e" data-sort={r.employee_name}>
                         {r.employee_name}
@@ -108,9 +99,9 @@ export function TrainingFeedback() {
                         {r.result_status ? <Badge status={r.result_status} /> : null}
                         <small>{r.score_percent === null ? "—" : `${r.score_percent}%`}</small>
                       </div>,
-                      ...KEYS.map((k) => (
-                        <span key={k} className="feedback-rating-cell" data-sort={r.ratings[k]}>
-                          {r.ratings[k]} / 5
+                      ...data.questions.map((q) => (
+                        <span key={q.key} className="feedback-rating-cell" data-sort={r.ratings[q.key] ?? -1}>
+                          {r.ratings[q.key] == null ? "—" : `${r.ratings[q.key]} / 5`}
                         </span>
                       )),
                       <strong key="avg" data-sort={r.average ?? 0}>

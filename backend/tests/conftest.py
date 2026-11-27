@@ -366,7 +366,7 @@ def take(db: Session, client: ApiClient, obligation_id, correct_count: int) -> d
     return submit(client, attempt["attempt_id"])
 
 
-FEEDBACK = {"ratings": {"relevance": 4, "clarity": 4, "alignment": 4, "fairness": 4, "confidence": 4}}
+FEEDBACK = {"ratings": {key: 4 for key in ("satisfaction", "role_relevance", "objectives", "applicability", "interaction", "pace", "trainer_preparation", "materials", "environment", "logistics")}}
 
 
 def give_feedback(client: ApiClient, attempt_id) -> None:

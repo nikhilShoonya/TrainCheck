@@ -87,7 +87,7 @@ test.describe("Departments & Functions: delete from Edit (mocked API)", () => {
   test("Edit shows Delete; it asks first, then deletes an unused department", async ({ page }) => {
     await page.goto("/lnd/organisation");
     const departments = section(page, "Departments");
-    await departments.getByRole("row", { name: /Temporary/ }).getByRole("button", { name: "Edit" }).click();
+    await departments.getByRole("row", { name: /Temporary/ }).getByRole("button", { name: "Edit Temporary" }).click();
     const edit = page.getByRole("dialog", { name: "Edit department" });
     await expect(edit.getByRole("button", { name: "Delete Temporary" })).toBeVisible();
     await edit.getByRole("button", { name: "Delete Temporary" }).click();
@@ -97,7 +97,7 @@ test.describe("Departments & Functions: delete from Edit (mocked API)", () => {
     await confirm.getByRole("button", { name: "Cancel" }).click();
     expect(world.deletes).toEqual([]); // Cancelling deletes nothing.
 
-    await departments.getByRole("row", { name: /Temporary/ }).getByRole("button", { name: "Edit" }).click();
+    await departments.getByRole("row", { name: /Temporary/ }).getByRole("button", { name: "Edit Temporary" }).click();
     await page.getByRole("dialog", { name: "Edit department" }).getByRole("button", { name: "Delete Temporary" }).click();
     await page.getByRole("dialog", { name: "Delete department" }).getByRole("button", { name: "Delete department" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -109,7 +109,7 @@ test.describe("Departments & Functions: delete from Edit (mocked API)", () => {
   test("a department in use is refused, the reason is shown and the row stays", async ({ page }) => {
     await page.goto("/lnd/organisation");
     const departments = section(page, "Departments");
-    await departments.getByRole("row", { name: /Human Resource/ }).getByRole("button", { name: "Edit" }).click();
+    await departments.getByRole("row", { name: /Human Resource/ }).getByRole("button", { name: "Edit Human Resource" }).click();
     await page.getByRole("dialog", { name: "Edit department" }).getByRole("button", { name: "Delete Human Resource" }).click();
     const confirm = page.getByRole("dialog", { name: "Delete department" });
     await confirm.getByRole("button", { name: "Delete department" }).click();

@@ -428,6 +428,53 @@ def test_download_of_an_export_whose_file_is_missing_is_a_404(world, db, client_
     assert response.json()["error"]["message"] == "This export file is no longer available. Export the report again."
 
 
+def test_owner_deletes_an_export_and_its_file(world, db, client_for):
+    """Downloads card Delete: owner only (others get 404, file kept); the record, file record and stored file go."""
+    from app.core.config import get_settings
+    from app.models import FileArtifact, ReportExport
+
+    fixture_data(world, db, client_for)
+    client = client_for(world.admin)
+    export = client.post("/reports/exports", json={"report_code": "pass-fail", "export_format": "CSV"}).json()["data"]
+    artifact_id = db.get(ReportExport, export["id"]).artifact_id
+    stored = get_settings().storage_path / db.get(FileArtifact, artifact_id).storage_key
+    assert stored.exists()
+
+    second_admin = world.person("A2", "admin2@test.example", ["LD_ADMIN", "EMPLOYEE"])
+    world.db.commit()
+    assert client_for(second_admin).delete(f"/reports/exports/{export['id']}").status_code == 404
+    assert client_for(world.employee).delete(f"/reports/exports/{export['id']}").status_code in (403, 404)
+    assert stored.exists()
+
+    response = client.delete(f"/reports/exports/{export['id']}")
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    assert db.get(ReportExport, export["id"]) is None and db.get(FileArtifact, artifact_id) is None
+    assert not stored.exists()
+    assert export["id"] not in {e["id"] for e in client.get("/reports/exports").json()["data"]}
+    assert client.get(f"/reports/exports/{export['id']}/download").status_code == 404
+    audit = db.scalar(select(AuditLog).where(AuditLog.action == "REPORT_EXPORT_DELETED"))
+    assert audit is not None and audit.target_id == export["id"] and audit.before_summary["report_code"] == "pass-fail"
+    assert client.delete(f"/reports/exports/{export['id']}").status_code == 404  # Already gone.
+
+
+def test_deleting_a_delivered_export_keeps_the_delivery_history(world, db, client_for):
+    from app.models import ReportDelivery
+    from app.modules.reports.router import run_due_schedules
+
+    fixture_data(world, db, client_for)
+    client = client_for(world.admin)
+    created = client.post("/reports/schedules", json={"report_code": "pass-fail", "export_format": "CSV", "cadence": "WEEKLY"}).json()["data"]
+    assert run_due_schedules(db, NOW + timedelta(days=8)) == 1
+    delivery = db.scalar(select(ReportDelivery).where(ReportDelivery.schedule_id == created["id"]))
+    assert delivery.export_id is not None
+
+    assert client_for(world.admin).delete(f"/reports/exports/{delivery.export_id}").status_code == 200
+    db.expire_all()
+    kept = db.scalar(select(ReportDelivery).where(ReportDelivery.schedule_id == created["id"]))
+    assert kept is not None and kept.export_id is None and kept.status == "DELIVERED"
+
+
 # ---------- Schedule owners who lost access (audit B18) ----------
 
 @pytest.mark.parametrize(

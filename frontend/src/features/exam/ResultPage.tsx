@@ -228,7 +228,7 @@ export function ResultPage() {
           <div className="notice left feedback-thanks" role="status">
             <Icon name="chat" />
             <div>
-              <strong>One last step: share your feedback.</strong> Five quick questions about this training and its assessment, needed before you continue.{" "}
+              <strong>One last step: share your feedback.</strong> Complete the Training Feedback Form before you continue.{" "}
               <Btn kind="text" onClick={() => setFeedbackOpen(true)}>
                 Give feedback
               </Btn>

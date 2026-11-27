@@ -1,7 +1,7 @@
 """All TrainCheck tables. Physical schema lives in migrations/; this file is the reference.
 
 Scope change SC-2L: there are deliberately no Level 1 Reaction or Level 4 KPI/ROI tables.
-AssessmentFeedback (five ratings after a post-training assessment) was added later at the product owner's request.
+AssessmentFeedback after a post-training assessment was added later at the product owner's request.
 """
 import uuid
 from datetime import date, datetime
@@ -588,17 +588,19 @@ class AssessmentFeedback(Base):
     attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assessment_attempts.id"))
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
     training_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trainings.id"), index=True)
-    relevance_rating: Mapped[int] = mapped_column(Integer)
-    clarity_rating: Mapped[int] = mapped_column(Integer)
-    alignment_rating: Mapped[int] = mapped_column(Integer)
-    fairness_rating: Mapped[int] = mapped_column(Integer)
-    confidence_rating: Mapped[int] = mapped_column(Integer)
+    # Old responses retain their original question meanings; new responses use the official questionnaire.
+    training_ratings: Mapped[dict[str, int] | None] = mapped_column(JSON(none_as_null=True))
+    relevance_rating: Mapped[int | None] = mapped_column(Integer)
+    clarity_rating: Mapped[int | None] = mapped_column(Integer)
+    alignment_rating: Mapped[int | None] = mapped_column(Integer)
+    fairness_rating: Mapped[int | None] = mapped_column(Integer)
+    confidence_rating: Mapped[int | None] = mapped_column(Integer)
     comment_text: Mapped[str | None] = mapped_column(Text)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     employee: Mapped[Employee] = relationship()
     training: Mapped[Training] = relationship()
     attempt: Mapped[AssessmentAttempt] = relationship()
-    __table_args__ = tuple(
+    __table_args__ = (CheckConstraint("training_ratings IS NOT NULL OR (relevance_rating IS NOT NULL AND clarity_rating IS NOT NULL AND alignment_rating IS NOT NULL AND fairness_rating IS NOT NULL AND confidence_rating IS NOT NULL)", name="ck_feedback_questionnaire_present"),) + tuple(
         CheckConstraint(f"{column} BETWEEN 1 AND 5", name=f"ck_feedback_{column}")
         for column in ("relevance_rating", "clarity_rating", "alignment_rating", "fairness_rating", "confidence_rating")
     )

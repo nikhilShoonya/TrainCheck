@@ -376,12 +376,16 @@ export interface TrainingAdmin {
   unavailable_assessments?: AffectedEmployee[];
 }
 
-/* Feedback after a post-training assessment (five 1-5 ratings and an optional comment). */
-export type FeedbackKey = "relevance" | "clarity" | "alignment" | "fairness" | "confidence";
+/* Official training feedback, with historical question keys retained for saved responses. */
+export type FeedbackKey = "satisfaction" | "role_relevance" | "objectives" | "applicability" | "interaction" | "pace" | "trainer_preparation" | "trainer_organisation" | "materials" | "environment" | "logistics" | "relevance" | "clarity" | "alignment" | "fairness" | "confidence";
 
 export interface FeedbackQuestion {
   key: FeedbackKey;
   text: string;
+  section: string;
+  short_label: string;
+  options: { value: number; label: string }[];
+  stars: boolean;
   low_label: string;
   high_label: string;
 }
@@ -390,7 +394,7 @@ export interface FeedbackView {
   required: boolean;
   training_title: string;
   questions: FeedbackQuestion[];
-  submitted: { ratings: Record<FeedbackKey, number>; comment: string | null; submitted_at: string } | null;
+  submitted: { ratings: Partial<Record<FeedbackKey, number>>; comment: string | null; submitted_at: string } | null;
 }
 
 export interface FeedbackAdmin {
@@ -414,7 +418,7 @@ export interface FeedbackAdmin {
     training_title: string;
     score_percent: number | null;
     result_status: string | null;
-    ratings: Record<FeedbackKey, number>;
+    ratings: Partial<Record<FeedbackKey, number>>;
     average: number | null;
     comment: string | null;
     submitted_at: string;

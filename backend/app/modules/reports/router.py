@@ -311,6 +311,30 @@ def download_export(export_id: uuid.UUID, user: CurrentUser = Depends(require_ga
     return Response(content, media_type=artifact.content_type, headers={"Content-Disposition": f'attachment; filename="{artifact.file_name}"', "Cache-Control": "no-store"})
 
 
+@router.delete("/reports/exports/{export_id}")
+def delete_export(export_id: uuid.UUID, user: CurrentUser = Depends(require_gate_clear), db: Session = Depends(get_db)) -> dict:
+    """Owner only: anyone else gets the same 404 as for a missing export. Removes the export and its stored file. A
+    scheduled delivery that produced it keeps its history row without the file (as when a training is deleted). The
+    file is removed only after the commit, so a failed delete never loses a file that is still listed."""
+    record = db.get(ReportExport, export_id)
+    if record is None or record.owner_user_id != user.id:
+        raise not_found()
+    artifact = record.artifact
+    before = {"report_code": record.report_code, "export_format": record.export_format, "row_count": record.row_count, "file_name": artifact.file_name if artifact else None}
+    db.execute(update(ReportDelivery).where(ReportDelivery.export_id == record.id).values(export_id=None))
+    db.delete(record)
+    db.flush()
+    storage_key = None
+    if artifact is not None and db.scalar(select(ReportExport.id).where(ReportExport.artifact_id == artifact.id).limit(1)) is None:  # Not shared.
+        storage_key = artifact.storage_key
+        db.delete(artifact)
+    record_audit(db, user.id, "REPORT_EXPORT_DELETED", "report_export", export_id, before=before)
+    db.commit()
+    if storage_key:
+        exports.remove_file(storage_key)
+    return ok({"deleted": True})
+
+
 # ---------- Scheduled delivery ----------
 
 class ScheduleIn(BaseModel):

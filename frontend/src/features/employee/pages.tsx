@@ -64,7 +64,7 @@ function AssessmentBanner({ data }: { data: Dashboard }) {
         </>
       ) : (
         <span className="banner-status">
-          <Icon name="shield" /> Learning verified
+          <Icon name="shield" /> No assessments due
         </span>
       )}
       <BtnLink href={href} kind="primary">

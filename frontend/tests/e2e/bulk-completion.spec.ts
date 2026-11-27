@@ -146,7 +146,7 @@ test("select all waives eligible assessments across pages with one required reas
   const row = page.locator("tbody tr").filter({ hasText: "Synthetic 05" });
   await expect(row.locator("td").nth(3)).toHaveText("Waived");
   await expect(row.locator("td").nth(1)).toContainText("Completed");
-  await expect(row.locator("td").nth(4)).toHaveText("Pending");
+  await expect(row.locator("td").nth(6)).toHaveText("Pending");
   await expect(row.getByRole("checkbox")).toBeDisabled();
   await expect(page.locator(".metrics")).toHaveCount(1);
   expect(world.waiverCalls).toHaveLength(9);
@@ -302,7 +302,7 @@ test("bulk completion immediately updates rows and counts even when a background
   await expect(row.getByRole("checkbox")).toBeDisabled();
   await expect(row.locator("td").nth(1)).toContainText("Completed");
   await expect(row.getByRole("button", { name: "Mark Completed for Synthetic 05", exact: true })).toHaveCount(0);
-  await expect(row.locator("td").nth(4)).toContainText("Pending"); // Training completion never claims an assessment pass.
+  await expect(row.locator("td").nth(6)).toContainText("Pending"); // Training completion never claims an assessment pass.
   await expect(page.locator(".metrics > div").filter({ has: page.locator("span", { hasText: /^Completion recorded$/ }) }).locator("strong")).toHaveText("3");
   await expect(page.locator("tbody tr").filter({ hasText: "Synthetic 06" }).locator("td").nth(1)).toContainText("Awaiting completion");
   await page.screenshot({ path: "test-results/completion-status-updated.png", fullPage: true });

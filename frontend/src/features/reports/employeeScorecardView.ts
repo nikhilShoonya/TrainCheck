@@ -37,7 +37,8 @@ export interface GainItem {
   note: string | null;
 }
 
-export type FeedbackKey = "relevance" | "clarity" | "alignment" | "fairness" | "confidence";
+export type { FeedbackKey } from "@/lib/types";
+import type { FeedbackKey } from "@/lib/types";
 
 export interface FeedbackItem {
   training_id: string;
@@ -45,7 +46,7 @@ export interface FeedbackItem {
   training_cycle: number;
   show_cycle: boolean;
   status: "SUBMITTED" | "NOT_SUBMITTED" | "NOT_REQUIRED";
-  ratings: Record<FeedbackKey, number> | null;
+  ratings: Partial<Record<FeedbackKey, number>> | null;
   overall: number | null;
   comment: string | null;
   submitted_at: string | null;
